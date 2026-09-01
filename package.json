@@ -1,0 +1,45 @@
+{
+  "name": "mr-orchestrator",
+  "version": "0.1.0",
+  "description": "Deterministic, typed OpenCode orchestrator with isolated global installation.",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/marioccarloss/orchestrator.git"
+  },
+  "homepage": "https://github.com/marioccarloss/orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/marioccarloss/orchestrator/issues"
+  },
+  "type": "module",
+  "packageManager": "bun@1.2.21",
+  "bin": {
+    "mr": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "bun run build && bun test tests/*.test.ts",
+    "check": "bun run typecheck && bun run lint && bun run test"
+  },
+  "dependencies": {
+    "@clack/prompts": "1.7.0",
+    "@opencode-ai/plugin": "^1.18.25",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-typescript": "^0.23.2",
+    "web-tree-sitter": "^0.27.0",
+    "yaml": "^2.9.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.35.0",
+    "@types/bun": "^1.4.0",
+    "@types/node": "24.3.0",
+    "bun-types": "^1.4.0",
+    "eslint": "9.35.0",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.41.0"
+  }
+}
