@@ -77,6 +77,7 @@ O si solo deseas instalar los ejecutables globales sin registrar workspaces de i
 5. Escribe el manifest en `~/.config/mr-orchestrator/install-manifest.json`.
 6. Inicializa `~/.config/mr-orchestrator/models.json` con los modelos por rol elegidos.
 7. Si se pasó `--workspace`, registra el workspace en `~/.config/mr-orchestrator/workspaces.json` y compila su configuración en `~/.config/mr-orchestrator/generated/<workspace-id>/opencode.mr.json`.
+8. **Instala las dependencias del plugin generado** (`bun install` en `~/.config/mr-orchestrator/generated/<workspace-id>/`). Esto es necesario para que el plugin pueda importar `@opencode-ai/plugin`, `zod`, `tree-sitter`, etc. Sin este paso, el plugin falla silenciosamente al cargar.
 
 En automatizaciones sin TTY el selector se omite automáticamente. También puede omitirse de forma explícita con `./install.sh --no-models`; después se abre con `mr flow-models`.
 
@@ -147,10 +148,56 @@ mr workspace remove <workspace-id>
 ```bash
 mr sync
 ```
+*(Esto regenera `opencode.mr.json`, copia el plugin compilado e **instala automáticamente las dependencias** con `bun install` en cada workspace.)*
 
 ---
 
-## 6. Desinstalación y Limpieza
+## 6. Uso sin `mrcode` (loader automático)
+
+Si prefieres no usar `mrcode`, puedes iniciar `opencode` directamente desde cualquier subdirectorio del workspace:
+
+```bash
+cd ~/Projects/my-workspace/apps/api
+opencode .
+```
+
+El loader global (`~/.config/opencode/plugins/mr-orchestrator-loader.ts`) detectará automáticamente el workspace y cargará:
+- Los comandos `/flow`, `/atlas`, `/trace`, `/propose`, `/prompt`, `/flow-models`
+- Los 20 tools `mr_flow_*`, `mr_sdd_*`, `mr_atlas_*`, etc.
+- Los agentes `orchestrator`, `mr-explore`, `mr-plan`, etc.
+
+**Importante:** Si el loader falla, ahora verás un mensaje de error en stderr. Antes, los errores eran silenciosos y los comandos simplemente no aparecían.
+
+---
+
+## 7. Solución de Problemas
+
+### Los comandos `/flow`, `/atlas` no aparecen en `opencode .`
+
+**Síntoma:** Ejecutas `opencode .` desde un workspace registrado, pero los comandos del orchestrator no están disponibles.
+
+**Causa probable:** Las dependencias del plugin no están instaladas en el directorio generado.
+
+**Solución:**
+```bash
+# Re-sincronizar e instalar dependencias automáticamente
+mr sync
+
+# Si persiste el problema, verificar manualmente:
+ls ~/.config/mr-orchestrator/generated/<workspace-id>/node_modules
+# Si no existe, el sync debería haberlo creado. Reportar como bug.
+```
+
+### El loader muestra error en stderr
+
+Si ves `[mr-orchestrator-loader] Failed to load plugin...`, revisa:
+1. Que el workspace esté registrado: `mr workspace list`
+2. Que el directorio generado exista: `ls ~/.config/mr-orchestrator/generated/`
+3. Que las dependencias estén instaladas: `ls ~/.config/mr-orchestrator/generated/<workspace-id>/node_modules`
+
+---
+
+## 8. Desinstalación y Limpieza
 
 ### Desinstalación segura (mantiene datos y cachés):
 ```bash
