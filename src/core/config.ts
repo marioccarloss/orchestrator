@@ -1,5 +1,6 @@
 import { readFile, copyFile, mkdir, cp } from "node:fs/promises";
 import { join, dirname, basename, isAbsolute, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { atomicWrite, canonicalJson, readJson } from "./files.js";
 import type { MrPaths } from "./paths.js";
 import { ModelMapSchema, type ModelMap, type WorkspaceProfile } from "./schema.js";
@@ -393,6 +394,23 @@ export async function syncWorkspace(paths: MrPaths, profile: WorkspaceProfile, s
       join(generatedDir, "package.json"),
       `${JSON.stringify({ name: `mr-orchestrator-plugin-${profile.id}`, private: true, type: "module", dependencies: pkg.dependencies ?? {} }, null, 2)}\n`,
     );
+
+    // Install plugin dependencies so the generated plugin.js can import them at runtime.
+    // Without this, the plugin fails to load and the loader silently falls back to {}.
+    // Skip in test environments where the isolated bun binary may not exist.
+    if (!process.env["MR_SKIP_PLUGIN_INSTALL"]) {
+      const bunBinary = paths.bunBinary ?? "bun";
+      const installResult = spawnSync(bunBinary, ["install"], {
+        cwd: generatedDir,
+        encoding: "utf8",
+        env: process.env,
+      });
+      if (installResult.status !== 0) {
+        throw new Error(
+          `Failed to install plugin dependencies in ${generatedDir}: ${installResult.stderr ?? installResult.error?.message ?? "unknown error"}`,
+        );
+      }
+    }
   }
 
   return output;

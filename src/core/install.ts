@@ -98,7 +98,12 @@ export const MrOrchestratorLoader = async (ctx) => {
         if (mrConfig.default_agent !== undefined) input.default_agent = mrConfig.default_agent;
       },
     };
-  } catch {
+  } catch (err) {
+    // Surface loader failures instead of silently swallowing them.
+    // This runs inside OpenCode; write to stderr so it shows in the TUI log.
+    process.stderr.write(
+      \`[mr-orchestrator-loader] Failed to load plugin for \${ctx?.directory ?? "unknown"}: \${err?.message ?? err}\\n\`
+    );
     return {};
   }
 };
