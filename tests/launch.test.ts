@@ -30,6 +30,9 @@ async function createTestEnv(): Promise<{ home: string; outer: string; inner: st
       judgeA: "copilot/gpt-4",
       judgeB: "copilot/gpt-4",
       fix: "copilot/gpt-4",
+      bpExtractor: "copilot/gpt-4",
+      bpArchitect: "copilot/gpt-4",
+      bpTransactor: "copilot/gpt-4",
     },
   }));
   return { home, outer, inner, sub };

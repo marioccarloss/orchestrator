@@ -7,6 +7,7 @@ import {
   discoverAvailableModels,
   setModels,
   type ModelRole,
+  type RoleCategory,
 } from "../core/models.js";
 import type { ModelMap } from "../core/schema.js";
 
@@ -15,14 +16,32 @@ export interface ModelSelectorOptions {
   readonly sync?: boolean;
 }
 
-export function formatModelMatrix(models: ModelMap): string {
+export function formatModelMatrix(models: ModelMap, category?: RoleCategory): string {
   const lines: string[] = [];
-  for (const info of ROLES) {
-    const currentModel = models.roles[info.role];
-    const isRecommended = currentModel === info.recommendedModel;
-    const badge = isRecommended ? " (recomendado)" : "";
-    lines.push(`• ${info.label.padEnd(28)} → ${currentModel}${badge}\n    └ ${info.description}`);
+  const flowRoles = ROLES.filter((r) => r.category === "flow");
+  const blueprintRoles = ROLES.filter((r) => r.category === "blueprint");
+
+  if (!category || category === "flow") {
+    lines.push("── /flow (Entrega quirúrgica y juicio) ──");
+    for (const info of flowRoles) {
+      const currentModel = models.roles[info.role];
+      const isRecommended = currentModel === info.recommendedModel;
+      const badge = isRecommended ? " (recomendado)" : "";
+      lines.push(`• ${info.label.padEnd(28)} → ${currentModel}${badge}\n    └ ${info.description}`);
+    }
   }
+
+  if (!category || category === "blueprint") {
+    if (lines.length > 0 && !category) lines.push("");
+    lines.push("── /blueprint (Aterrizaje de ideas y tickets) ──");
+    for (const info of blueprintRoles) {
+      const currentModel = models.roles[info.role];
+      const isRecommended = currentModel === info.recommendedModel;
+      const badge = isRecommended ? " (recomendado)" : "";
+      lines.push(`• ${info.label.padEnd(28)} → ${currentModel}${badge}\n    └ ${info.description}`);
+    }
+  }
+
   return lines.join("\n");
 }
 
@@ -69,7 +88,7 @@ async function chooseRole(models: ModelMap): Promise<ModelRole | undefined> {
     message: "Proceso o step que deseas actualizar",
     options: ROLES.map((item) => ({
       value: item.role,
-      label: item.label,
+      label: `[${item.category === "flow" ? "Flow" : "Blueprint"}] ${item.label}`,
       hint: models.roles[item.role],
     })),
   });
@@ -82,7 +101,7 @@ export async function interactiveModelSelector(
 ): Promise<boolean> {
   p.intro(options.installation
     ? "Configuración inicial de modelos de mr-orchestrator"
-    : "flow-models — configuración de modelos");
+    : "flow-models — configuración interactiva de modelos por steps");
 
   const current = await loadModels(paths);
   let draft: ModelMap = { schemaVersion: current.schemaVersion, roles: { ...current.roles } };
@@ -96,7 +115,9 @@ export async function interactiveModelSelector(
     const action = await p.select<string>({
       message: "¿Qué deseas hacer?",
       options: [
-        { value: "all", label: "Configurar todos los procesos", hint: "recorrido guiado, uno por uno" },
+        { value: "all", label: "Configurar todos los procesos", hint: "recorrido guiado completo (11 steps)" },
+        { value: "flow", label: "Configurar steps de /flow", hint: "8 steps: orchestrator, explore, plan, etc." },
+        { value: "blueprint", label: "Configurar steps de /blueprint", hint: "3 steps: extractor, architect, transactor" },
         { value: "role", label: "Cambiar un proceso concreto" },
         { value: "preset", label: "Aplicar un preset" },
         { value: "refresh", label: "Actualizar catálogo desde OpenCode" },
@@ -141,9 +162,18 @@ export async function interactiveModelSelector(
       continue;
     }
 
-    const roles = action === "all"
-      ? ROLES.map((item) => item.role)
-      : [await chooseRole(draft)].filter((role): role is ModelRole => role !== undefined);
+    let roles: ModelRole[] = [];
+    if (action === "all") {
+      roles = ROLES.map((item) => item.role);
+    } else if (action === "flow") {
+      roles = ROLES.filter((item) => item.category === "flow").map((item) => item.role);
+    } else if (action === "blueprint") {
+      roles = ROLES.filter((item) => item.category === "blueprint").map((item) => item.role);
+    } else {
+      const single = await chooseRole(draft);
+      if (single !== undefined) roles = [single];
+    }
+
     for (const role of roles) {
       const selected = await chooseModel(
         role,

@@ -1,12 +1,48 @@
 import { readFile, copyFile, mkdir, cp } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { atomicWrite, canonicalJson, readJson } from "./files.js";
+import { atomicWrite, canonicalJson } from "./files.js";
 import type { MrPaths } from "./paths.js";
 import { ModelMapSchema, type ModelMap, type WorkspaceProfile } from "./schema.js";
 
+const DEFAULT_ROLES: Record<string, string> = {
+  orchestrator: "github-copilot/kimi-k3",
+  explore: "github-copilot/gemini-3.7-flash",
+  plan: "github-copilot/gpt-5.6-sol",
+  general: "github-copilot/kimi-k3",
+  sddApply: "github-copilot/gpt-5.6-sol",
+  judgeA: "github-copilot/grok-4.6",
+  judgeB: "github-copilot/claude-opus-5",
+  fix: "github-copilot/gpt-5.6-sol",
+  bpExtractor: "github-copilot/gpt-4o-mini",
+  bpArchitect: "github-copilot/gemini-3.8-flash",
+  bpTransactor: "github-copilot/gpt-4o-mini",
+};
+
 export async function loadModels(paths: MrPaths): Promise<ModelMap> {
-  return readJson(paths.models, ModelMapSchema);
+  const content = await readFile(paths.models, "utf8");
+  const raw = JSON.parse(content) as { schemaVersion?: number; roles?: Record<string, string> };
+  const rawRoles = raw.roles ?? {};
+  const backfilledRoles: Record<string, string> = { ...rawRoles };
+
+  let needsWrite = false;
+  for (const [key, defaultModel] of Object.entries(DEFAULT_ROLES)) {
+    if (typeof backfilledRoles[key] !== "string" || backfilledRoles[key].trim().length === 0) {
+      backfilledRoles[key] = defaultModel;
+      needsWrite = true;
+    }
+  }
+
+  const parsed = ModelMapSchema.parse({
+    schemaVersion: raw.schemaVersion ?? 1,
+    roles: backfilledRoles,
+  });
+
+  if (needsWrite) {
+    await atomicWrite(paths.models, canonicalJson(parsed));
+  }
+  return parsed;
 }
 
 export function generatedConfigPath(paths: MrPaths, workspaceId: string): string {
@@ -125,17 +161,74 @@ Steps:
    - Use tool \`mr_prompt_copy\` with the final prompt text.
    - Confirm that the prompt has been copied to the system clipboard via \`pbcopy\` / clipboard.`,
       },
+      blueprint: {
+        description: "Pipeline de aterrizaje de ideas/producto y análisis de tickets sincronizado con GitHub Projects v2 (SDD + RPI)",
+        agent: "bp-architect",
+        template: `You are executing the /blueprint workflow.
+Input: $ARGUMENTS
+
+Follow this deterministic 3-role pipeline:
+
+### 1. Wizard / Entry Selection
+Use the \`question\` tool to determine the path:
+- Option A: "Aterrizar idea de producto / negocio"
+- Option B: "Analizar ticket de GitHub / Project"
+
+---
+
+### 2. Path A: Aterrizar Idea (Product & Architecture Synthesis)
+1. **Intake & Context Gathering (bp-extractor / ${models.roles.bpExtractor})**:
+   - Ask the user to describe the idea.
+   - Run \`bp-extractor\` to gather only relevant types/signatures from codebase/atlas and active conventions from engram memory (without raw markdowns).
+2. **Initial Synthesis (bp-architect / ${models.roles.bpArchitect})**:
+   - Reason deeply on the idea + gathered signatures + memory.
+   - Present a compact, condensed executive summary (under 20 lines).
+   - Offload the full working reasoning directly to memory using \`engram_mem_save\` under topic \`blueprint/<slug>\`.
+3. **Adaptive Strategic Questionnaire**:
+   - Ask the user if they want to deepen the idea with strategic questions:
+     * Options: [10 preguntas (Recomendado)], [20 preguntas], [50 preguntas], [Omitir y proceder a SDD+RPI]
+   - If selected:
+     * Prioritize questions strictly by risk (Lote 1: Core business/data invariants -> Lote 2: Security/scale -> Lote 3: UI/UX).
+     * The user may answer all, answer some, or abort anytime.
+4. **Compile SDD + RPI**:
+   - Synthesize the final specification:
+     * **SDD**: Core Entities, Invariants, Data Contracts, Test Conditions.
+     * **RPI**: Request Intent, Transversal Impact, and explicit \`[Supuestos e Inferencias Asumidas]\` for anything not answered.
+   - Save the artifact to disk using tool \`mr_blueprint_save\` (.blueprint/specs/YYYY-MM-DD_<slug>.json and .md).
+   - Save the summary to Engram (\`engram_mem_save\`).
+5. **Transition to Execution Planning**:
+   - Ask the user if they want to break down the specification into atomic tasks for GitHub Projects. If YES, proceed to Path B dispatch.
+
+---
+
+### 3. Path B: Analizar / Gestionar Ticket (GitHub Projects v2)
+1. **Target Detection & Extraction (bp-extractor / ${models.roles.bpExtractor})**:
+   - Auto-detect the current repository or prompt the user with available workspace repos.
+   - Fetch the ticket / Project v2 item via \`gh\` CLI or GraphQL query tool \`mr_blueprint_graphql\`.
+   - Extract only relevant code signatures and Engram memory.
+2. **Analysis & Synthesis (bp-architect / ${models.roles.bpArchitect})**:
+   - Evaluate the ticket scope against code contracts and architectural memory.
+   - Generate a concise assessment: Objectives, Impact Matrix, Dependencies, and Proposed Modifications.
+3. **Transactional Dispatch (bp-transactor / ${models.roles.bpTransactor})**:
+   - If editing, updating, creating sub-tasks, or deleting:
+     * Display a concise diff/preview using \`mr_blueprint_safety_gate\` (Safety Gate).
+     * Request user confirmation via \`question\` tool before proceeding.
+     * Execute the mutation with \`bp-transactor\` and return the updated Project v2 item URL.`,
+      },
       "flow-models": {
-        description: "Configura interactivamente el modelo de cada proceso interno de /flow",
+        description: "Configura interactivamente el modelo de cada proceso y step de /flow y /blueprint",
         agent: "orchestrator",
         template: `You are executing the /flow-models interactive model configuration workflow.
 
 Current assignments at command generation time:
-${Object.entries(models.roles).map(([role, model]) => `- ${role}: ${model}`).join("\n")}
+── /flow ──
+${Object.entries(models.roles).filter(([r]) => !r.startsWith("bp")).map(([role, model]) => `- ${role}: ${model}`).join("\n")}
+── /blueprint ──
+${Object.entries(models.roles).filter(([r]) => r.startsWith("bp")).map(([role, model]) => `- ${role}: ${model}`).join("\n")}
 
 Rules:
 1. Use \`mr_models\` with action \`status\` to load the current assignments. Do not rely on the snapshot above after this point.
-2. Use the native \`question\` tool for every choice so the user gets an interactive terminal UI. Let the user choose a process/step or finish.
+2. Use the native \`question\` tool for every choice so the user gets an interactive terminal UI. Allow choosing by steps: all processes, /flow steps (orchestrator, explore, plan, general, sddApply, judgeA, judgeB, fix), or /blueprint steps (bpExtractor, bpArchitect, bpTransactor).
 3. For a process change, call \`mr_models\` with action \`providers\`, ask for the provider, then call it with action \`models\` and that provider. Ask the user to choose or enter a \`provider/model-id\`.
 4. Show the current assignment and mark it clearly. Never select a model without the user's explicit choice.
 5. Persist the selection with \`mr_models\` action \`set\`, role and model. Then offer to configure another process/step.
@@ -239,6 +332,88 @@ Contract:
         mode: "subagent",
         model: models.roles.fix,
         description: "Applies only validated review findings.",
+      },
+      "bp-extractor": {
+        mode: "subagent",
+        model: models.roles.bpExtractor,
+        description: "Mechanical extraction worker for tickets, GitHub Projects metadata, and compact code/memory signatures.",
+        prompt: `You are bp-extractor, the mechanical extraction subagent for the /blueprint workflow.
+
+Your role:
+1. Fetch and parse GitHub Issues and Project v2 items using the gh CLI or GraphQL queries.
+2. Query codebase-memory, codegraph or atlas to retrieve ONLY signatures, types, and schema boundaries (never bulky raw markdowns).
+3. Query Engram memory (mem_search) for active architecture decisions and conventions related to the query.
+4. Output STRICTLY a compact JSON capsule with no prose or bulky markdown:
+   {
+     "repo": string,
+     "ticket": { "id": string, "title": string, "body": string, "status": string, "fields": {} } | null,
+     "code_signatures": [ { "file": string, "symbol": string, "kind": string } ],
+     "memory_context": [ { "id": number, "title": string, "content": string } ]
+   }`,
+        permission: {
+          edit: "deny",
+          bash: {
+            "*": "deny",
+            "gh issue view*": "allow",
+            "gh api graphql*": "allow",
+          },
+        },
+      },
+      "bp-architect": {
+        mode: "primary",
+        model: models.roles.bpArchitect,
+        description: "Synthesizes product and architectural ideas into SDD + RPI specifications with token offloading.",
+        prompt: `You are bp-architect, the product & architecture synthesis agent for the /blueprint workflow.
+
+Your role is to coordinate the /blueprint lifecycle:
+1. Wizard: Determine Path A (Aterrizar Idea) or Path B (Analizar Ticket)
+2. Extraction: Coordinate bp-extractor to collect minimal type signatures and memory
+3. Strategic Questionnaire: For ideas, present prioritized risk-based questions
+4. Synthesis: Compile SDD + RPI specification, offload details to .blueprint/specs/ and Engram memory
+5. Dispatch: Coordinate bp-transactor with Safety Gate for GitHub Projects v2 mutations
+
+Always maintain extreme token discipline: concise executive summaries, no raw markdown dumping.`,
+        permission: {
+          "*": "allow",
+          bash: {
+            "*": "allow",
+            "git push*": "ask",
+            "gh pr comment*": "ask",
+            "gh pr review*": "ask",
+            "gh issue comment*": "ask",
+            "gh api *comment*": "ask",
+          },
+          external_directory: "allow",
+          "*comment*": "ask",
+        },
+      },
+      "bp-transactor": {
+        mode: "subagent",
+        model: models.roles.bpTransactor,
+        description: "Transactional dispatcher for GitHub Issues and Project v2 items with Safety Gate enforcement.",
+        prompt: `You are bp-transactor, the transactional dispatcher for the /blueprint workflow.
+
+Your role:
+1. Receive a validated SDD + RPI task breakdown.
+2. Format tasks into atomic GitHub Issues / Project v2 items (title, clear acceptance checklist, labels).
+3. Enforce the Safety Gate:
+   - For any CREATE, UPDATE, or DELETE operation, present a clear minimal preview of intended mutations using mr_blueprint_safety_gate.
+   - Execute the mutation via gh CLI or GraphQL ONLY after user confirmation.
+4. Output a clean summary JSON with the created/updated issue IDs and URLs:
+   {
+     "status": "success" | "aborted",
+     "items": [ { "id": string, "url": string, "action": "created" | "updated" | "deleted" } ]
+   }`,
+        permission: {
+          edit: "deny",
+          bash: {
+            "*": "deny",
+            "gh issue create*": "allow",
+            "gh issue edit*": "allow",
+            "gh issue close*": "allow",
+            "gh api graphql*": "allow",
+          },
+        },
       },
   };
 }
@@ -399,7 +574,7 @@ export async function syncWorkspace(paths: MrPaths, profile: WorkspaceProfile, s
     // Without this, the plugin fails to load and the loader silently falls back to {}.
     // Skip in test environments where the isolated bun binary may not exist.
     if (!process.env["MR_SKIP_PLUGIN_INSTALL"]) {
-      const bunBinary = paths.bunBinary ?? "bun";
+      const bunBinary = paths.bunBinary && existsSync(paths.bunBinary) ? paths.bunBinary : "bun";
       const installResult = spawnSync(bunBinary, ["install"], {
         cwd: generatedDir,
         encoding: "utf8",
