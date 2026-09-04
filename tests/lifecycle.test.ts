@@ -43,6 +43,9 @@ async function setupTestPaths(): Promise<{ dir: string; paths: MrPaths }> {
       judgeA: "github-copilot/grok-4.6",
       judgeB: "github-copilot/claude-opus-5",
       fix: "github-copilot/gpt-5.6-sol",
+      bpExtractor: "github-copilot/gpt-4o-mini",
+      bpArchitect: "github-copilot/gemini-3.8-flash",
+      bpTransactor: "github-copilot/gpt-4o-mini",
     },
   }));
   await writeFile(paths.manifest, JSON.stringify({

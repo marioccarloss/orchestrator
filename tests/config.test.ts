@@ -15,6 +15,9 @@ const models: ModelMap = {
     judgeA: model,
     judgeB: model,
     fix: model,
+    bpExtractor: model,
+    bpArchitect: model,
+    bpTransactor: model,
   },
 };
 const profile: WorkspaceProfile = {
@@ -38,12 +41,23 @@ void test("generated opencode config exposes a primary orchestrator and internal
   assert.deepEqual(config.disabled_providers, ["openrouter"]);
   assert.equal(orchestrator.mode, "primary");
   assert.equal(orchestrator.permission?.["*"], "allow");
-  assert.equal(Object.keys(config.agent).length, 8);
+  assert.equal(Object.keys(config.agent).length, 11);
 
-  const subagents = ["mr-explore", "mr-plan", "mr-general", "mr-sdd-apply", "mr-judge-a", "mr-judge-b", "mr-fix"];
+  const subagents = [
+    "mr-explore",
+    "mr-plan",
+    "mr-general",
+    "mr-sdd-apply",
+    "mr-judge-a",
+    "mr-judge-b",
+    "mr-fix",
+    "bp-extractor",
+    "bp-transactor",
+  ];
   for (const name of subagents) {
     assert.equal(config.agent[name]?.mode, "subagent", `${name} should be subagent`);
   }
+  assert.equal(config.agent["bp-architect"]?.mode, "primary", "bp-architect should be primary");
 });
 
 void test("orchestrator has full autonomy except push and ticket commenting", () => {
@@ -67,13 +81,14 @@ void test("orchestrator has full autonomy except push and ticket commenting", ()
   assert.equal(bash["gh issue comment*"], "ask");
 });
 
-void test("generated opencode config registers all 6 commands with correct agent assignments", () => {
+void test("generated opencode config registers all 7 commands with correct agent assignments", () => {
   const config = buildOpenCodeConfig(profile, models, "/generated") as {
     command: Record<string, { description?: string; agent?: string; template?: string }>;
   };
 
   const expectedCommands: Record<string, string> = {
     "flow": "orchestrator",
+    "blueprint": "bp-architect",
     "atlas": "build",
     "trace": "build",
     "propose": "build",

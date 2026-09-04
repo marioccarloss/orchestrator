@@ -19,7 +19,7 @@ import { loadModels, buildOpenCodeConfig, generatedConfigPath } from "../src/cor
 import { addWorkspace } from "../src/core/workspace.js";
 import type { WorkspaceProfile } from "../src/core/schema.js";
 
-void test("all 8 roles are defined with labels, descriptions, and recommended models", () => {
+void test("all 11 roles are defined with labels, descriptions, and recommended models", () => {
   const expectedRoles: ModelRole[] = [
     "orchestrator",
     "explore",
@@ -29,19 +29,23 @@ void test("all 8 roles are defined with labels, descriptions, and recommended mo
     "judgeA",
     "judgeB",
     "fix",
+    "bpExtractor",
+    "bpArchitect",
+    "bpTransactor",
   ];
 
-  assert.equal(ROLES.length, 8);
+  assert.equal(ROLES.length, 11);
   for (const roleKey of expectedRoles) {
     const meta = ROLES.find((r) => r.role === roleKey);
     assert.ok(meta, `Role ${roleKey} must exist in ROLES metadata`);
     assert.ok(meta.label.length > 0);
     assert.ok(meta.description.length > 0);
     assert.ok(meta.recommendedModel.includes("/"));
+    assert.ok(meta.category === "flow" || meta.category === "blueprint");
   }
 });
 
-void test("presets registry contains valid presets covering all 8 roles", () => {
+void test("presets registry contains valid presets covering all 11 roles", () => {
   const presetKeys = Object.keys(PRESETS);
   assert.ok(presetKeys.includes("balanced"));
   assert.ok(presetKeys.includes("gpt-sol"));
@@ -51,7 +55,7 @@ void test("presets registry contains valid presets covering all 8 roles", () => 
     const preset = PRESETS[key]!;
     assert.ok(preset.name.length > 0);
     assert.ok(preset.description.length > 0);
-    assert.equal(Object.keys(preset.roles).length, 8);
+    assert.equal(Object.keys(preset.roles).length, 11);
     for (const [role, model] of Object.entries(preset.roles)) {
       assert.ok(model.includes("/"), `Model for role ${role} in preset ${key} must have provider prefix`);
     }

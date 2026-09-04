@@ -51,6 +51,13 @@ import {
   copyToClipboard,
   type ProposalInput,
 } from "./core/tools.js";
+import {
+  BlueprintSpecSchema,
+  saveBlueprintSpec,
+  renderBlueprintExecutiveSummary,
+  BlueprintMutationSchema,
+  renderSafetyGateDiff,
+} from "./core/blueprint-schema.js";
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
@@ -359,8 +366,21 @@ export const MrOrchestrator: Plugin = async (ctx) => {
         args: {
           action: tool.schema.enum(["status", "providers", "models", "set"]).optional()
             .describe("status=current roster, providers=available providers, models=models for provider, set=save role/model"),
-          role: tool.schema.enum(["orchestrator", "explore", "plan", "general", "sddApply", "judgeA", "judgeB", "fix"])
-            .optional().describe("Process/step role to update"),
+          category: tool.schema.enum(["flow", "blueprint"]).optional()
+            .describe("Filtrar por categoría de proceso: flow (8 steps) o blueprint (3 steps)"),
+          role: tool.schema.enum([
+            "orchestrator",
+            "explore",
+            "plan",
+            "general",
+            "sddApply",
+            "judgeA",
+            "judgeB",
+            "fix",
+            "bpExtractor",
+            "bpArchitect",
+            "bpTransactor",
+          ]).optional().describe("Process/step role to update"),
           provider: tool.schema.string().optional().describe("Provider ID used by action=models"),
           model: tool.schema.string().optional().describe("Full provider/model-id used by action=set"),
         },
@@ -393,12 +413,154 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           }
 
           const models = await loadModels(paths);
+          const category = args.category;
           const lines = ["# Roster de Modelos mr-orchestrator", ""];
-          for (const meta of ROLES) {
-            lines.push(`- **${meta.label}** (${meta.role}): \`${models.roles[meta.role]}\``);
+          const flowRoles = ROLES.filter((r) => r.category === "flow");
+          const blueprintRoles = ROLES.filter((r) => r.category === "blueprint");
+
+          if (!category || category === "flow") {
+            lines.push("### /flow (Entrega quirúrgica)");
+            for (const meta of flowRoles) {
+              lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${models.roles[meta.role]}\``);
+            }
           }
-          lines.push("", "Editor directo: `mr flow-models`");
+
+          if (!category || category === "blueprint") {
+            if (lines.length > 2 && !category) lines.push("");
+            lines.push("### /blueprint (Aterrizaje y tickets)");
+            for (const meta of blueprintRoles) {
+              lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${models.roles[meta.role]}\``);
+            }
+          }
+
+          lines.push("", "Editor directo interactivo: `mr flow-models`");
           return { title: "Model Roster", output: lines.join("\n") };
+        },
+      }),
+
+      // ─── Blueprint Tools ───────────────────────────────────────────────────
+
+      mr_blueprint_save: tool({
+        description: "Validate and save a Blueprint SDD + RPI specification to .blueprint/specs/ in the active workspace and generate executive summary",
+        args: {
+          slug: tool.schema.string().describe("Identificador kebab-case de la especificación (ej: user-feed, auth-flow)"),
+          title: tool.schema.string().describe("Título descriptivo de la especificación"),
+          mode: tool.schema.enum(["idea", "ticket"]).describe("Modo del blueprint: idea o ticket"),
+          overview: tool.schema.string().describe("Resumen ejecutivo de la propuesta"),
+          requestIntent: tool.schema.string().describe("Intención y objetivos centrales del requerimiento"),
+          transversalImpact: tool.schema.array(tool.schema.string()).optional().describe("Puntos de impacto transversal"),
+          assumedInferences: tool.schema.array(tool.schema.string()).optional().describe("Supuestos e inferencias asumidas no respondidas"),
+          entities: tool.schema.array(tool.schema.object({
+            name: tool.schema.string(),
+            description: tool.schema.string(),
+            fields: tool.schema.record(tool.schema.string(), tool.schema.string()).optional(),
+          })).optional().describe("Entidades core del SDD"),
+          invariants: tool.schema.array(tool.schema.string()).optional().describe("Invariantes y reglas de negocio no negociables"),
+          contracts: tool.schema.array(tool.schema.object({
+            endpointOrFunction: tool.schema.string(),
+            input: tool.schema.string(),
+            output: tool.schema.string(),
+            errorCases: tool.schema.array(tool.schema.string()).optional(),
+          })).optional().describe("Contratos de datos o interfaces"),
+          testConditions: tool.schema.array(tool.schema.string()).optional().describe("Criterios de verificación y condiciones de test"),
+          tasks: tool.schema.array(tool.schema.object({
+            id: tool.schema.string(),
+            title: tool.schema.string(),
+            description: tool.schema.string(),
+            labels: tool.schema.array(tool.schema.string()).optional(),
+            priority: tool.schema.enum(["high", "medium", "low"]).optional(),
+          })).optional().describe("Tareas atómicas para ejecución"),
+        },
+        execute: async (args, _context) => {
+          const now = new Date().toISOString();
+          const parsed = BlueprintSpecSchema.parse({
+            schemaVersion: 1,
+            slug: args.slug,
+            title: args.title,
+            mode: args.mode,
+            overview: args.overview,
+            sdd: {
+              entities: args.entities ?? [],
+              invariants: args.invariants ?? [],
+              contracts: args.contracts ?? [],
+              testConditions: args.testConditions ?? [],
+            },
+            rpi: {
+              requestIntent: args.requestIntent,
+              transversalImpact: args.transversalImpact ?? [],
+              assumedInferences: args.assumedInferences ?? [],
+            },
+            tasks: args.tasks ?? [],
+            createdAt: now,
+          });
+
+          const saved = await saveBlueprintSpec(workspaceRoot, parsed);
+          const summary = renderBlueprintExecutiveSummary(parsed);
+          return {
+            title: "Blueprint Saved",
+            output: `${summary}\n\nArtefactos guardados:\n- ${saved.markdownPath}\n- ${saved.jsonPath}`,
+          };
+        },
+      }),
+
+      mr_blueprint_safety_gate: tool({
+        description: "Format a structured Safety Gate confirmation diff before any GitHub mutation",
+        args: {
+          action: tool.schema.enum(["create", "update", "delete"]).describe("Acción de mutación prevista"),
+          repo: tool.schema.string().describe("Repositorio de destino (owner/name)"),
+          title: tool.schema.string().describe("Título del issue o ticket a mutar"),
+          id: tool.schema.string().optional().describe("ID o número de issue si existe"),
+          fields: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Campos o cambios proyectados"),
+        },
+        execute: async (args, _context) => {
+          const mutation = BlueprintMutationSchema.parse({
+            action: args.action,
+            target: {
+              id: args.id,
+              title: args.title,
+              repo: args.repo,
+              fields: args.fields ?? {},
+            },
+          });
+          return {
+            title: "Safety Gate",
+            output: renderSafetyGateDiff(mutation),
+          };
+        },
+      }),
+
+      mr_blueprint_graphql: tool({
+        description: "Execute a GitHub GraphQL query or mutation using GITHUB_PERSONAL_ACCESS_TOKEN",
+        args: {
+          query: tool.schema.string().describe("Consulta o mutación GraphQL"),
+          variables: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Variables para la consulta"),
+        },
+        execute: async (args, _context) => {
+          const token = process.env["GITHUB_PERSONAL_ACCESS_TOKEN"] ?? "";
+          if (!token) {
+            throw new Error("GITHUB_PERSONAL_ACCESS_TOKEN no encontrado en el entorno.");
+          }
+          const response = await fetch("https://api.github.com/graphql", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              "User-Agent": "mr-orchestrator-blueprint",
+            },
+            body: JSON.stringify({ query: args.query, variables: args.variables ?? {} }),
+          });
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`GitHub GraphQL HTTP error [${response.status}]: ${errorText}`);
+          }
+          const json = await response.json() as { data?: unknown; errors?: unknown[] };
+          if (json.errors && json.errors.length > 0) {
+            throw new Error(`GraphQL Errors: ${JSON.stringify(json.errors)}`);
+          }
+          return {
+            title: "GitHub GraphQL Result",
+            output: JSON.stringify(json.data, null, 2),
+          };
         },
       }),
 

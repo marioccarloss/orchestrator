@@ -27,6 +27,27 @@ export const WorkspaceRegistrySchema = z.object({
 
 export type WorkspaceRegistry = z.infer<typeof WorkspaceRegistrySchema>;
 
+export const FlowRoleSchema = z.enum([
+  "orchestrator",
+  "explore",
+  "plan",
+  "general",
+  "sddApply",
+  "judgeA",
+  "judgeB",
+  "fix",
+]);
+
+export type FlowRole = z.infer<typeof FlowRoleSchema>;
+
+export const BlueprintRoleSchema = z.enum([
+  "bpExtractor",
+  "bpArchitect",
+  "bpTransactor",
+]);
+
+export type BlueprintRole = z.infer<typeof BlueprintRoleSchema>;
+
 export const ModelRoleSchema = z.enum([
   "orchestrator",
   "explore",
@@ -36,6 +57,9 @@ export const ModelRoleSchema = z.enum([
   "judgeA",
   "judgeB",
   "fix",
+  "bpExtractor",
+  "bpArchitect",
+  "bpTransactor",
 ]);
 
 export const ModelMapSchema = z.object({

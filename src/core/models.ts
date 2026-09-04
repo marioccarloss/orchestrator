@@ -14,9 +14,12 @@ import { buildGlobalDefinitionFiles, syncWorkspace, loadModels, writeGlobalDefin
 
 export type ModelRole = z.infer<typeof ModelRoleSchema>;
 
+export type RoleCategory = "flow" | "blueprint";
+
 export interface RoleMetadata {
   readonly role: ModelRole;
   readonly label: string;
+  readonly category: RoleCategory;
   readonly description: string;
   readonly recommendedModel: string;
 }
@@ -25,57 +28,91 @@ export const ROLES: readonly RoleMetadata[] = [
   {
     role: "orchestrator",
     label: "Orchestrator",
+    category: "flow",
     description: "Dirección, razonamiento inicial y FSM de /flow",
     recommendedModel: "github-copilot/kimi-k3",
   },
   {
     role: "explore",
     label: "Explore",
+    category: "flow",
     description: "Mapeo rápido de archivos y lectura de contexto (read-only)",
     recommendedModel: "github-copilot/gemini-3.7-flash",
   },
   {
     role: "plan",
     label: "Plan (SDD+RPI)",
+    category: "flow",
     description: "Planificación estructurada en cápsula JSON (read-only)",
     recommendedModel: "github-copilot/gpt-5.6-sol",
   },
   {
     role: "general",
     label: "General (Implementador)",
+    category: "flow",
     description: "Implementación quirúrgica de código",
     recommendedModel: "github-copilot/kimi-k3",
   },
   {
     role: "sddApply",
     label: "SDD Apply",
+    category: "flow",
     description: "Aplicación y verificación de cambios SDD",
     recommendedModel: "github-copilot/gpt-5.6-sol",
   },
   {
     role: "judgeA",
     label: "Día del Juicio - Juez A",
+    category: "flow",
     description: "Revisión adversarial ciega A (read-only)",
     recommendedModel: "github-copilot/grok-4.6",
   },
   {
     role: "judgeB",
     label: "Día del Juicio - Juez B",
+    category: "flow",
     description: "Revisión adversarial ciega B (read-only)",
     recommendedModel: "github-copilot/claude-opus-5",
   },
   {
     role: "fix",
     label: "Fix Agent",
+    category: "flow",
     description: "Corrección quirúrgica de hallazgos del veredicto",
     recommendedModel: "github-copilot/gpt-5.6-sol",
   },
+  {
+    role: "bpExtractor",
+    label: "Blueprint Extractor",
+    category: "blueprint",
+    description: "Extracción mecánica de tickets, metadatos y firmas mínimas",
+    recommendedModel: "github-copilot/gpt-4o-mini",
+  },
+  {
+    role: "bpArchitect",
+    label: "Blueprint Architect",
+    category: "blueprint",
+    description: "Razonamiento y síntesis de producto/arquitectura (SDD+RPI)",
+    recommendedModel: "github-copilot/gemini-3.8-flash",
+  },
+  {
+    role: "bpTransactor",
+    label: "Blueprint Transactor",
+    category: "blueprint",
+    description: "Despacho transaccional en GitHub con Safety Gate",
+    recommendedModel: "github-copilot/gpt-4o-mini",
+  },
 ];
+
+export function getRolesByCategory(category?: RoleCategory): readonly RoleMetadata[] {
+  if (!category) return ROLES;
+  return ROLES.filter((r) => r.category === category);
+}
 
 export const PRESETS: Record<string, { readonly name: string; readonly description: string; readonly roles: ModelMap["roles"] }> = {
   "balanced": {
     name: "Balanced Orchestrator Preset",
-    description: "Kimi K3 (dir/gen) + Gemini 3.7 Flash (explore) + Grok 4.6 & Opus 5 (jueces) + GPT-5.6 Sol (plan/fix)",
+    description: "Kimi K3 (dir/gen) + Gemini 3.7 Flash (explore) + Grok 4.6 & Opus 5 (jueces) + GPT-5.6 Sol (plan/fix) + Blueprint",
     roles: {
       orchestrator: "github-copilot/kimi-k3",
       explore: "github-copilot/gemini-3.7-flash",
@@ -85,11 +122,14 @@ export const PRESETS: Record<string, { readonly name: string; readonly descripti
       judgeA: "github-copilot/grok-4.6",
       judgeB: "github-copilot/claude-opus-5",
       fix: "github-copilot/gpt-5.6-sol",
+      bpExtractor: "github-copilot/gpt-4o-mini",
+      bpArchitect: "github-copilot/gemini-3.8-flash",
+      bpTransactor: "github-copilot/gpt-4o-mini",
     },
   },
   "gpt-sol": {
     name: "GPT-5.6 Sol All-Round",
-    description: "Modelo homogéneo GPT-5.6 Sol en todos los roles",
+    description: "Modelo homogéneo GPT-5.6 Sol en todos los roles con subagentes mecánicos mini",
     roles: {
       orchestrator: "github-copilot/gpt-5.6-sol",
       explore: "github-copilot/gpt-5.6-sol",
@@ -99,6 +139,9 @@ export const PRESETS: Record<string, { readonly name: string; readonly descripti
       judgeA: "github-copilot/gpt-5.6-sol",
       judgeB: "github-copilot/gpt-5.6-sol",
       fix: "github-copilot/gpt-5.6-sol",
+      bpExtractor: "github-copilot/gpt-4o-mini",
+      bpArchitect: "github-copilot/gpt-5.6-sol",
+      bpTransactor: "github-copilot/gpt-4o-mini",
     },
   },
   "claude-opus": {
@@ -113,6 +156,9 @@ export const PRESETS: Record<string, { readonly name: string; readonly descripti
       judgeA: "github-copilot/claude-opus-5",
       judgeB: "github-copilot/grok-4.6",
       fix: "github-copilot/claude-sonnet-4.6",
+      bpExtractor: "github-copilot/gpt-4o-mini",
+      bpArchitect: "github-copilot/claude-sonnet-4.6",
+      bpTransactor: "github-copilot/gpt-4o-mini",
     },
   },
 };
