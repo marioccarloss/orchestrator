@@ -21,8 +21,8 @@ void test("install is idempotent and uninstall preserves modified owned files", 
 
   const first = await install(paths, sourceRoot, "0.1.0");
   const second = await install(paths, sourceRoot, "0.1.0");
-  // 3 launchers + 1 opencode loader plugin + 8 agent md + 6 command md
-  assert.equal(first.changedFiles.length, 18);
+  // 3 launchers + 1 opencode loader plugin + 11 agent md + 7 command md
+  assert.equal(first.changedFiles.length, 22);
   assert.equal(second.changedFiles.length, 0);
   assert.match(await readFile(join(paths.binRoot, "mrcode"), "utf8"), /bun' '.+cli\.js' launch "\$@"/u);
   const loader = await readFile(join(paths.opencodePluginsRoot, "mr-orchestrator-loader.ts"), "utf8");
