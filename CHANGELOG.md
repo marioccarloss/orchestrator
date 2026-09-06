@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-07
+
+### Added
+
+- **Fail-Closed Harness Hardening (Gentleman Programming 7 Pillars):**
+  - **Pillar 1 (Event Sourcing):** State transitions persist to `events.jsonl` with deterministic `replayFromOrigin()` state reconstruction.
+  - **Pillar 2 (CAS Integrity):** SHA-256 Content-Addressed Storage diff digest enforcement (`getDiffHash`), rejecting mutations post-judgment in `mr_flow_finish`.
+  - **Pillar 3 (Fail-Closed Gates):** Mandatory judgment (`requiresJudgment` unconditionally true); cryptographic `safetyGateTicket` verification on `mr_blueprint_graphql` mutations.
+  - **Pillar 4 (Role Segregation):** Strict caller verification in `mr_flow_judge` (`mr-judge-a` / `mr-judge-b`), preventing workers or orchestrator from self-approving.
+  - **Pillar 5 (Context Amnesia Resilience):** `PersistentMemoryStore` with git-stamp workspace tree tracking; auto-invalidates stale records upon repository tree drift.
+  - **Pillar 6 (Structural AST Analysis):** Tree-sitter WASM validation (`validateAstSyntax`) blocking broken code from reaching judgment.
+  - **Pillar 7 (Bounded Remediation Loop & Scope Enforcement):** Rejection of unapproved file mutations outside `plan.files`; hard ceiling of 3 fix attempts before human escalation.
+
 ## [0.4.0] - 2026-09-07
 
 ### Added

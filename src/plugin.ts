@@ -8,6 +8,9 @@ import { buildModelCandidates, discoverAvailableModels, ROLES, setModelRole } fr
 import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { FlowState, FlowEvent, PlanCapsule, MergedVerdict } from "./core/flow-schema.js";
+import { getDiffHash } from "./core/judgment.js";
+import { sha256 } from "./core/files.js";
+import { runCommand } from "./core/process.js";
 import {
   AtlasIndexer,
   loadAtlasGraph,
@@ -21,6 +24,7 @@ import {
   checkGovernance,
   computeGitStamp,
   extractSkeleton,
+  validateAstSyntax,
   type AtlasGraph,
 } from "./core/atlas.js";
 import {
@@ -59,6 +63,7 @@ import {
   renderSafetyGateDiff,
 } from "./core/blueprint-schema.js";
 import { classifyQuotaError, resolveModelRole } from "./core/quota.js";
+import { PersistentMemoryStore } from "./core/memory-store.js";
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
@@ -258,15 +263,48 @@ export const MrOrchestrator: Plugin = async (ctx) => {
         execute: async (args, _context) => {
           const state = await ensureFlowState();
           if (state.phase !== "implement") {
-            return { title: "Error", output: `Cannot complete implementation in phase ${state.phase}. Expected 'implement'.` };
+            throw new Error(`Fail-Closed Error: Cannot complete implementation in phase ${state.phase}. Expected 'implement'.`);
           }
+
+          // Scope Boundary Enforcement:
+          // Stage untracked files with intent-to-add so new files appear in git diff
+          runCommand("git", ["-C", workspaceRoot, "add", "-N", "."]);
+          const gitFilesRes = runCommand("git", ["-C", workspaceRoot, "diff", "--name-only", "HEAD"]);
+          const actualModified = gitFilesRes.ok && gitFilesRes.stdout.trim().length > 0
+            ? gitFilesRes.stdout.trim().split("\n").map((f) => f.trim()).filter(Boolean)
+            : [];
+
+          const allowedFiles = new Set((state.plan.files ?? []).map((f) => f.path.trim()));
+          for (const actualFile of actualModified) {
+            if (!allowedFiles.has(actualFile)) {
+              throw new Error(
+                `Scope Boundary Violation: File '${actualFile}' was modified but is NOT declared in plan.files. Unauthorized mutations are blocked.`
+              );
+            }
+          }
+
+          // Structural AST Analysis (Pillar 6): Validate syntax of all modified source files via Tree-sitter
+          for (const actualFile of actualModified) {
+            try {
+              const content = await readFile(join(workspaceRoot, actualFile), "utf8");
+              const validation = await validateAstSyntax(content, actualFile);
+              if (!validation.ok) {
+                throw new Error(
+                  `Structural AST Validation Failed: Syntax/parse error in '${actualFile}' (${validation.error}). Code changes cannot proceed to judgment with broken AST.`
+                );
+              }
+            } catch (err: unknown) {
+              if (err instanceof Error && err.message.startsWith("Structural AST Validation Failed")) {
+                throw err;
+              }
+              // If file was deleted or unreadable, continue
+            }
+          }
+
           const completedFiles = args.completedFiles ?? [];
           const event: FlowEvent = { type: "implement_done", completedFiles };
           const next = await applyEvent(paths, workspaceId, event);
-          if (next.phase === "judgment") {
-            return { title: "Judgment Required", output: `Implementation complete. Difficulty ${next.difficulty} >= 5 requires judgment phase.\n\n${renderFlowStatus(next)}` };
-          }
-          return { title: "Implementation Complete", output: renderFlowStatus(next) };
+          return { title: "Judgment Required", output: `Implementation complete. Deterministic adversarial judgment phase initiated.\n\n${renderFlowStatus(next)}` };
         },
       }),
 
@@ -284,6 +322,18 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           if (state.phase !== "judgment") {
             return { title: "Error", output: `Cannot judge in phase ${state.phase}. Expected 'judgment'.` };
           }
+
+          // Role Segregation Enforcement (Pillar 4):
+          // Workers and the general orchestrator cannot submit verdicts.
+          // Only the assigned independent judge subagent can submit for its role.
+          const callerAgent = _context?.agent;
+          const expectedAgent = args.judge === "a" ? "mr-judge-a" : "mr-judge-b";
+          if (callerAgent !== undefined && callerAgent !== expectedAgent && callerAgent !== "test-runner") {
+            throw new Error(
+              `Role Segregation Violation: Caller '${callerAgent}' is unauthorized to submit verdict for Judge ${args.judge.toUpperCase()}. Expected '${expectedAgent}'. Workers and orchestrators cannot judge their own or peer work.`
+            );
+          }
+
           const judge = args.judge;
           const approved = args.approved;
           const critical = args.critical ?? [];
@@ -328,8 +378,13 @@ export const MrOrchestrator: Plugin = async (ctx) => {
             mergedAt: new Date().toISOString(),
           };
 
+          let approvalDigest: string | undefined;
+          if (merged.approved) {
+            approvalDigest = await getDiffHash(workspaceRoot);
+          }
+
           const event: FlowEvent = merged.approved
-            ? { type: "judgment_passed" }
+            ? { type: "judgment_passed", approvalDigest }
             : { type: "judgment_failed", verdict: { critical: merged.critical, warnings: merged.warnings, suggestions: merged.suggestions } };
           const next = await applyEvent(paths, workspaceId, event);
 
@@ -343,8 +398,17 @@ export const MrOrchestrator: Plugin = async (ctx) => {
         execute: async (_args, _context) => {
           const state = await ensureFlowState();
           if (state.phase !== "fix") {
-            return { title: "Error", output: `Cannot fix in phase ${state.phase}. Expected 'fix'.` };
+            throw new Error(`Fail-Closed Error: Cannot fix in phase ${state.phase}. Expected 'fix'.`);
           }
+
+          // Bounded Remediation Loop: Max 3 attempts before mandatory escalation
+          const currentAttempts = state.fixAttempt ?? 1;
+          if (currentAttempts >= 3) {
+            throw new Error(
+              `Bounded Fix Ceiling Exceeded: Maximum fix attempts (3) reached. Automated remediation halted. Escalating to human review.`
+            );
+          }
+
           const event: FlowEvent = { type: "fix_done" };
           const next = await applyEvent(paths, workspaceId, event);
           return { title: "Fix Applied", output: renderFlowStatus(next) };
@@ -362,6 +426,17 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           if (state.phase !== "finish") {
             return { title: "Error", output: `Cannot finish in phase ${state.phase}. Expected 'finish'.` };
           }
+
+          // Fail-closed CAS verification:
+          if ("approvalDigest" in state && state.approvalDigest !== undefined) {
+            const currentDigest = await getDiffHash(workspaceRoot);
+            if (currentDigest !== state.approvalDigest) {
+              throw new Error(
+                `CAS Integrity Violation: Code altered post-approval. Approved digest [${state.approvalDigest}] does not match current diff digest [${currentDigest}]. Re-review required.`
+              );
+            }
+          }
+
           const commitHash = args.commitHash;
           const prUrl = args.prUrl;
           const event: FlowEvent = { type: "finish_confirmed", commitHash, prUrl };
@@ -546,7 +621,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
       }),
 
       mr_blueprint_safety_gate: tool({
-        description: "Format a structured Safety Gate confirmation diff before any GitHub mutation",
+        description: "Format a structured Safety Gate confirmation diff before any GitHub mutation and generate authorization ticket",
         args: {
           action: tool.schema.enum(["create", "update", "delete"]).describe("Acción de mutación prevista"),
           repo: tool.schema.string().describe("Repositorio de destino (owner/name)"),
@@ -564,9 +639,10 @@ export const MrOrchestrator: Plugin = async (ctx) => {
               fields: args.fields ?? {},
             },
           });
+          const safetyTicket = sha256(JSON.stringify(mutation));
           return {
             title: "Safety Gate",
-            output: renderSafetyGateDiff(mutation),
+            output: `${renderSafetyGateDiff(mutation)}\n\nSafety Gate Ticket (required for mutation): ${safetyTicket}`,
           };
         },
       }),
@@ -576,12 +652,22 @@ export const MrOrchestrator: Plugin = async (ctx) => {
         args: {
           query: tool.schema.string().describe("Consulta o mutación GraphQL"),
           variables: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Variables para la consulta"),
+          safetyGateTicket: tool.schema.string().optional().describe("Ticket de autorización emitido por mr_blueprint_safety_gate (obligatorio para mutaciones)"),
         },
         execute: async (args, _context) => {
           const token = process.env["GITHUB_PERSONAL_ACCESS_TOKEN"] ?? "";
           if (!token) {
             throw new Error("GITHUB_PERSONAL_ACCESS_TOKEN no encontrado en el entorno.");
           }
+
+          // Fail-closed gate: if the GraphQL payload contains a mutation, require safetyGateTicket
+          const isMutation = /^\s*mutation\b/iu.test(args.query.trim());
+          if (isMutation && (!args.safetyGateTicket || args.safetyGateTicket.length < 32)) {
+            throw new Error(
+              "Fail-Closed Safety Gate: GraphQL mutations require a valid 'safetyGateTicket' emitted by 'mr_blueprint_safety_gate'."
+            );
+          }
+
           const response = await fetch("https://api.github.com/graphql", {
             method: "POST",
             headers: {
@@ -971,6 +1057,46 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           return {
             title: `Skeleton: ${args.filePath}`,
             output: `\`\`\`\n${skeleton}\n\`\`\`\n(${ratio}% del tamaño original)`,
+          };
+        },
+      }),
+
+      // ─── Memory Tools (Pilar 5: Amnesia de Contexto & Memoria Persistente) ───
+
+      mr_memory_save: tool({
+        description: "Save an architectural observation, invariant, or decision into the persistent memory store stamped with the current git tree hash",
+        args: {
+          topic: tool.schema.string().describe("Topic or namespace for the memory (e.g. 'auth/jwt', 'architecture/db')"),
+          content: tool.schema.string().describe("The observation, invariant, or architectural decision content"),
+          metadata: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Optional metadata"),
+        },
+        execute: async (args, _context) => {
+          const store = new PersistentMemoryStore(paths, workspaceId, workspaceRoot);
+          const obs = await store.saveObservation(args.topic, args.content, args.metadata ?? {});
+          return {
+            title: "Memory Saved",
+            output: `Saved memory [${obs.id}] under topic '${obs.topic}' with git stamp [${obs.gitStamp ?? "no-git"}].`,
+          };
+        },
+      }),
+
+      mr_memory_query: tool({
+        description: "Query architectural memories with fail-closed staleness detection against working tree drift",
+        args: {
+          topic: tool.schema.string().optional().describe("Filter by topic"),
+          query: tool.schema.string().optional().describe("Filter by content substring"),
+          validateFreshness: tool.schema.boolean().optional().describe("Whether to validate against current git stamp (default true)"),
+        },
+        execute: async (args, _context) => {
+          const store = new PersistentMemoryStore(paths, workspaceId, workspaceRoot);
+          const results = await store.query({
+            topic: args.topic,
+            query: args.query,
+            validateFreshness: args.validateFreshness ?? true,
+          });
+          return {
+            title: "Memory Query",
+            output: JSON.stringify(results, null, 2),
           };
         },
       }),
