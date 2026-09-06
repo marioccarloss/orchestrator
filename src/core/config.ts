@@ -229,11 +229,12 @@ ${Object.entries(models.roles).filter(([r]) => r.startsWith("bp")).map(([role, m
 Rules:
 1. Use \`mr_models\` with action \`status\` to load the current assignments. Do not rely on the snapshot above after this point.
 2. Use the native \`question\` tool for every choice so the user gets an interactive terminal UI. Allow choosing by steps: all processes, /flow steps (orchestrator, explore, plan, general, sddApply, judgeA, judgeB, fix), or /blueprint steps (bpExtractor, bpArchitect, bpTransactor).
-3. For a process change, call \`mr_models\` with action \`providers\`, ask for the provider, then call it with action \`models\` and that provider. Ask the user to choose or enter a \`provider/model-id\`.
-4. Show the current assignment and mark it clearly. Never select a model without the user's explicit choice.
-5. Persist the selection with \`mr_models\` action \`set\`, role and model. Then offer to configure another process/step.
-6. When finished, show the resulting roster and remind the user to restart active OpenCode sessions.
-7. If the user asks for the direct no-LLM terminal editor, tell them to run \`mr flow-models\`.`,
+3. After a quota failure, call \`mr_models\` with action \`candidates\`, the affected role, and the failed model. Present its alternatives and its quota warning; cancelling means do not call \`set\`.
+4. For a normal process change, call \`mr_models\` with action \`providers\`, ask for the provider, then call it with action \`models\` and that provider. Ask the user to choose or enter a \`provider/model-id\`.
+5. Show the current assignment and mark it clearly. Never select a model without the user's explicit choice.
+6. Persist the selection with \`mr_models\` action \`set\`, role and model. Then offer to configure another process/step.
+7. When finished, show the resulting roster and remind the user to restart active OpenCode sessions.
+8. If the user asks for the direct no-LLM terminal editor, tell them to run \`mr flow-models\`.`,
       },
   };
 }

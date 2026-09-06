@@ -109,6 +109,14 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
     assert.ok(Object.keys(tools["mr_flow_ticket"]!.args).length >= 2, "mr_flow_ticket must define arguments");
     assert.ok(Object.keys(tools["mr_flow_plan"]!.args).length >= 2, "mr_flow_plan must define arguments");
     assert.ok(Object.keys(tools["mr_flow_judge"]!.args).length >= 2, "mr_flow_judge must define arguments");
+    const candidatesRes = await tools["mr_models"]!.execute({
+      action: "candidates",
+      role: "orchestrator",
+      failedModel: "github-copilot/kimi-k3",
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(candidatesRes.title, "Model Candidates");
+    assert.match(candidatesRes.output, /Rol: orchestrator/u);
+    assert.doesNotMatch(candidatesRes.output, /^- github-copilot\/kimi-k3$/mu);
     assert.ok(Object.keys(tools["mr_propose_save"]!.args).length >= 5, "mr_propose_save must define arguments");
     assert.ok(Object.keys(tools["mr_prompt_build"]!.args).length >= 2, "mr_prompt_build must define arguments");
   } finally {

@@ -4,7 +4,7 @@ import { loadRegistry, detectWorkspace } from "./core/workspace.js";
 import { resolvePaths } from "./core/paths.js";
 import { renderPlanCapsule, renderFlowStatus, renderVerdict } from "./core/render.js";
 import { loadModels } from "./core/config.js";
-import { discoverAvailableModels, ROLES, setModelRole } from "./core/models.js";
+import { buildModelCandidates, discoverAvailableModels, ROLES, setModelRole } from "./core/models.js";
 import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { FlowState, FlowEvent, PlanCapsule, MergedVerdict } from "./core/flow-schema.js";
@@ -58,6 +58,7 @@ import {
   BlueprintMutationSchema,
   renderSafetyGateDiff,
 } from "./core/blueprint-schema.js";
+import { classifyQuotaError, resolveModelRole } from "./core/quota.js";
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
   const workspace = detectWorkspace(registry, ctx.directory);
   const workspaceId = workspace?.id ?? "unknown";
   const workspaceRoot = workspace?.root ?? ctx.directory;
+  const sessionModels = new Map<string, { readonly role: string; readonly model: string }>();
 
   async function ensureFlowState(): Promise<FlowState> {
     const state = await loadFlowState(paths, workspaceId);
@@ -104,6 +106,26 @@ export const MrOrchestrator: Plugin = async (ctx) => {
   }
 
   return {
+    event: async ({ event }) => {
+      if (event.type !== "session.error") return;
+      const quotaFailure = classifyQuotaError(event.properties.error);
+      const sessionID = event.properties.sessionID;
+      if (quotaFailure === undefined || sessionID === undefined) return;
+      const assignment = sessionModels.get(sessionID);
+      if (assignment === undefined) return;
+      console.warn(
+        `[mr-orchestrator] Cuota agotada para ${assignment.role} (${assignment.model}; ${quotaFailure.code}). `
+        + `El flujo permanece intacto. Ejecuta \`/flow-models\` o usa \`mr_models\` con action=candidates, role=${assignment.role}, failedModel=${assignment.model}; confirma la selección antes de action=set y reanuda la unidad activa manualmente.`,
+      );
+    },
+    "chat.params": async (input, _output) => {
+      const role = resolveModelRole(input.agent);
+      if (role === undefined) return;
+      sessionModels.set(input.sessionID, {
+        role,
+        model: `${input.model.providerID}/${input.model.id}`,
+      });
+    },
     tool: {
       // ─── Flow Tools ────────────────────────────────────────────────────────
 
@@ -364,8 +386,8 @@ export const MrOrchestrator: Plugin = async (ctx) => {
       mr_models: tool({
         description: "List or update mr-orchestrator model assignments for the interactive /flow-models workflow",
         args: {
-          action: tool.schema.enum(["status", "providers", "models", "set"]).optional()
-            .describe("status=current roster, providers=available providers, models=models for provider, set=save role/model"),
+          action: tool.schema.enum(["status", "providers", "models", "candidates", "set"]).optional()
+            .describe("status=current roster, providers=available providers, models=models for provider, candidates=alternatives for a role, set=save role/model"),
           category: tool.schema.enum(["flow", "blueprint"]).optional()
             .describe("Filtrar por categoría de proceso: flow (8 steps) o blueprint (3 steps)"),
           role: tool.schema.enum([
@@ -383,6 +405,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           ]).optional().describe("Process/step role to update"),
           provider: tool.schema.string().optional().describe("Provider ID used by action=models"),
           model: tool.schema.string().optional().describe("Full provider/model-id used by action=set"),
+          failedModel: tool.schema.string().optional().describe("Optional provider/model-id to exclude after a quota failure"),
         },
         execute: async (args, _context) => {
           const action = args.action ?? "status";
@@ -401,6 +424,25 @@ export const MrOrchestrator: Plugin = async (ctx) => {
             const models = available.filter((model) => model.startsWith(prefix));
             if (models.length === 0) throw new Error(`No available models found for provider '${args.provider}'`);
             return { title: `Models: ${args.provider}`, output: models.join("\n") };
+          }
+          if (action === "candidates") {
+            if (args.role === undefined) throw new Error("action=candidates requires role");
+            const models = await loadModels(paths);
+            const catalog = discoverAvailableModels();
+            const result = buildModelCandidates(models.roles[args.role], catalog.models, args.failedModel);
+            const lines = [
+              `Rol: ${args.role}`,
+              `Modelo activo: ${result.activeModel}`,
+              args.failedModel === undefined ? "" : `Modelo excluido: ${args.failedModel.trim()}`,
+              "",
+              "Candidatos:",
+              ...result.candidates.map((model) => `- ${model}`),
+              "",
+              `Aviso: ${result.warning}`,
+              "Para cancelar, no llames a action=set. Para guardar una selección, solicita confirmación explícita y llama a action=set.",
+            ].filter((line) => line.length > 0);
+            if (catalog.warning !== undefined) lines.push(`Aviso de catálogo: ${catalog.warning}`);
+            return { title: "Model Candidates", output: lines.join("\n") };
           }
           if (action === "set") {
             if (args.role === undefined || args.model === undefined) {
