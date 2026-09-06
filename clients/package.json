@@ -1,0 +1,30 @@
+{
+  "name": "mr-orchestrator-clients",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.2.21",
+  "bin": {
+    "mr-clients": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "check": "bun run typecheck && bun run lint && bun run test"
+  },
+  "dependencies": {
+    "@clack/prompts": "1.7.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "jsonc-parser": "^3.3.1",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.35.0",
+    "@types/bun": "^1.4.0",
+    "@types/node": "24.3.0",
+    "eslint": "9.35.0",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.41.0"
+  }
+}

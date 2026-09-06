@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-07
+
+### Added
+
+- **Multi-Client MCP Compatibility Bridge (`clients/`):**
+  - Standalone package providing an MCP stdio server bridging the immutable compiled mr-orchestrator plugin facade to external clients.
+  - Interactive multi-client installer CLI (`mr-clients install`, `doctor`, `uninstall`, `serve`) supporting OpenCode CLI/Desktop, Codex CLI/Desktop, Cursor CLI/Desktop, Claude Code, Antigravity Desktop, and AGY CLI.
+  - Native workflow adapters for `/flow`, `/blueprint`, and `/flow-models` across Cursor skills, Claude Code slash commands, AGY TOML commands, Codex `$skill` definitions, and Antigravity global skills.
+  - Dynamic OpenCode MCP catalog importer preserving environment interpolation, headers, and local commands.
+  - Strict workspace binding requirement (`mr_bind_workspace`) before executing forwarded plugin tools.
+- **Quota Failure Classification & Model Recovery:**
+  - Non-recoverable API quota error detection (`429 insufficient_quota` / `quota_exceeded`) in session error handler.
+  - Quota candidate suggestion tool (`mr_models` with `action="candidates"` and `failedModel`) excluding non-functional models while preserving flow state.
+
+## [0.3.0] - 2026-09-04
+
+### Added
+
+- **Blueprint Pipeline:**
+  - Native product idea and GitHub ticket pipeline with typed SDD and RPI specifications.
+  - Blueprint roles (`bpExtractor`, `bpArchitect`, `bpTransactor`) with safety gate verification diffs and model configuration.
+
 ## [0.2.0] - 2026-09-02
 
 ### Fixed
