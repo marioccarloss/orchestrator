@@ -182,6 +182,30 @@ export interface AvailableModels {
   readonly warning?: string;
 }
 
+export interface ModelCandidates {
+  readonly activeModel: string;
+  readonly candidates: readonly string[];
+  readonly warning: string;
+}
+
+export function buildModelCandidates(
+  activeModel: string,
+  availableModels: readonly string[],
+  failedModel?: string,
+): ModelCandidates {
+  const failed = failedModel?.trim();
+  const candidates = Array.from(new Set(availableModels))
+    .filter((model) => !model.startsWith("openrouter/"))
+    .filter((model) => model !== failed)
+    .sort();
+
+  return {
+    activeModel,
+    candidates,
+    warning: "El catálogo no confirma cuota ni disponibilidad real. Elige explícitamente antes de guardar el cambio.",
+  };
+}
+
 function stripTerminalSequences(output: string): string {
   let clean = "";
   for (let index = 0; index < output.length; index += 1) {

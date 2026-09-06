@@ -1,6 +1,6 @@
 {
   "name": "mr-orchestrator",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Deterministic, typed OpenCode orchestrator with isolated global installation.",
   "private": true,
   "license": "MIT",

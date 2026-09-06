@@ -7,6 +7,7 @@ import { resolvePaths } from "../src/core/paths.js";
 import { formatModelMatrix } from "../src/tui/models.js";
 import {
   fetchAvailableModels,
+  buildModelCandidates,
   parseAvailableModels,
   setModelPreset,
   setModelRole,
@@ -18,6 +19,7 @@ import {
 import { loadModels, buildOpenCodeConfig, generatedConfigPath } from "../src/core/config.js";
 import { addWorkspace } from "../src/core/workspace.js";
 import type { WorkspaceProfile } from "../src/core/schema.js";
+import { classifyQuotaError, resolveModelRole } from "../src/core/quota.js";
 
 void test("all 11 roles are defined with labels, descriptions, and recommended models", () => {
   const expectedRoles: ModelRole[] = [
@@ -149,6 +151,36 @@ void test("parseAvailableModels strips terminal colors, invalid lines, and dupli
   ].join("\n")), ["openai/gpt-5.6-sol", "opencode/kimi-k3"]);
 });
 
+void test("buildModelCandidates excludes the failed model and disabled providers", () => {
+  const result = buildModelCandidates(
+    "github-copilot/gpt-5.6-sol",
+    [
+      "github-copilot/gpt-5.6-sol",
+      "github-copilot/kimi-k3",
+      "github-copilot/kimi-k3",
+      "openrouter/forbidden-model",
+    ],
+    "github-copilot/gpt-5.6-sol",
+  );
+
+  assert.equal(result.activeModel, "github-copilot/gpt-5.6-sol");
+  assert.deepEqual(result.candidates, ["github-copilot/kimi-k3"]);
+  assert.match(result.warning, /no confirma cuota/u);
+});
+
+void test("classifies only non-recoverable quota failures and maps OpenCode agents to roles", () => {
+  assert.deepEqual(classifyQuotaError({
+    name: "APIError",
+    data: { statusCode: 429, responseBody: '{"code":"insufficient_quota"}' },
+  }), { code: "insufficient_quota", statusCode: 429 });
+  assert.deepEqual(classifyQuotaError({
+    name: "APIError",
+    data: { statusCode: 429, responseBody: '{"code":"rate_limit_exceeded"}' },
+  }), undefined);
+  assert.equal(resolveModelRole("mr-sdd-apply"), "sddApply");
+  assert.equal(resolveModelRole("unknown-agent"), undefined);
+});
+
 void test("buildOpenCodeConfig includes the interactive flow-models workflow and disables openrouter", () => {
   const sampleProfile: WorkspaceProfile = {
     schemaVersion: 1,
@@ -170,6 +202,7 @@ void test("buildOpenCodeConfig includes the interactive flow-models workflow and
   assert.deepEqual(config.disabled_providers, ["openrouter"]);
   assert.match(config.command["flow-models"]?.template ?? "", /native `question` tool/u);
   assert.match(config.command["flow-models"]?.template ?? "", /mr_models/u);
+  assert.match(config.command["flow-models"]?.template ?? "", /action `candidates`/u);
   assert.equal(config.agent["orchestrator"]?.model, "github-copilot/kimi-k3");
   assert.equal(config.agent["mr-judge-a"]?.model, "github-copilot/grok-4.6");
   assert.equal(config.agent["mr-judge-b"]?.model, "github-copilot/claude-opus-5");
