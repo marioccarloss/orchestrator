@@ -26,34 +26,28 @@ export function mergeVerdicts(verdictA: JudgeVerdict, verdictB: JudgeVerdict): M
   };
 }
 
-// ─── Diff Utilities ──────────────────────────────────────────────────────────
+import { sha256 } from "./files.js";
+
+// ─── Diff Utilities (CAS with SHA-256) ─────────────────────────────────────────
 
 export async function getDiffHash(root: string): Promise<string> {
-  const result = runCommand("git", ["-C", root, "diff", "--cached", "--stat"]);
+  // Ensure untracked files are staged as intent-to-add so they appear in diff
+  runCommand("git", ["-C", root, "add", "-N", "."]);
+  const result = runCommand("git", ["-C", root, "diff", "HEAD"]);
   if (!result.ok) {
-    // No staged changes, get working tree diff
-    const unstaged = runCommand("git", ["-C", root, "diff", "--stat"]);
-    if (!unstaged.ok) return "empty";
-    return hashString(unstaged.stdout);
+    // If not in a git repo with HEAD, try unstaged diff or empty
+    const unstaged = runCommand("git", ["-C", root, "diff"]);
+    if (!unstaged.ok || unstaged.stdout.length === 0) return sha256("");
+    return sha256(unstaged.stdout);
   }
-  return hashString(result.stdout);
+  return sha256(result.stdout);
 }
 
 export async function getFullDiff(root: string): Promise<string> {
+  runCommand("git", ["-C", root, "add", "-N", "."]);
   const result = runCommand("git", ["-C", root, "diff", "HEAD"]);
   if (!result.ok) return "";
   return result.stdout;
-}
-
-function hashString(content: string): string {
-  // Simple hash for diff comparison
-  let hash = 0;
-  for (let i = 0; i < content.length; i++) {
-    const char = content.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-  return Math.abs(hash).toString(16);
 }
 
 // ─── Fix Loop (Bounded Correction) ───────────────────────────────────────────

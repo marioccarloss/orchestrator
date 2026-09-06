@@ -141,27 +141,25 @@ test("transition from plan back to explore on rejection", () => {
   assert.equal(next.phase, "explore");
 });
 
-test("transition from implement to finish for lite difficulty", () => {
-  const implementState: FlowState = {
+test("transition from implement always requires judgment regardless of difficulty (fail-closed)", () => {
+  const implementStateLite: FlowState = {
     ...basePlan,
     phase: "implement",
+    difficulty: 3,
     completedFiles: [],
   };
   const event: FlowEvent = { type: "implement_done", completedFiles: ["src/foo.ts"] };
-  const next = transition(implementState, event);
-  assert.equal(next.phase, "finish");
-});
+  const nextLite = transition(implementStateLite, event);
+  assert.equal(nextLite.phase, "judgment");
 
-test("transition from implement to judgment for full difficulty", () => {
-  const implementState: FlowState = {
+  const implementStateFull: FlowState = {
     ...basePlan,
     phase: "implement",
     difficulty: 5,
     completedFiles: [],
   };
-  const event: FlowEvent = { type: "implement_done", completedFiles: ["src/foo.ts"] };
-  const next = transition(implementState, event);
-  assert.equal(next.phase, "judgment");
+  const nextFull = transition(implementStateFull, event);
+  assert.equal(nextFull.phase, "judgment");
 });
 
 test("abort from any state goes to finish", () => {

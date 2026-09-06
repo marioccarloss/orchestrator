@@ -123,6 +123,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     branch: z.string().min(1),
     baseBranch: z.string().min(1),
     plan: PlanCapsuleSchema,
+    fixAttempt: z.number().int().min(0).optional(),
     completedFiles: z.array(z.string()).default([]),
   }),
   z.object({
@@ -135,6 +136,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     branch: z.string().min(1),
     baseBranch: z.string().min(1),
     plan: PlanCapsuleSchema,
+    fixAttempt: z.number().int().min(0).optional(),
     diffHash: z.string().min(1),
   }),
   z.object({
@@ -147,6 +149,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     branch: z.string().min(1),
     baseBranch: z.string().min(1),
     plan: PlanCapsuleSchema,
+    fixAttempt: z.number().int().min(1).default(1),
     verdict: z.object({
       critical: z.array(z.string()),
       warnings: z.array(z.string()),
@@ -163,6 +166,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     branch: z.string().min(1),
     baseBranch: z.string().min(1),
     plan: PlanCapsuleSchema,
+    approvalDigest: z.string().min(1).optional(),
     commitHash: z.string().optional(),
     prUrl: z.string().url().optional(),
   }),
@@ -179,7 +183,7 @@ export const FlowEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("plan_rejected") }),
   z.object({ type: z.literal("implement_done"), completedFiles: z.array(z.string()) }),
   z.object({ type: z.literal("judgment_needed"), diffHash: z.string().min(1) }),
-  z.object({ type: z.literal("judgment_passed") }),
+  z.object({ type: z.literal("judgment_passed"), approvalDigest: z.string().min(1).optional() }),
   z.object({ type: z.literal("judgment_failed"), verdict: z.object({ critical: z.array(z.string()), warnings: z.array(z.string()), suggestions: z.array(z.string()) }) }),
   z.object({ type: z.literal("fix_done") }),
   z.object({ type: z.literal("finish_confirmed"), commitHash: z.string().optional(), prUrl: z.string().url().optional() }),
@@ -327,22 +331,8 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
       break;
     case "implement":
       if (event.type === "implement_done") {
-        if (state.difficulty >= 5) {
-          return {
-            phase: "judgment",
-            schemaVersion: 1,
-            workspaceId: state.workspaceId,
-            startedAt: state.startedAt,
-            difficulty: state.difficulty,
-            ticket: state.ticket,
-            branch: state.branch,
-            baseBranch: state.baseBranch,
-            plan: state.plan,
-            diffHash: "pending",
-          };
-        }
         return {
-          phase: "finish",
+          phase: "judgment",
           schemaVersion: 1,
           workspaceId: state.workspaceId,
           startedAt: state.startedAt,
@@ -351,6 +341,8 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           branch: state.branch,
           baseBranch: state.baseBranch,
           plan: state.plan,
+          fixAttempt: state.fixAttempt ?? 0,
+          diffHash: "pending",
         };
       }
       if (event.type === "judgment_needed") {
@@ -364,6 +356,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           branch: state.branch,
           baseBranch: state.baseBranch,
           plan: state.plan,
+          fixAttempt: state.fixAttempt ?? 0,
           diffHash: event.diffHash,
         };
       }
@@ -380,6 +373,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           branch: state.branch,
           baseBranch: state.baseBranch,
           plan: state.plan,
+          approvalDigest: event.approvalDigest,
         };
       }
       if (event.type === "judgment_failed") {
@@ -393,6 +387,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           branch: state.branch,
           baseBranch: state.baseBranch,
           plan: state.plan,
+          fixAttempt: (state.fixAttempt ?? 0) + 1,
           verdict: event.verdict,
         };
       }
@@ -409,6 +404,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           branch: state.branch,
           baseBranch: state.baseBranch,
           plan: state.plan,
+          fixAttempt: state.fixAttempt,
           completedFiles: [],
         };
       }

@@ -109,10 +109,65 @@ test("isFlowComplete returns true only for finish", () => {
   assert.equal(isFlowComplete({ phase: "init", schemaVersion: 1, workspaceId: "x", startedAt: "" } as FlowState), false);
 });
 
-test("requiresJudgment returns true for difficulty >= 5", () => {
-  assert.equal(requiresJudgment(1), false);
-  assert.equal(requiresJudgment(3), false);
+test("requiresJudgment returns true for all difficulties (fail-closed)", () => {
+  assert.equal(requiresJudgment(1), true);
+  assert.equal(requiresJudgment(3), true);
   assert.equal(requiresJudgment(5), true);
   assert.equal(requiresJudgment(8), true);
   assert.equal(requiresJudgment(13), true);
+});
+
+test("Event Sourcing: appendFlowEvent, loadFlowEvents, and replayFromOrigin reconstruct state deterministically", async () => {
+  const { loadFlowEvents, replayFromOrigin } = await import("../src/core/flow-state.js");
+  const dir = await mkdtemp(join(tmpdir(), "mr-flow-events-"));
+  const paths = makePaths(dir);
+  const workspaceId = "ws-event-sourcing";
+
+  // Sequence of transitions
+  await applyEvent(paths, workspaceId, { type: "start", workspaceId });
+  await applyEvent(paths, workspaceId, {
+    type: "wizard_complete",
+    difficulty: 5,
+    ticketId: "GH-123",
+    hasFigma: false,
+  });
+  await applyEvent(paths, workspaceId, {
+    type: "context_ready",
+    ticket: {
+      schemaVersion: 1,
+      ref: { schemaVersion: 1, platform: "github", id: "GH-123" },
+      title: "Add cryptographic CAS",
+      description: "Require sha256 binding",
+      type: "feature",
+      attachments: [],
+      fetchedAt: "2026-09-07T00:00:00.000Z",
+    },
+    branch: "feature/gh-123",
+    baseBranch: "main",
+  });
+
+  const snapshotState = await loadFlowState(paths, workspaceId);
+  assert.ok(snapshotState !== undefined);
+
+  // Read raw events log
+  const records = await loadFlowEvents(paths, workspaceId);
+  assert.equal(records.length, 3);
+  assert.equal(records[0]?.event.type, "start");
+  assert.equal(records[1]?.event.type, "wizard_complete");
+  assert.equal(records[2]?.event.type, "context_ready");
+
+  // Replay from origin (pure deterministic function)
+  const replayedState = replayFromOrigin(records, workspaceId);
+  assert.deepEqual(replayedState, snapshotState);
+
+  // Erase flow-state.json and reconstruct purely from events.jsonl
+  const { unlink } = await import("node:fs/promises");
+  await unlink(flowStatePath(paths, workspaceId));
+  assert.equal(await loadFlowState(paths, workspaceId), undefined);
+
+  const restoredRecords = await loadFlowEvents(paths, workspaceId);
+  const reconstructedState = replayFromOrigin(restoredRecords, workspaceId);
+  assert.deepEqual(reconstructedState, snapshotState);
+
+  await rm(dir, { recursive: true });
 });

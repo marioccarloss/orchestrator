@@ -141,6 +141,40 @@ function langForFile(filePath: string): LangKind | undefined {
   return undefined;
 }
 
+export async function validateAstSyntax(source: string, filePath: string): Promise<{ ok: true } | { ok: false; error: string; line: number; column: number }> {
+  const kind = langForFile(filePath);
+  if (kind === undefined) {
+    return { ok: true };
+  }
+  const result = await withParsedRoot(source, kind, (rootNode) => {
+    if (rootNode.hasError) {
+      // Find the first error node
+      const findError = (n: SyntaxNode): SyntaxNode | undefined => {
+        if (n.type === "ERROR" || n.isMissing) return n;
+        for (let i = 0; i < n.childCount; i++) {
+          const child = n.child(i);
+          if (child?.hasError) {
+            const res = findError(child);
+            if (res) return res;
+          }
+        }
+        return undefined;
+      };
+      const errNode = findError(rootNode);
+      const row = (errNode?.startPosition.row ?? 0) + 1;
+      const col = errNode?.startPosition.column ?? 0;
+      return {
+        ok: false as const,
+        error: `Syntax error at line ${row}, column ${col}${errNode?.text ? `: "${errNode.text.slice(0, 40)}"` : ""}`,
+        line: row,
+        column: col,
+      };
+    }
+    return { ok: true as const };
+  });
+  return result ?? { ok: true };
+}
+
 async function withParsedRoot<T>(
   source: string,
   kind: LangKind,
