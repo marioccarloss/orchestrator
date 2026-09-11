@@ -9,7 +9,7 @@ import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { FlowState, FlowEvent, PlanCapsule, MergedVerdict } from "./core/flow-schema.js";
 import { getDiffHash } from "./core/judgment.js";
-import { sha256 } from "./core/files.js";
+import { canonicalJson, sha256 } from "./core/files.js";
 import { runCommand } from "./core/process.js";
 import {
   AtlasIndexer,
@@ -28,9 +28,9 @@ import {
   type AtlasGraph,
 } from "./core/atlas.js";
 import {
-  ResearchCapsuleSchema,
-  SpecCapsuleSchema,
-  TaskGraphSchema,
+  ResearchCapsulePayloadSchema,
+  SpecCapsulePayloadSchema,
+  TaskGraphPayloadSchema,
   validateSddArtifacts,
   nextPendingTask,
   markTaskStatus,
@@ -39,6 +39,7 @@ import {
   loadSpec,
   loadTasks,
   formatZodIssues,
+  canonicalSddPayload,
   type SddKind,
 } from "./core/sdd-schema.js";
 import {
@@ -910,7 +911,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
         description: "Submit a typed SDD/RPI capsule as compact JSON (kind: research|spec|tasks). Validates with zod + structural guardrails; on success renders user-facing markdown BY SCRIPT and returns a compact ack. On validation failure returns the exact issues to fix — retry with corrected JSON.",
         args: {
           kind: tool.schema.enum(["research", "spec", "tasks"]).describe("Tipo de cápsula: research (evidencias explore), spec (requisitos+criterios), tasks (grafo de tareas)"),
-          payload: tool.schema.string().describe("JSON compacto conforme al schema de la cápsula (sin prosa)"),
+          payload: tool.schema.string().describe("JSON conforme al schema operativo de la cápsula, sin prosa ni timestamps de auditoría como createdAt"),
         },
         execute: async (args, _context) => {
           let raw: unknown;
@@ -923,7 +924,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           const kind = args.kind as SddKind;
 
           if (kind === "research") {
-            const parsed = ResearchCapsuleSchema.safeParse(raw);
+            const parsed = ResearchCapsulePayloadSchema.safeParse(raw);
             if (!parsed.success) {
               return { title: "SDD Research Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
             }
@@ -936,7 +937,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           }
 
           if (kind === "spec") {
-            const parsed = SpecCapsuleSchema.safeParse(raw);
+            const parsed = SpecCapsulePayloadSchema.safeParse(raw);
             if (!parsed.success) {
               return { title: "SDD Spec Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
             }
@@ -948,7 +949,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
             };
           }
 
-          const parsed = TaskGraphSchema.safeParse(raw);
+          const parsed = TaskGraphPayloadSchema.safeParse(raw);
           if (!parsed.success) {
             return { title: "SDD Tasks Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
           }
@@ -982,17 +983,17 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           if (args.kind === "research") {
             const research = await loadResearch(paths, workspaceId);
             if (research === undefined) return { title: "SDD Research", output: "No research capsule found." };
-            return { title: "SDD Research", output: JSON.stringify(research) };
+            return { title: "SDD Research", output: canonicalSddPayload(research) };
           }
           if (args.kind === "spec") {
             const spec = await loadSpec(paths, workspaceId);
             if (spec === undefined) return { title: "SDD Spec", output: "No spec capsule found." };
-            return { title: "SDD Spec", output: JSON.stringify(spec) };
+            return { title: "SDD Spec", output: canonicalSddPayload(spec) };
           }
           if (args.kind === "tasks") {
             const tasks = await loadTasks(paths, workspaceId);
             if (tasks === undefined) return { title: "SDD Tasks", output: "No task graph found." };
-            return { title: "SDD Tasks", output: JSON.stringify(tasks) };
+            return { title: "SDD Tasks", output: canonicalSddPayload(tasks) };
           }
           const tasks = await loadTasks(paths, workspaceId);
           if (tasks === undefined) return { title: "SDD Next Task", output: "No task graph found. Submit kind=tasks first." };
@@ -1005,7 +1006,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           const acceptance = spec?.requirements.filter((r) => next.requirements.includes(r.id)) ?? [];
           return {
             title: `SDD Next Task: ${next.id}`,
-            output: JSON.stringify({ task: next, acceptance }),
+            output: canonicalJson({ task: next, acceptance }).trimEnd(),
           };
         },
       }),

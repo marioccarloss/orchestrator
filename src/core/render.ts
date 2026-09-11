@@ -1,5 +1,10 @@
 import type { PlanCapsule, FlowState, MergedVerdict } from "./flow-schema.js";
-import type { ResearchCapsule, SpecCapsule, TaskGraph, SddValidationIssue } from "./sdd-schema.js";
+import type {
+  ResearchCapsulePayload,
+  SpecCapsulePayload,
+  TaskGraphPayload,
+  SddValidationIssue,
+} from "./sdd-schema.js";
 
 function renderList(items: readonly string[], empty: string): string {
   if (items.length === 0) return `- ${empty}`;
@@ -130,7 +135,7 @@ ${prompt}
 
 // ─── SDD + RPI Renderers (markdown por script, nunca por IA) ─────────────────
 
-export function renderResearchCapsule(research: ResearchCapsule): string {
+export function renderResearchCapsule(research: ResearchCapsulePayload): string {
   const evidenceRows = research.evidence.map((e) => {
     const location = e.line !== undefined ? `\`${e.file}:${e.line}\`` : `\`${e.file}\``;
     return `| ${e.claim} | ${location} | ${e.source} |`;
@@ -155,11 +160,11 @@ ${renderList(research.constraints, "Ninguna")}
 ${renderList(research.unknowns, "Ninguna")}
 
 ---
-*Generado por script desde ResearchCapsule el ${research.createdAt}*
+*Generado por script desde ResearchCapsule.*
 `;
 }
 
-export function renderSpecCapsule(spec: SpecCapsule): string {
+export function renderSpecCapsule(spec: SpecCapsulePayload): string {
   const requirementBlocks = spec.requirements.map((requirement) => {
     const criteria = requirement.acceptance.map((criterion) => {
       const given = criterion.given !== undefined ? `**Dado** ${criterion.given}, ` : "";
@@ -185,7 +190,7 @@ ${requirementBlocks.join("\n\n")}
 ${renderList(spec.risks, "Ninguno")}
 
 ---
-*Generado por script desde SpecCapsule el ${spec.createdAt}*
+*Generado por script desde SpecCapsule.*
 `;
 }
 
@@ -196,7 +201,7 @@ const TASK_STATUS_ICONS: Record<string, string> = {
   blocked: "🚫",
 };
 
-export function renderTaskGraph(tasks: TaskGraph): string {
+export function renderTaskGraph(tasks: TaskGraphPayload): string {
   const blocks = tasks.tasks.map((task) => {
     const icon = TASK_STATUS_ICONS[task.status] ?? "⬜";
     const deps = task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "—";
@@ -220,7 +225,7 @@ ${task.doneWhen.map((d) => `- ${d}`).join("\n")}`;
 ${blocks.join("\n\n")}
 
 ---
-*Generado por script desde TaskGraph el ${tasks.createdAt}*
+*Generado por script desde TaskGraph.*
 `;
 }
 

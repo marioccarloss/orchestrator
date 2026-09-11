@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { canonicalJson } from "./files.js";
 import type { MrPaths } from "./paths.js";
 
 // ─── SDD + RPI Capsules ──────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ export const EvidenceSchema = z.strictObject({
 
 export type Evidence = z.infer<typeof EvidenceSchema>;
 
-export const ResearchCapsuleSchema = z.strictObject({
+export const ResearchCapsulePayloadSchema = z.strictObject({
   schemaVersion: z.literal(1),
   ticketId: z.string().min(1),
   objective: z.string().min(1).max(300),
@@ -35,6 +36,11 @@ export const ResearchCapsuleSchema = z.strictObject({
   relevantNodes: z.array(z.string()).default([]),
   constraints: z.array(z.string().max(300)).default([]),
   unknowns: z.array(z.string().max(300)).default([]),
+});
+
+export type ResearchCapsulePayload = z.infer<typeof ResearchCapsulePayloadSchema>;
+
+export const ResearchCapsuleSchema = ResearchCapsulePayloadSchema.extend({
   createdAt: z.iso.datetime(),
 });
 
@@ -56,7 +62,7 @@ export const RequirementSchema = z.strictObject({
 
 export type Requirement = z.infer<typeof RequirementSchema>;
 
-export const SpecCapsuleSchema = z.strictObject({
+export const SpecCapsulePayloadSchema = z.strictObject({
   schemaVersion: z.literal(1),
   ticketId: z.string().min(1),
   goal: z.string().min(1).max(300),
@@ -64,6 +70,11 @@ export const SpecCapsuleSchema = z.strictObject({
   scopeOut: z.array(z.string().max(300)).default([]),
   requirements: z.array(RequirementSchema).min(1),
   risks: z.array(z.string().max(300)).default([]),
+});
+
+export type SpecCapsulePayload = z.infer<typeof SpecCapsulePayloadSchema>;
+
+export const SpecCapsuleSchema = SpecCapsulePayloadSchema.extend({
   createdAt: z.iso.datetime(),
 });
 
@@ -93,10 +104,15 @@ export const SddTaskSchema = z.strictObject({
 
 export type SddTask = z.infer<typeof SddTaskSchema>;
 
-export const TaskGraphSchema = z.strictObject({
+export const TaskGraphPayloadSchema = z.strictObject({
   schemaVersion: z.literal(1),
   ticketId: z.string().min(1),
   tasks: z.array(SddTaskSchema).min(1),
+});
+
+export type TaskGraphPayload = z.infer<typeof TaskGraphPayloadSchema>;
+
+export const TaskGraphSchema = TaskGraphPayloadSchema.extend({
   createdAt: z.iso.datetime(),
 });
 
@@ -117,9 +133,9 @@ export interface SddValidationIssue {
  *  - research linkage (soft): modified files should appear in research evidence
  */
 export function validateSddArtifacts(
-  spec: SpecCapsule,
-  tasks: TaskGraph,
-  research?: ResearchCapsule,
+  spec: SpecCapsulePayload,
+  tasks: TaskGraphPayload,
+  research?: ResearchCapsulePayload,
 ): readonly SddValidationIssue[] {
   const issues: SddValidationIssue[] = [];
   const requirementIds = new Set(spec.requirements.map((r) => r.id));
@@ -217,6 +233,8 @@ export function markTaskStatus(tasks: TaskGraph, taskId: string, status: SddTask
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
 export type SddKind = "research" | "spec" | "tasks";
+export type SddArtifact = ResearchCapsule | SpecCapsule | TaskGraph;
+export type SddArtifactPayload = ResearchCapsulePayload | SpecCapsulePayload | TaskGraphPayload;
 
 const SDD_FILES: Record<SddKind, string> = {
   research: "research.json",
@@ -232,13 +250,36 @@ export async function saveSddArtifact(
   paths: MrPaths,
   workspaceId: string,
   kind: SddKind,
-  artifact: ResearchCapsule | SpecCapsule | TaskGraph,
+  artifact: SddArtifact | SddArtifactPayload,
 ): Promise<string> {
   const dir = sddDir(paths, workspaceId);
   await mkdir(dir, { recursive: true });
   const filePath = join(dir, SDD_FILES[kind]);
-  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
+  const createdAt = "createdAt" in artifact && typeof artifact.createdAt === "string"
+    ? artifact.createdAt
+    : new Date().toISOString();
+  const persisted = (() => {
+    switch (kind) {
+      case "research": return ResearchCapsuleSchema.parse({ ...artifact, createdAt });
+      case "spec": return SpecCapsuleSchema.parse({ ...artifact, createdAt });
+      case "tasks": return TaskGraphSchema.parse({ ...artifact, createdAt });
+    }
+  })();
+  await writeFile(filePath, canonicalJson(persisted));
   return filePath;
+}
+
+/** Remove disk-only audit metadata before a capsule enters model context. */
+export function toOperationalSddPayload(artifact: SddArtifact): SddArtifactPayload {
+  const { createdAt: _createdAt, ...payload } = artifact;
+  if ("objective" in payload) return ResearchCapsulePayloadSchema.parse(payload);
+  if ("goal" in payload) return SpecCapsulePayloadSchema.parse(payload);
+  return TaskGraphPayloadSchema.parse(payload);
+}
+
+/** Stable model-facing serialization: schema-normalized keys, no volatile audit timestamp. */
+export function canonicalSddPayload(artifact: SddArtifact): string {
+  return canonicalJson(toOperationalSddPayload(artifact)).trimEnd();
 }
 
 async function loadJson<T>(filePath: string): Promise<T | undefined> {

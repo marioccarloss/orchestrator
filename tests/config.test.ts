@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildOpenCodeConfig } from "../src/core/config.js";
+import { agentDefinitions, buildOpenCodeConfig, commandDefinitions } from "../src/core/config.js";
 import type { ModelMap, WorkspaceProfile } from "../src/core/schema.js";
 
 const model = "github-copilot/gpt-5.6-sol";
@@ -102,6 +102,50 @@ void test("generated opencode config registers all 7 commands with correct agent
     assert.equal(cmdConfig.agent, expectedAgent, `Command /${cmd} must be mapped to agent '${expectedAgent}'`);
     assert.ok(cmdConfig.description && cmdConfig.description.length > 0, `Command /${cmd} must have a description`);
     assert.ok(cmdConfig.template && cmdConfig.template.length > 0, `Command /${cmd} must have a template`);
+  }
+});
+
+void test("all command templates keep one variable payload at the final cache boundary", () => {
+  const alternateModels: ModelMap = {
+    ...models,
+    roles: Object.fromEntries(
+      Object.keys(models.roles).map((role) => [role, `alternate/${role}`]),
+    ) as ModelMap["roles"],
+  };
+  const commands = commandDefinitions(models);
+  const alternateCommands = commandDefinitions(alternateModels);
+  const suffix = "---\n[CONTEXT_INPUT_PAYLOAD]\n$ARGUMENTS";
+
+  for (const [name, command] of Object.entries(commands)) {
+    assert.equal(command.template.match(/\$ARGUMENTS/gu)?.length, 1, `/${name} must contain one payload variable`);
+    assert.ok(command.template.endsWith(suffix), `/${name} must place the variable payload at the end`);
+    assert.equal(command.template, alternateCommands[name]?.template, `/${name} must not embed model assignments`);
+  }
+});
+
+void test("flow agent prompts are defined and invariant across model assignments", () => {
+  const alternateModels: ModelMap = {
+    ...models,
+    roles: Object.fromEntries(
+      Object.keys(models.roles).map((role) => [role, `alternate/${role}`]),
+    ) as ModelMap["roles"],
+  };
+  const agents = agentDefinitions(models);
+  const alternateAgents = agentDefinitions(alternateModels);
+  const names = [
+    "orchestrator",
+    "mr-explore",
+    "mr-plan",
+    "mr-general",
+    "mr-sdd-apply",
+    "mr-judge-a",
+    "mr-judge-b",
+    "mr-fix",
+  ];
+
+  for (const name of names) {
+    assert.ok(agents[name]?.prompt, `${name} must define a frozen prompt`);
+    assert.equal(agents[name]?.prompt, alternateAgents[name]?.prompt, `${name} prompt must not embed model state`);
   }
 });
 
