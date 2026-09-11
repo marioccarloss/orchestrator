@@ -53,6 +53,23 @@ test("uses each host's native argument placeholder", () => {
   expect(cursorFlow?.invocation).toBe("/flow");
   expect(claudeFlow?.content).toContain("$ARGUMENTS");
   expect(agyFlow?.content).toContain("{{args}}");
+  expect(claudeFlow?.content.trimEnd()).toEndWith("---\n[CONTEXT_INPUT_PAYLOAD]\n$ARGUMENTS");
+  expect(agyFlow?.content).toContain("[CONTEXT_INPUT_PAYLOAD]\\n{{args}}");
+});
+
+test("all native workflow adapters keep context input after static instructions", () => {
+  const artifacts = adapterArtifacts([
+    "codex-cli",
+    "cursor-cli",
+    "claude-code",
+    "antigravity-desktop",
+    "agy-cli",
+  ], "/home/tester");
+
+  for (const artifact of artifacts) {
+    expect(artifact.content).toContain("[CONTEXT_INPUT_PAYLOAD]");
+    expect(artifact.content).not.toContain("Input:");
+  }
 });
 
 test("creates an explicit model recovery workflow for every host", () => {

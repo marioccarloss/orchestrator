@@ -20,31 +20,36 @@ function workflowBody(workflow: Workflow, input: string): string {
   const binding = `First call \`mr_bind_workspace\` with exactly one registered workspaceId or workspacePath. Use the current project root only when it is registered; if binding fails, ask the user which registered workspace to use.`;
   if (workflow === "flow") {
     return `You are executing the mr-orchestrator /flow workflow.
-Input: ${input}
 
 ${binding}
 
 1. Call \`mr_flow_status\` and resume the active phase rather than starting over.
-2. If no flow exists, obtain ticketId, Fibonacci difficulty (1, 3, 5, 8, 13, or 21), and whether a Figma design exists, then call \`mr_flow_start\`.
+2. If no flow exists, obtain ticketId, Fibonacci difficulty (1, 3, 5, 8, 13, or 21), and whether a Figma design exists, then call \`mr_flow_start\`. Dificultad >= 5 enforces mandatory Judgment Day.
 3. Advance only through the phase reported by the state machine:
    - context: inspect the ticket and call \`mr_flow_ticket\`.
-   - explore: gather file:line evidence and submit a valid research capsule with \`mr_sdd_submit\`.
-   - plan: submit spec and task capsules with \`mr_sdd_submit\`, then call \`mr_flow_plan\` with the consolidated files.
-   - implement: repeatedly call \`mr_sdd_get\` for the next task, implement and run its verification, mark it done with \`mr_sdd_task_status\`, then call \`mr_flow_implement\` when no actionable task remains.
-   - judgment: for difficulty 5 or greater, perform two independent adversarial reviews and submit both through \`mr_flow_judge\`.
-   - fix: address validated findings and call \`mr_flow_fix\`.
-   - finish: run final verification and call \`mr_flow_finish\` only after the user confirms the closing action.
-4. Preserve role isolation even when this host has no native mr-orchestrator subagents. Run each phase as an independent role pass with only its required evidence:
-   - explore role: read-only research and file:line evidence;
-   - plan role: specification and dependency-ordered task graph, without editing code;
-   - general role: implement only the active task;
-   - judge-a role and judge-b role: separate adversarial reviews without editing;
-   - fix role: apply only validated findings.
-5. Treat tool validation errors as authoritative, correct the payload, and retry. Never skip or invent state transitions. Ask for explicit confirmation before destructive mutations, commits, pull requests, aborts, or closing actions.`;
+   - explore: gather file:line evidence with \`mr_atlas_query\` / \`mr_atlas_skeleton\` and submit a valid ResearchCapsule with \`mr_sdd_submit(kind: "research")\`.
+   - plan: submit SpecCapsule and TaskGraph with \`mr_sdd_submit(kind: "spec")\` and \`mr_sdd_submit(kind: "tasks")\`. Verify acyclic DAG and full Rn -> Tn coverage. Then call \`mr_flow_plan\` with the consolidated files.
+   - implement: repeatedly call \`mr_sdd_get(kind: "next-task")\` for the next task ("pase gol"), implement within declared task files, run its verification commands, mark it done with \`mr_sdd_task_status\`, then call \`mr_flow_implement\` when no actionable task remains.
+   - judgment: for difficulty >= 5, perform two independent blind adversarial reviews and submit both through \`mr_flow_judge\`.
+   - fix: address validated critical findings and call \`mr_flow_fix\`. Bounded loop of max 3 attempts.
+   - gate: execute the authoritative test/verification command (e.g. \`npm run verify\` in code/ for frontend or \`mvn clean verify\` for backend). Fail-closed: exit code 0 required before any commit/push/PR.
+   - finish: call \`mr_flow_finish\` only after the user confirms the closing action via interactive prompt.
+4. Preserve role isolation even when this host has no native mr-orchestrator subagents. Run each phase as an independent role pass with only its required evidence. Resolve models from the host configuration; never embed a model snapshot in this prompt:
+   - explore role: read-only research and file:line evidence (edit: deny, bash: deny);
+   - plan role: specification and dependency-ordered task graph, without editing code; enforce Gherkin acceptance criteria and an acyclic DAG;
+   - general role: implement only the active task with minimal diff and run declared verification commands;
+   - judge-a role: independent adversarial review as Hardened Security & Contract Auditor; penalize ambiguous types, leaks, concurrency bugs, and side effects outside the diff;
+   - judge-b role: independent adversarial review as QA & Regression Specialist; penalize missing tests, edge cases, backwards compatibility, and Gherkin non-compliance;
+   - Both judges receive ONLY CAS diff (git diff HEAD) and ticket/spec in isolated blind context. Strict consensus: approval requires both approve; any critical issue rejects and triggers fix role.
+   - fix role: apply only validated critical findings, with a maximum of 3 attempts before human escalation.
+5. Treat tool validation errors as authoritative, correct the payload, and retry. Never skip or invent state transitions. Never generate raw prose markdown for SDD capsules; payloads must validate against Zod schemas. Ask for explicit confirmation before destructive mutations, commits, pull requests, aborts, or closing actions.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+${input}`;
   }
 
   if (workflow === "blueprint") return `You are executing the mr-orchestrator /blueprint workflow.
-Input: ${input}
 
 ${binding}
 
@@ -60,10 +65,13 @@ ${binding}
    - assess objectives, impact, dependencies, relevant code evidence, and proposed modifications;
    - before every create, update, or delete, call \`mr_blueprint_safety_gate\`, show its preview, and obtain explicit user confirmation;
    - execute confirmed GraphQL operations with \`mr_blueprint_graphql\` and return the resulting URL.
-4. Never mutate GitHub from an inferred instruction. Preserve unanswered points as explicit assumptions rather than fabricating facts.`;
+4. Never mutate GitHub from an inferred instruction. Preserve unanswered points as explicit assumptions rather than fabricating facts.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+${input}`;
 
   return `You are executing the mr-orchestrator /flow-models workflow.
-Input: ${input}
 
 ${binding}
 
@@ -72,7 +80,11 @@ ${binding}
 3. Present the alternatives and state that catalog presence does not prove available quota. Never claim that a candidate has available quota.
 4. Ask for explicit confirmation naming the role and exact provider/model value. Cancellation or ambiguity means do not mutate anything.
 5. Only after explicit confirmation, call \`mr_models\` with action=set, role, and model. Then call action=status to verify that only the requested role changed.
-6. When recovering from quota exhaustion, remind the user that the interrupted Flow/SDD unit remains persisted and must be resumed manually; never retry automatically.`;
+6. When recovering from quota exhaustion, remind the user that the interrupted Flow/SDD unit remains persisted and must be resumed manually; never retry automatically.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+${input}`;
 }
 
 function markdownCommand(workflow: Workflow): string {
