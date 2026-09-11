@@ -1,4 +1,4 @@
-import { tool, type Plugin } from "@opencode-ai/plugin";
+import { tool, type Plugin, type PluginInput } from "@opencode-ai/plugin";
 import { loadFlowState, clearFlowState, applyEvent } from "./core/flow-state.js";
 import { loadRegistry, detectWorkspace } from "./core/workspace.js";
 import { resolvePaths } from "./core/paths.js";
@@ -68,8 +68,10 @@ import { PersistentMemoryStore } from "./core/memory-store.js";
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
-export const MrOrchestrator: Plugin = async (ctx) => {
-  const paths = resolvePaths();
+export async function createMrOrchestrator(
+  ctx: PluginInput,
+  paths = resolvePaths(),
+): Promise<Awaited<ReturnType<Plugin>>> {
   const registry = await loadRegistry(paths);
   const workspace = detectWorkspace(registry, ctx.directory);
   const workspaceId = workspace?.id ?? "unknown";
@@ -1129,4 +1131,6 @@ export const MrOrchestrator: Plugin = async (ctx) => {
       }),
     },
   };
-};
+}
+
+export const MrOrchestrator: Plugin = (ctx) => createMrOrchestrator(ctx);
