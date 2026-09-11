@@ -4,34 +4,72 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { atomicWrite, canonicalJson } from "./files.js";
 import type { MrPaths } from "./paths.js";
-import { ModelMapSchema, type ModelMap, type WorkspaceProfile } from "./schema.js";
+import { ModelMapSchema, type ModelAssignment, type ModelMap, type ModelTarget, type WorkspaceProfile } from "./schema.js";
 
-const DEFAULT_ROLES: Record<string, string> = {
-  orchestrator: "opencode-go/deepseek-v4.1-flash",
-  explore: "github-copilot/gemini-3.8-flash",
-  plan: "openai/gpt-5.6-sol",
-  general: "opencode-go/deepseek-v4-pro",
-  sddApply: "opencode-go/deepseek-v4.1-flash",
-  judgeA: "github-copilot/claude-opus-4.8-fast",
-  judgeB: "opencode-go/grok-4.6",
-  fix: "opencode-go/muse-spark-1.3-contributor",
-  bpExtractor: "opencode-go/deepseek-v4.1-flash",
-  bpArchitect: "openai/gpt-5.6-sol",
-  bpTransactor: "opencode-go/deepseek-v4.1-flash",
+const DEFAULT_ROLES: ModelMap["roles"] = {
+  orchestrator: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
+  explore: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "low" } },
+  plan: { model: "openai/gpt-5.6-sol", variant: "max", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "max" } },
+  general: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "high" } },
+  sddApply: { model: "openai/gpt-5.6-sol", variant: "max", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "max" } },
+  judgeA: { model: "opencode-go/deepseek-v4-pro", variant: "max", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
+  judgeB: { model: "opencode-go/kimi-k2.7-code", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
+  fix: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "high" } },
+  bpExtractor: { model: "opencode-go/deepseek-v4.1-flash", variant: "low", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "low" } },
+  bpArchitect: { model: "openai/gpt-5.6-sol", variant: "max", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "max" } },
+  bpTransactor: { model: "opencode-go/deepseek-v4.1-flash", variant: "low", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
 };
+
+function normalizeTarget(value: unknown, fallback: ModelTarget): { target: ModelTarget; migrated: boolean } {
+  const fallbackTarget: ModelTarget = {
+    model: fallback.model,
+    ...(fallback.variant === undefined ? {} : { variant: fallback.variant }),
+  };
+  if (typeof value !== "object" || value === null) {
+    return { target: fallbackTarget, migrated: true };
+  }
+  const candidate = value as { model?: unknown; variant?: unknown };
+  if (typeof candidate.model !== "string") {
+    return { target: fallbackTarget, migrated: true };
+  }
+  const separator = candidate.model.lastIndexOf("#");
+  const embeddedVariant = separator > candidate.model.indexOf("/") ? candidate.model.slice(separator + 1) : undefined;
+  const model = embeddedVariant === undefined ? candidate.model : candidate.model.slice(0, separator);
+  const variant = typeof candidate.variant === "string" ? candidate.variant : embeddedVariant;
+  return {
+    target: { model, ...(variant === undefined ? {} : { variant }) },
+    migrated: embeddedVariant !== undefined,
+  };
+}
+
+function normalizeAssignment(value: unknown, fallback: ModelAssignment): { assignment: ModelAssignment; migrated: boolean } {
+  if (typeof value === "string") {
+    const primary = normalizeTarget({ model: value }, fallback);
+    return { assignment: { ...primary.target, alternative: fallback.alternative }, migrated: true };
+  }
+  if (typeof value !== "object" || value === null) {
+    return { assignment: fallback, migrated: true };
+  }
+  const candidate = value as { model?: unknown; variant?: unknown; alternative?: unknown };
+  const primary = normalizeTarget({ model: candidate.model, variant: candidate.variant }, fallback);
+  const alternative = normalizeTarget(candidate.alternative, fallback.alternative);
+  return {
+    assignment: { ...primary.target, alternative: alternative.target },
+    migrated: primary.migrated || alternative.migrated,
+  };
+}
 
 export async function loadModels(paths: MrPaths): Promise<ModelMap> {
   const content = await readFile(paths.models, "utf8");
-  const raw = JSON.parse(content) as { schemaVersion?: number; roles?: Record<string, string> };
+  const raw = JSON.parse(content) as { schemaVersion?: number; roles?: Record<string, unknown> };
   const rawRoles = raw.roles ?? {};
-  const backfilledRoles: Record<string, string> = { ...rawRoles };
+  const backfilledRoles: Record<string, ModelAssignment> = {};
 
   let needsWrite = false;
-  for (const [key, defaultModel] of Object.entries(DEFAULT_ROLES)) {
-    if (typeof backfilledRoles[key] !== "string" || backfilledRoles[key].trim().length === 0) {
-      backfilledRoles[key] = defaultModel;
-      needsWrite = true;
-    }
+  for (const [key, fallback] of Object.entries(DEFAULT_ROLES)) {
+    const normalized = normalizeAssignment(rawRoles[key], fallback);
+    backfilledRoles[key] = normalized.assignment;
+    needsWrite ||= normalized.migrated;
   }
 
   const parsed = ModelMapSchema.parse({
@@ -49,10 +87,17 @@ export function generatedConfigPath(paths: MrPaths, workspaceId: string): string
   return join(paths.generatedRoot, workspaceId, "opencode.mr.json");
 }
 
-function readonlyAgent(model: string, description: string, prompt?: string): AgentDefinition {
+function agentModel(target: ModelTarget): Pick<AgentDefinition, "model" | "variant"> {
+  return {
+    model: target.model,
+    ...(target.variant === undefined ? {} : { variant: target.variant }),
+  };
+}
+
+function readonlyAgent(target: ModelTarget, description: string, prompt?: string): AgentDefinition {
   const base = {
     mode: "subagent" as const,
-    model,
+    ...agentModel(target),
     description,
     permission: { edit: "deny" as const, bash: "deny" as const },
   };
@@ -71,6 +116,7 @@ type PermissionValue = string | Record<string, string>;
 interface AgentDefinition {
   readonly mode: "primary" | "subagent";
   readonly model: string;
+  readonly variant?: string;
   readonly description: string;
   readonly prompt?: string;
   readonly permission?: Record<string, PermissionValue>;
@@ -95,7 +141,7 @@ Follow these steps:
    - Phase 'context': Read ticket details and invoke \`mr_flow_ticket\`.
    - Phase 'explore' (RPI Research): Map relevant code with subagent \`mr-explore\` using \`mr_atlas_query\` and \`mr_atlas_skeleton\` (never read full files when a skeleton suffices). The result MUST be submitted as a ResearchCapsule via \`mr_sdd_submit\` kind=research (compact JSON: evidence with file:line, constraints, unknowns). If validation fails, fix the reported issues and resubmit.
    - Phase 'plan' (SDD Spec + Tasks): With subagent \`mr-plan\`, submit a SpecCapsule via \`mr_sdd_submit\` kind=spec (requirements R1..Rn with acceptance criteria), then a TaskGraph via \`mr_sdd_submit\` kind=tasks (tasks T1..Tn with dependsOn, files, verify, doneWhen). Guardrails reject unknown requirements, uncovered requirements and cycles — fix and resubmit. Then invoke \`mr_flow_plan\` with the consolidated file list. Show the user the RENDERED markdown paths (do not re-write the plan in prose).
-   - Phase 'implement': Loop deterministically: \`mr_sdd_get\` kind=next-task → hand that exact briefing (task + acceptance criteria) to \`mr-general\` or \`mr-sdd-apply\` → run the task's verify commands → \`mr_sdd_task_status\` taskId done. Repeat until no actionable task remains, then invoke \`mr_flow_implement\`.
+    - Phase 'implement': Loop deterministically: \`mr_sdd_get\` kind=next-task returns the required implementer with the exact briefing. Difficulty 1-3 MUST use only \`mr-general\`; difficulty 5+ MUST use only \`mr-sdd-apply\`. Run the task's verify commands → \`mr_sdd_task_status\` taskId done. Repeat until no actionable task remains, then invoke \`mr_flow_implement\`.
    - Phase 'judgment' (if difficulty >= 5): Request independent adversarial reviews from \`mr-judge-a\` and \`mr-judge-b\`, submit their verdicts via \`mr_flow_judge\`.
    - Phase 'fix' (if judgment failed): Use \`mr-fix\` to address issues and call \`mr_flow_fix\`.
    - Phase 'finish': Verify final state, commit changes, optionally create PR, and invoke \`mr_flow_finish\`.
@@ -241,10 +287,10 @@ $ARGUMENTS`,
 Rules:
 1. Use \`mr_models\` with action \`status\` to load the current assignments. The tool result is the only authoritative roster.
 2. Use the native \`question\` tool for every choice so the user gets an interactive terminal UI. Allow choosing by steps: all processes, /flow steps (orchestrator, explore, plan, general, sddApply, judgeA, judgeB, fix), or /blueprint steps (bpExtractor, bpArchitect, bpTransactor).
-3. After a quota failure, call \`mr_models\` with action \`candidates\`, the affected role, and the failed model. Present its alternatives and its quota warning; cancelling means do not call \`set\`.
-4. For a normal process change, call \`mr_models\` with action \`providers\`, ask for the provider, then call it with action \`models\` and that provider. Ask the user to choose or enter a \`provider/model-id\`.
-5. Show the current assignment and mark it clearly. Never select a model without the user's explicit choice.
-6. Persist the selection with \`mr_models\` action \`set\`, role and model. Then offer to configure another process/step.
+3. After a non-recoverable quota failure, the plugin automatically promotes that role's configured alternative. Call \`mr_models\` with action \`status\` to verify the promotion; use action \`candidates\` only if the user wants to replace either slot.
+4. For a normal process change, call \`mr_models\` with action \`providers\`, ask for the provider, then call it with action \`models\` and that provider. Ask the user to choose or enter a \`provider/model-id[#variant]\`; persistence emits model and variant as separate OpenCode fields.
+5. Show both the current primary model and its role-specific alternative. Never select either without the user's explicit choice.
+6. Persist the selection with \`mr_models\` action \`set\`, role, model and target (\`model\` or \`alternative\`). Then offer to configure another process/step.
 7. When finished, show the resulting roster and remind the user to restart active OpenCode sessions.
 8. If the user asks for the direct no-LLM terminal editor, tell them to run \`mr flow-models\`.
 
@@ -257,9 +303,9 @@ $ARGUMENTS`,
 
 export function agentDefinitions(models: ModelMap): Record<string, AgentDefinition> {
   return {
-    "orchestrator": {
+      "orchestrator": {
         mode: "primary",
-        model: models.roles.orchestrator,
+        ...agentModel(models.roles.orchestrator),
         description: "Coordinates deterministic mr-orchestrator flows for the active workspace.",
         prompt: `You are Orchestrator, the deterministic flow orchestrator for this workspace.
 
@@ -268,7 +314,7 @@ Your role is to coordinate the /flow lifecycle:
 2. Context: Load ticket content and create branch
 3. Explore: Map relevant code with mr-explore → ResearchCapsule via mr_sdd_submit kind=research
 4. Plan: mr-plan submits SpecCapsule + TaskGraph (mr_sdd_submit kind=spec, kind=tasks), then mr_flow_plan
-5. Implement: Loop mr_sdd_get kind=next-task → mr-general/mr-sdd-apply → verify → mr_sdd_task_status done
+5. Implement: Loop mr_sdd_get kind=next-task → use its required implementer (1-3: mr-general; 5+: mr-sdd-apply) → verify → mr_sdd_task_status done
 6. Judgment (Full only): Parallel review by mr-judge-a and mr-judge-b
 7. Fix: Apply corrections with mr-fix if needed
 8. Finish: Commit, push, and optionally create PR
@@ -320,9 +366,9 @@ Contract (determinism):
       ),
       "mr-general": {
         mode: "subagent",
-        model: models.roles.general,
+        ...agentModel(models.roles.general),
         description: "Implements a bounded task from an approved plan.",
-        prompt: `You implement EXACTLY ONE SDD task per invocation — the briefing you receive (task + acceptance criteria) is your full scope.
+        prompt: `You are the sole implementation agent for Lite flows (Fibonacci 1-3). You implement EXACTLY ONE SDD task per invocation — the briefing you receive (task + acceptance criteria) is your full scope.
 
 Contract:
 1. Touch only the files listed in the task. If the task is wrong or insufficient, STOP and report why instead of improvising.
@@ -333,9 +379,9 @@ Contract:
       },
       "mr-sdd-apply": {
         mode: "subagent",
-        model: models.roles.sddApply,
+        ...agentModel(models.roles.sddApply),
         description: "Applies a bounded SDD task with verification.",
-        prompt: `You apply EXACTLY ONE SDD task with strict verification — the briefing (task + acceptance criteria) is your full scope.
+        prompt: `You are the specialized implementation agent for Full flows (Fibonacci 5+). You apply EXACTLY ONE SDD task with strict verification — the briefing (task + acceptance criteria) is your full scope.
 
 Contract:
 1. Touch only the files listed in the task; smallest correct diff; preserve unrelated changes.
@@ -369,7 +415,7 @@ Contract:
       ),
       "mr-fix": {
         mode: "subagent",
-        model: models.roles.fix,
+        ...agentModel(models.roles.fix),
         description: "Applies only validated review findings.",
         prompt: `You are the bounded remediation agent. You apply only validated critical findings from Judgment Day.
 
@@ -382,7 +428,7 @@ Contract:
       },
       "bp-extractor": {
         mode: "subagent",
-        model: models.roles.bpExtractor,
+        ...agentModel(models.roles.bpExtractor),
         description: "Mechanical extraction worker for tickets, GitHub Projects metadata, and compact code/memory signatures.",
         prompt: `You are bp-extractor, the mechanical extraction subagent for the /blueprint workflow.
 
@@ -408,7 +454,7 @@ Your role:
       },
       "bp-architect": {
         mode: "primary",
-        model: models.roles.bpArchitect,
+        ...agentModel(models.roles.bpArchitect),
         description: "Synthesizes product and architectural ideas into SDD + RPI specifications with token offloading.",
         prompt: `You are bp-architect, the product & architecture synthesis agent for the /blueprint workflow.
 
@@ -436,7 +482,7 @@ Always maintain extreme token discipline: concise executive summaries, no raw ma
       },
       "bp-transactor": {
         mode: "subagent",
-        model: models.roles.bpTransactor,
+        ...agentModel(models.roles.bpTransactor),
         description: "Transactional dispatcher for GitHub Issues and Project v2 items with Safety Gate enforcement.",
         prompt: `You are bp-transactor, the transactional dispatcher for the /blueprint workflow.
 
@@ -536,6 +582,7 @@ export function buildGlobalDefinitionFiles(paths: MrPaths, models: ModelMap): Ma
       `mode: ${def.mode}`,
       `model: ${def.model}`,
     ];
+    if (def.variant !== undefined) lines.push(`variant: ${def.variant}`);
     if (def.permission !== undefined) {
       lines.push("permission:");
       for (const [key, value] of Object.entries(def.permission)) {

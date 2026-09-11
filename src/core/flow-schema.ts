@@ -13,6 +13,14 @@ export const FlowDifficultySchema = z.union([
 
 export type FlowDifficulty = z.infer<typeof FlowDifficultySchema>;
 
+export function requiresJudgment(difficulty: number): boolean {
+  return difficulty >= 5;
+}
+
+export function implementationAgentForDifficulty(difficulty: number): "mr-general" | "mr-sdd-apply" {
+  return requiresJudgment(difficulty) ? "mr-sdd-apply" : "mr-general";
+}
+
 export const TicketPlatformSchema = z.enum(["github", "jira", "gitlab"]);
 
 export type TicketPlatform = z.infer<typeof TicketPlatformSchema>;
@@ -331,6 +339,19 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
       break;
     case "implement":
       if (event.type === "implement_done") {
+        if (!requiresJudgment(state.difficulty)) {
+          return {
+            phase: "finish",
+            schemaVersion: 1,
+            workspaceId: state.workspaceId,
+            startedAt: state.startedAt,
+            difficulty: state.difficulty,
+            ticket: state.ticket,
+            branch: state.branch,
+            baseBranch: state.baseBranch,
+            plan: state.plan,
+          };
+        }
         return {
           phase: "judgment",
           schemaVersion: 1,

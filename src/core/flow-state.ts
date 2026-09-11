@@ -175,7 +175,4 @@ export function isFlowComplete(state: FlowState | undefined): boolean {
   return state !== undefined && state.phase === "finish";
 }
 
-export function requiresJudgment(_difficulty: number): boolean {
-  // Fail-Closed Gate: All difficulties must undergo deterministic adversarial review
-  return true;
-}
+export { requiresJudgment } from "./flow-schema.js";

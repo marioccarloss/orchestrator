@@ -6,7 +6,7 @@ import test from "node:test";
 import { MrOrchestrator } from "../src/plugin.js";
 import { resolvePaths } from "../src/core/paths.js";
 import { addWorkspace } from "../src/core/workspace.js";
-import { seedModels } from "../src/core/config.js";
+import { loadModels, seedModels } from "../src/core/config.js";
 import type { PluginInput, ToolContext } from "@opencode-ai/plugin";
 
 const sourceRoot = process.cwd();
@@ -126,6 +126,46 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
   }
 });
 
+void test("quota exhaustion promotes the role-specific alternative without replaying the session", async () => {
+  const ctx = await createPluginContext();
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (message?: unknown) => { warnings.push(String(message)); };
+  try {
+    const hooks = await MrOrchestrator(ctx.mockContext);
+    assert.ok(hooks["chat.params"]);
+    assert.ok(hooks.event);
+    await hooks["chat.params"]({
+      sessionID: "quota-session",
+      agent: "orchestrator",
+      model: { providerID: "github-copilot", id: "gemini-3.8-flash" },
+    } as never, {} as never);
+    await hooks.event({
+      event: {
+        type: "session.error",
+        properties: {
+          sessionID: "quota-session",
+          error: {
+            name: "APIError",
+            data: { statusCode: 429, responseBody: '{"code":"quota_exceeded"}' },
+          },
+        },
+      },
+    } as never);
+
+    const models = await loadModels(ctx.paths);
+    assert.equal(models.roles.orchestrator.model, "openai/gpt-5.6-sol");
+    assert.equal(models.roles.orchestrator.variant, "high");
+    assert.equal(models.roles.orchestrator.alternative.model, "github-copilot/gemini-3.8-flash");
+    assert.equal(models.roles.orchestrator.alternative.variant, "high");
+    assert.ok(warnings.some((warning) => warning.includes("Fallback activado")));
+    assert.ok(warnings.some((warning) => warning.includes("no se repite automáticamente")));
+  } finally {
+    console.warn = originalWarn;
+    ctx.cleanup();
+  }
+});
+
 void test("SDD tools keep audit timestamps on disk and out of model-facing JSON", async () => {
   const ctx = await createPluginContext();
   try {
@@ -199,18 +239,12 @@ void test("MrOrchestrator flow tools execute state machine transitions", async (
     }, dummyCtx) as { title: string; output: string };
     assert.equal(planRes.title, "Plan Approved");
 
-    // Implement (moves to judgment regardless of difficulty)
+    // Implement (Lite flow skips Judgment Day)
     const impRes = await tools["mr_flow_implement"]!.execute({
       completedFiles: ["src/Widget.tsx"],
     }, dummyCtx) as { title: string; output: string };
-    assert.equal(impRes.title, "Judgment Required");
-
-    // Review judgment passed (invoked with distinct judge identities)
-    const judgeACtx = { ...dummyCtx, agent: "mr-judge-a" };
-    const judgeBCtx = { ...dummyCtx, agent: "mr-judge-b" };
-    await tools["mr_flow_judge"]!.execute({ judge: "a", approved: true }, judgeACtx);
-    const judgeB = await tools["mr_flow_judge"]!.execute({ judge: "b", approved: true }, judgeBCtx) as { title: string };
-    assert.equal(judgeB.title, "Judgment Complete");
+    assert.equal(impRes.title, "Implementation Complete");
+    assert.ok(impRes.output.includes("Lite flow skips Judgment Day"));
 
     // Finish
     const finRes = await tools["mr_flow_finish"]!.execute({
@@ -332,7 +366,7 @@ void test("Pillar 7 Bounded Fix Loop: mr_flow_fix aborts after 3 attempts and es
     runCommand("git", ["-C", ctx.workspaceRoot, "add", "."]);
     runCommand("git", ["-C", ctx.workspaceRoot, "commit", "-m", "init"]);
 
-    await tools["mr_flow_start"]!.execute({ difficulty: 3, ticketId: "SEC-LOOP", hasFigma: false }, dummyCtx);
+    await tools["mr_flow_start"]!.execute({ difficulty: 5, ticketId: "SEC-LOOP", hasFigma: false }, dummyCtx);
     await tools["mr_flow_ticket"]!.execute({ title: "Loop test", description: "desc", type: "bugfix", platform: "github" }, dummyCtx);
     await tools["mr_flow_plan"]!.execute({
       summary: "Bug fix plan",
@@ -434,7 +468,7 @@ void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit 
     runCommand("git", ["-C", ctx.workspaceRoot, "add", "."]);
     runCommand("git", ["-C", ctx.workspaceRoot, "commit", "-m", "init"]);
 
-    await tools["mr_flow_start"]!.execute({ difficulty: 3, ticketId: "SEC-ROLES", hasFigma: false }, dummyCtx);
+    await tools["mr_flow_start"]!.execute({ difficulty: 5, ticketId: "SEC-ROLES", hasFigma: false }, dummyCtx);
     await tools["mr_flow_ticket"]!.execute({ title: "Role test", description: "desc", type: "feature", platform: "github" }, dummyCtx);
     await tools["mr_flow_plan"]!.execute({
       summary: "Role plan",

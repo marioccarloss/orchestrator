@@ -30,6 +30,7 @@ void test("install is idempotent and uninstall preserves modified owned files", 
   assert.match(loader, /opencode\.mr\.json/u);
   const orchestratorMd = await readFile(join(paths.opencodeAgentsRoot, "orchestrator.md"), "utf8");
   assert.match(orchestratorMd, /mode: primary/u);
+  assert.match(orchestratorMd, /variant: high/u);
   const flowMd = await readFile(join(paths.opencodeCommandsRoot, "flow.md"), "utf8");
   assert.match(flowMd, /agent: orchestrator/u);
 
@@ -51,11 +52,12 @@ void test("model updates refresh global definitions and their installer hashes w
   await seedModels(paths, sourceRoot);
   await install(paths, sourceRoot, "0.1.0");
 
-  await setModelRole(paths, "orchestrator", "openai/gpt-5.6-sol");
+  await setModelRole(paths, "orchestrator", "openai/gpt-5.6-sol#high");
 
   const definitionPath = join(paths.opencodeAgentsRoot, "orchestrator.md");
   const definition = await readFile(definitionPath, "utf8");
   assert.match(definition, /model: openai\/gpt-5\.6-sol/u);
+  assert.match(definition, /variant: high/u);
   const manifest = await loadManifest(paths);
   assert.equal(manifest.files.find((item) => item.path === definitionPath)?.sha256, sha256(definition));
   assert.equal((await planUninstall(paths)).find((item) => item.path === definitionPath)?.action, "remove");

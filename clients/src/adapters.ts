@@ -29,7 +29,7 @@ ${binding}
    - context: inspect the ticket and call \`mr_flow_ticket\`.
    - explore: gather file:line evidence with \`mr_atlas_query\` / \`mr_atlas_skeleton\` and submit a valid ResearchCapsule with \`mr_sdd_submit(kind: "research")\`.
    - plan: submit SpecCapsule and TaskGraph with \`mr_sdd_submit(kind: "spec")\` and \`mr_sdd_submit(kind: "tasks")\`. Verify acyclic DAG and full Rn -> Tn coverage. Then call \`mr_flow_plan\` with the consolidated files.
-   - implement: repeatedly call \`mr_sdd_get(kind: "next-task")\` for the next task ("pase gol"), implement within declared task files, run its verification commands, mark it done with \`mr_sdd_task_status\`, then call \`mr_flow_implement\` when no actionable task remains.
+   - implement: repeatedly call \`mr_sdd_get(kind: "next-task")\` for the next task ("pase gol"). Respect its required implementer: Fibonacci 1-3 uses only general; 5+ uses only sdd-apply. Implement within declared task files, run its verification commands, mark it done with \`mr_sdd_task_status\`, then call \`mr_flow_implement\` when no actionable task remains.
    - judgment: for difficulty >= 5, perform two independent blind adversarial reviews and submit both through \`mr_flow_judge\`.
    - fix: address validated critical findings and call \`mr_flow_fix\`. Bounded loop of max 3 attempts.
    - gate: execute the authoritative test/verification command (e.g. \`npm run verify\` in code/ for frontend or \`mvn clean verify\` for backend). Fail-closed: exit code 0 required before any commit/push/PR.
@@ -37,7 +37,8 @@ ${binding}
 4. Preserve role isolation even when this host has no native mr-orchestrator subagents. Run each phase as an independent role pass with only its required evidence. Resolve models from the host configuration; never embed a model snapshot in this prompt:
    - explore role: read-only research and file:line evidence (edit: deny, bash: deny);
    - plan role: specification and dependency-ordered task graph, without editing code; enforce Gherkin acceptance criteria and an acyclic DAG;
-   - general role: implement only the active task with minimal diff and run declared verification commands;
+    - general role: sole implementer for Fibonacci 1-3; implement only the active task with minimal diff and run declared verification commands;
+    - sdd-apply role: specialized implementer for Fibonacci 5+; satisfy every acceptance criterion and run strict verification;
    - judge-a role: independent adversarial review as Hardened Security & Contract Auditor; penalize ambiguous types, leaks, concurrency bugs, and side effects outside the diff;
    - judge-b role: independent adversarial review as QA & Regression Specialist; penalize missing tests, edge cases, backwards compatibility, and Gherkin non-compliance;
    - Both judges receive ONLY CAS diff (git diff HEAD) and ticket/spec in isolated blind context. Strict consensus: approval requires both approve; any critical issue rejects and triggers fix role.
@@ -75,12 +76,12 @@ ${input}`;
 
 ${binding}
 
-1. Call \`mr_models\` with action=status and show the current role assignments.
+1. Call \`mr_models\` with action=status and show each role's primary model and configured alternative.
 2. If the input identifies a role after a quota failure, call \`mr_models\` with action=candidates, that role, and failedModel when known. Otherwise call action=providers, ask which provider to inspect, then call action=models for that provider.
 3. Present the alternatives and state that catalog presence does not prove available quota. Never claim that a candidate has available quota.
-4. Ask for explicit confirmation naming the role and exact provider/model value. Cancellation or ambiguity means do not mutate anything.
-5. Only after explicit confirmation, call \`mr_models\` with action=set, role, and model. Then call action=status to verify that only the requested role changed.
-6. When recovering from quota exhaustion, remind the user that the interrupted Flow/SDD unit remains persisted and must be resumed manually; never retry automatically.
+4. Ask for explicit confirmation naming the role, target slot (model or alternative), and exact provider/model value. Cancellation or ambiguity means do not mutate anything.
+5. Only after explicit confirmation, call \`mr_models\` with action=set, role, model, and target. Then call action=status to verify that only the requested slot changed.
+6. A non-recoverable quota error automatically promotes that role's configured alternative and preserves the failed primary as the next alternative. The interrupted Flow/SDD unit remains persisted; never replay it automatically because it may contain side effects.
 
 ---
 [CONTEXT_INPUT_PAYLOAD]

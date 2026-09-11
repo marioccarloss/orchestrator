@@ -4,7 +4,9 @@ import { runCommand } from "./process.js";
 import { refreshInstallManifestFiles } from "./install.js";
 import {
   ModelMapSchema,
+  type ModelAssignment,
   type ModelMap,
+  type ModelTarget,
   type ModelRoleSchema,
   SCHEMA_VERSION,
 } from "./schema.js";
@@ -30,77 +32,77 @@ export const ROLES: readonly RoleMetadata[] = [
     label: "Orchestrator",
     category: "flow",
     description: "Dirección, razonamiento inicial y FSM de /flow",
-    recommendedModel: "github-copilot/kimi-k3",
+    recommendedModel: "github-copilot/gemini-3.8-flash#high",
   },
   {
     role: "explore",
     label: "Explore",
     category: "flow",
     description: "Mapeo rápido de archivos y lectura de contexto (read-only)",
-    recommendedModel: "github-copilot/gemini-3.7-flash",
+    recommendedModel: "github-copilot/gemini-3.8-flash#high",
   },
   {
     role: "plan",
     label: "Plan (SDD+RPI)",
     category: "flow",
     description: "Planificación estructurada en cápsula JSON (read-only)",
-    recommendedModel: "github-copilot/gpt-5.6-sol",
+    recommendedModel: "openai/gpt-5.6-sol#max",
   },
   {
     role: "general",
     label: "General (Implementador)",
     category: "flow",
     description: "Implementación quirúrgica de código",
-    recommendedModel: "github-copilot/kimi-k3",
+    recommendedModel: "openai/gpt-5.6-sol#high",
   },
   {
     role: "sddApply",
     label: "SDD Apply",
     category: "flow",
     description: "Aplicación y verificación de cambios SDD",
-    recommendedModel: "github-copilot/gpt-5.6-sol",
+    recommendedModel: "openai/gpt-5.6-sol#max",
   },
   {
     role: "judgeA",
     label: "Día del Juicio - Juez A",
     category: "flow",
     description: "Revisión adversarial ciega A (read-only)",
-    recommendedModel: "github-copilot/grok-4.6",
+    recommendedModel: "opencode-go/deepseek-v4-pro#max",
   },
   {
     role: "judgeB",
     label: "Día del Juicio - Juez B",
     category: "flow",
     description: "Revisión adversarial ciega B (read-only)",
-    recommendedModel: "github-copilot/claude-opus-5",
+    recommendedModel: "opencode-go/kimi-k2.7-code",
   },
   {
     role: "fix",
     label: "Fix Agent",
     category: "flow",
     description: "Corrección quirúrgica de hallazgos del veredicto",
-    recommendedModel: "github-copilot/gpt-5.6-sol",
+    recommendedModel: "openai/gpt-5.6-sol#high",
   },
   {
     role: "bpExtractor",
     label: "Blueprint Extractor",
     category: "blueprint",
     description: "Extracción mecánica de tickets, metadatos y firmas mínimas",
-    recommendedModel: "github-copilot/gpt-4o-mini",
+    recommendedModel: "opencode-go/deepseek-v4.1-flash#low",
   },
   {
     role: "bpArchitect",
     label: "Blueprint Architect",
     category: "blueprint",
     description: "Razonamiento y síntesis de producto/arquitectura (SDD+RPI)",
-    recommendedModel: "github-copilot/gemini-3.8-flash",
+    recommendedModel: "openai/gpt-5.6-sol#max",
   },
   {
     role: "bpTransactor",
     label: "Blueprint Transactor",
     category: "blueprint",
     description: "Despacho transaccional en GitHub con Safety Gate",
-    recommendedModel: "github-copilot/gpt-4o-mini",
+    recommendedModel: "opencode-go/deepseek-v4.1-flash#low",
   },
 ];
 
@@ -109,61 +111,82 @@ export function getRolesByCategory(category?: RoleCategory): readonly RoleMetada
   return ROLES.filter((r) => r.category === category);
 }
 
+export function parseModelTarget(reference: string): ModelTarget {
+  const separator = reference.lastIndexOf("#");
+  if (separator <= reference.indexOf("/")) return { model: reference };
+  return { model: reference.slice(0, separator), variant: reference.slice(separator + 1) };
+}
+
+export function formatModelTarget(target: ModelTarget): string {
+  return target.variant === undefined ? target.model : `${target.model}#${target.variant}`;
+}
+
+function configured(model: string, alternative?: string): ModelAssignment {
+  const fallback = alternative ?? (model.startsWith("openai/")
+    ? "opencode-go/deepseek-v4-pro#high"
+    : "openai/gpt-5.6-sol#high");
+  return { ...parseModelTarget(model), alternative: parseModelTarget(fallback) };
+}
+
 export const PRESETS: Record<string, { readonly name: string; readonly description: string; readonly roles: ModelMap["roles"] }> = {
   "balanced": {
     name: "Balanced Orchestrator Preset",
     description: "Kimi K3 (dir/gen) + Gemini 3.7 Flash (explore) + Grok 4.6 & Opus 5 (jueces) + GPT-5.6 Sol (plan/fix) + Blueprint",
     roles: {
-      orchestrator: "github-copilot/kimi-k3",
-      explore: "github-copilot/gemini-3.7-flash",
-      plan: "github-copilot/gpt-5.6-sol",
-      general: "github-copilot/kimi-k3",
-      sddApply: "github-copilot/gpt-5.6-sol",
-      judgeA: "github-copilot/grok-4.6",
-      judgeB: "github-copilot/claude-opus-5",
-      fix: "github-copilot/gpt-5.6-sol",
-      bpExtractor: "github-copilot/gpt-4o-mini",
-      bpArchitect: "github-copilot/gemini-3.8-flash",
-      bpTransactor: "github-copilot/gpt-4o-mini",
+      orchestrator: configured("github-copilot/kimi-k3"),
+      explore: configured("github-copilot/gemini-3.7-flash"),
+      plan: configured("github-copilot/gpt-5.6-sol"),
+      general: configured("github-copilot/kimi-k3"),
+      sddApply: configured("github-copilot/gpt-5.6-sol"),
+      judgeA: configured("github-copilot/grok-4.6"),
+      judgeB: configured("github-copilot/claude-opus-5"),
+      fix: configured("github-copilot/gpt-5.6-sol"),
+      bpExtractor: configured("github-copilot/gpt-4o-mini"),
+      bpArchitect: configured("github-copilot/gemini-3.8-flash"),
+      bpTransactor: configured("github-copilot/gpt-4o-mini"),
     },
   },
   "gpt-sol": {
     name: "GPT-5.6 Sol All-Round",
     description: "Modelo homogéneo GPT-5.6 Sol en todos los roles con subagentes mecánicos mini",
     roles: {
-      orchestrator: "github-copilot/gpt-5.6-sol",
-      explore: "github-copilot/gpt-5.6-sol",
-      plan: "github-copilot/gpt-5.6-sol",
-      general: "github-copilot/gpt-5.6-sol",
-      sddApply: "github-copilot/gpt-5.6-sol",
-      judgeA: "github-copilot/gpt-5.6-sol",
-      judgeB: "github-copilot/gpt-5.6-sol",
-      fix: "github-copilot/gpt-5.6-sol",
-      bpExtractor: "github-copilot/gpt-4o-mini",
-      bpArchitect: "github-copilot/gpt-5.6-sol",
-      bpTransactor: "github-copilot/gpt-4o-mini",
+      orchestrator: configured("github-copilot/gpt-5.6-sol"),
+      explore: configured("github-copilot/gpt-5.6-sol"),
+      plan: configured("github-copilot/gpt-5.6-sol"),
+      general: configured("github-copilot/gpt-5.6-sol"),
+      sddApply: configured("github-copilot/gpt-5.6-sol"),
+      judgeA: configured("github-copilot/gpt-5.6-sol"),
+      judgeB: configured("github-copilot/gpt-5.6-sol"),
+      fix: configured("github-copilot/gpt-5.6-sol"),
+      bpExtractor: configured("github-copilot/gpt-4o-mini"),
+      bpArchitect: configured("github-copilot/gpt-5.6-sol"),
+      bpTransactor: configured("github-copilot/gpt-4o-mini"),
     },
   },
   "claude-opus": {
     name: "Claude Opus / Sonnet Power",
     description: "Claude Sonnet 4.6 (gen/plan) + Opus 5 (orchestrator/jueces) + Gemini Flash (explore)",
     roles: {
-      orchestrator: "github-copilot/claude-opus-5",
-      explore: "github-copilot/gemini-3.7-flash",
-      plan: "github-copilot/claude-sonnet-4.6",
-      general: "github-copilot/claude-sonnet-4.6",
-      sddApply: "github-copilot/claude-sonnet-4.6",
-      judgeA: "github-copilot/claude-opus-5",
-      judgeB: "github-copilot/grok-4.6",
-      fix: "github-copilot/claude-sonnet-4.6",
-      bpExtractor: "github-copilot/gpt-4o-mini",
-      bpArchitect: "github-copilot/claude-sonnet-4.6",
-      bpTransactor: "github-copilot/gpt-4o-mini",
+      orchestrator: configured("github-copilot/claude-opus-5"),
+      explore: configured("github-copilot/gemini-3.7-flash"),
+      plan: configured("github-copilot/claude-sonnet-4.6"),
+      general: configured("github-copilot/claude-sonnet-4.6"),
+      sddApply: configured("github-copilot/claude-sonnet-4.6"),
+      judgeA: configured("github-copilot/claude-opus-5"),
+      judgeB: configured("github-copilot/grok-4.6"),
+      fix: configured("github-copilot/claude-sonnet-4.6"),
+      bpExtractor: configured("github-copilot/gpt-4o-mini"),
+      bpArchitect: configured("github-copilot/claude-sonnet-4.6"),
+      bpTransactor: configured("github-copilot/gpt-4o-mini"),
     },
   },
 };
 
 export const FALLBACK_MODELS: readonly string[] = [
+  "openai/gpt-5.6-sol",
+  "opencode-go/deepseek-v4-pro",
+  "opencode-go/deepseek-v4.1-flash",
+  "opencode-go/kimi-k2.7-code",
   "github-copilot/kimi-k3",
   "github-copilot/gemini-3.7-flash",
   "github-copilot/gpt-5.6-sol",
@@ -184,23 +207,25 @@ export interface AvailableModels {
 
 export interface ModelCandidates {
   readonly activeModel: string;
+  readonly alternativeModel: string;
   readonly candidates: readonly string[];
   readonly warning: string;
 }
 
 export function buildModelCandidates(
-  activeModel: string,
+  assignment: ModelAssignment,
   availableModels: readonly string[],
   failedModel?: string,
 ): ModelCandidates {
   const failed = failedModel?.trim();
   const candidates = Array.from(new Set(availableModels))
     .filter((model) => !model.startsWith("openrouter/"))
-    .filter((model) => model !== failed)
+    .filter((model) => failed === undefined || baseModel(model) !== baseModel(failed))
     .sort();
 
   return {
-    activeModel,
+    activeModel: formatModelTarget(assignment),
+    alternativeModel: formatModelTarget(assignment.alternative),
     candidates,
     warning: "El catálogo no confirma cuota ni disponibilidad real. Elige explícitamente antes de guardar el cambio.",
   };
@@ -284,16 +309,66 @@ export async function setModels(paths: MrPaths, models: ModelMap, sync = true): 
   return valid;
 }
 
-export async function setModelRole(paths: MrPaths, role: ModelRole, model: string): Promise<ModelMap> {
+export type ModelSlot = "model" | "alternative";
+
+export async function setModelRole(
+  paths: MrPaths,
+  role: ModelRole,
+  model: string,
+  slot: ModelSlot = "model",
+): Promise<ModelMap> {
   const current = await loadModels(paths);
+  const assignment = current.roles[role];
+  const target = parseModelTarget(model);
   const updated: ModelMap = {
     schemaVersion: SCHEMA_VERSION,
     roles: {
       ...current.roles,
-      [role]: model,
+      [role]: slot === "model"
+        ? { ...target, alternative: assignment.alternative }
+        : { ...assignment, alternative: target },
     },
   };
   return setModels(paths, updated);
+}
+
+function baseModel(model: string): string {
+  return model.split("#", 1)[0] ?? model;
+}
+
+export interface AlternativePromotion {
+  readonly promoted: boolean;
+  readonly model: string;
+  readonly alternative: string;
+}
+
+export async function promoteAlternativeModel(
+  paths: MrPaths,
+  role: ModelRole,
+  failedModel: string,
+): Promise<AlternativePromotion> {
+  const current = await loadModels(paths);
+  const assignment = current.roles[role];
+  if (baseModel(assignment.model) !== baseModel(failedModel)) {
+    return {
+      promoted: false,
+      model: formatModelTarget(assignment),
+      alternative: formatModelTarget(assignment.alternative),
+    };
+  }
+  const promoted: ModelAssignment = {
+    ...assignment.alternative,
+    alternative: { model: assignment.model, ...(assignment.variant === undefined ? {} : { variant: assignment.variant }) },
+  };
+  await setModels(paths, {
+    schemaVersion: SCHEMA_VERSION,
+    roles: { ...current.roles, [role]: promoted },
+  });
+  return {
+    promoted: true,
+    model: formatModelTarget(promoted),
+    alternative: formatModelTarget(promoted.alternative),
+  };
 }
 
 export async function setModelPreset(paths: MrPaths, presetKey: string): Promise<ModelMap> {

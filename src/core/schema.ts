@@ -62,11 +62,25 @@ export const ModelRoleSchema = z.enum([
   "bpTransactor",
 ]);
 
-export const ModelMapSchema = z.object({
-  schemaVersion: z.literal(SCHEMA_VERSION),
-  roles: z.record(ModelRoleSchema, z.string().regex(/^[^/]+\/.+$/u)),
+export const ModelReferenceSchema = z.string().regex(/^[^\s/]+\/[^\s#]+$/u);
+export const ModelVariantSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/u);
+
+export const ModelTargetSchema = z.object({
+  model: ModelReferenceSchema,
+  variant: ModelVariantSchema.optional(),
 });
 
+export const ModelAssignmentSchema = ModelTargetSchema.extend({
+  alternative: ModelTargetSchema,
+});
+
+export const ModelMapSchema = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION),
+  roles: z.record(ModelRoleSchema, ModelAssignmentSchema),
+});
+
+export type ModelTarget = z.infer<typeof ModelTargetSchema>;
+export type ModelAssignment = z.infer<typeof ModelAssignmentSchema>;
 export type ModelMap = z.infer<typeof ModelMapSchema>;
 
 export const ManifestFileSchema = z.object({
