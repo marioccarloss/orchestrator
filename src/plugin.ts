@@ -4,10 +4,10 @@ import { loadRegistry, detectWorkspace } from "./core/workspace.js";
 import { resolvePaths } from "./core/paths.js";
 import { renderPlanCapsule, renderFlowStatus, renderVerdict } from "./core/render.js";
 import { loadModels } from "./core/config.js";
-import { buildModelCandidates, discoverAvailableModels, ROLES, setModelRole } from "./core/models.js";
+import { buildModelCandidates, discoverAvailableModels, formatModelTarget, promoteAlternativeModel, ROLES, setModelRole, type ModelRole } from "./core/models.js";
 import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { FlowState, FlowEvent, PlanCapsule, MergedVerdict } from "./core/flow-schema.js";
+import { implementationAgentForDifficulty, type FlowState, type FlowEvent, type PlanCapsule, type MergedVerdict } from "./core/flow-schema.js";
 import { getDiffHash } from "./core/judgment.js";
 import { canonicalJson, sha256 } from "./core/files.js";
 import { runCommand } from "./core/process.js";
@@ -74,7 +74,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
   const workspace = detectWorkspace(registry, ctx.directory);
   const workspaceId = workspace?.id ?? "unknown";
   const workspaceRoot = workspace?.root ?? ctx.directory;
-  const sessionModels = new Map<string, { readonly role: string; readonly model: string }>();
+  const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string }>();
 
   async function ensureFlowState(): Promise<FlowState> {
     const state = await loadFlowState(paths, workspaceId);
@@ -119,10 +119,22 @@ export const MrOrchestrator: Plugin = async (ctx) => {
       if (quotaFailure === undefined || sessionID === undefined) return;
       const assignment = sessionModels.get(sessionID);
       if (assignment === undefined) return;
-      console.warn(
-        `[mr-orchestrator] Cuota agotada para ${assignment.role} (${assignment.model}; ${quotaFailure.code}). `
-        + `El flujo permanece intacto. Ejecuta \`/flow-models\` o usa \`mr_models\` con action=candidates, role=${assignment.role}, failedModel=${assignment.model}; confirma la selección antes de action=set y reanuda la unidad activa manualmente.`,
-      );
+      sessionModels.delete(sessionID);
+      try {
+        const fallback = await promoteAlternativeModel(paths, assignment.role, assignment.model);
+        const recovery = fallback.promoted
+          ? `Fallback activado: ${fallback.model}. El anterior queda como alternativa: ${fallback.alternative}.`
+          : `El modelo activo ya cambió a ${fallback.model}; no se volvió a rotar.`;
+        console.warn(
+          `[mr-orchestrator] Cuota agotada para ${assignment.role} (${assignment.model}; ${quotaFailure.code}). ${recovery} `
+          + "El flujo permanece intacto y la petición fallida no se repite automáticamente para evitar duplicar efectos. Reinicia OpenCode y reanuda la unidad activa.",
+        );
+      } catch (error: unknown) {
+        console.warn(
+          `[mr-orchestrator] Cuota agotada para ${assignment.role} (${assignment.model}; ${quotaFailure.code}), `
+          + `pero no se pudo activar el fallback: ${error instanceof Error ? error.message : String(error)}. El flujo permanece intacto.`,
+        );
+      }
     },
     "chat.params": async (input, _output) => {
       const role = resolveModelRole(input.agent);
@@ -305,7 +317,10 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           const completedFiles = args.completedFiles ?? [];
           const event: FlowEvent = { type: "implement_done", completedFiles };
           const next = await applyEvent(paths, workspaceId, event);
-          return { title: "Judgment Required", output: `Implementation complete. Deterministic adversarial judgment phase initiated.\n\n${renderFlowStatus(next)}` };
+          if (next.phase === "judgment") {
+            return { title: "Judgment Required", output: `Implementation complete. Deterministic adversarial judgment phase initiated.\n\n${renderFlowStatus(next)}` };
+          }
+          return { title: "Implementation Complete", output: `Implementation complete. Lite flow skips Judgment Day.\n\n${renderFlowStatus(next)}` };
         },
       }),
 
@@ -480,7 +495,8 @@ export const MrOrchestrator: Plugin = async (ctx) => {
             "bpTransactor",
           ]).optional().describe("Process/step role to update"),
           provider: tool.schema.string().optional().describe("Provider ID used by action=models"),
-          model: tool.schema.string().optional().describe("Full provider/model-id used by action=set"),
+          model: tool.schema.string().optional().describe("Full provider/model-id[#variant] used by action=set"),
+          target: tool.schema.enum(["model", "alternative"]).optional().describe("Slot to update with action=set; defaults to model"),
           failedModel: tool.schema.string().optional().describe("Optional provider/model-id to exclude after a quota failure"),
         },
         execute: async (args, _context) => {
@@ -509,6 +525,7 @@ export const MrOrchestrator: Plugin = async (ctx) => {
             const lines = [
               `Rol: ${args.role}`,
               `Modelo activo: ${result.activeModel}`,
+              `Alternativa configurada: ${result.alternativeModel}`,
               args.failedModel === undefined ? "" : `Modelo excluido: ${args.failedModel.trim()}`,
               "",
               "Candidatos:",
@@ -525,9 +542,12 @@ export const MrOrchestrator: Plugin = async (ctx) => {
               throw new Error("action=set requires role and model");
             }
             const model = args.model.trim();
-            if (!/^[^\s/]+\/.+$/u.test(model)) throw new Error("model must use provider/model-id format");
-            await setModelRole(paths, args.role, model);
-            return { title: "Model Updated", output: `${args.role} → ${model}` };
+            if (!/^[^\s/]+\/[^\s#]+(?:#[a-z0-9][a-z0-9-]*)?$/u.test(model)) {
+              throw new Error("model must use provider/model-id[#variant] format");
+            }
+            const target = args.target ?? "model";
+            await setModelRole(paths, args.role, model, target);
+            return { title: "Model Updated", output: `${args.role}.${target} → ${model}` };
           }
 
           const models = await loadModels(paths);
@@ -539,7 +559,8 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           if (!category || category === "flow") {
             lines.push("### /flow (Entrega quirúrgica)");
             for (const meta of flowRoles) {
-              lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${models.roles[meta.role]}\``);
+              const assignment = models.roles[meta.role];
+              lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${formatModelTarget(assignment)}\` → fallback \`${formatModelTarget(assignment.alternative)}\``);
             }
           }
 
@@ -547,7 +568,8 @@ export const MrOrchestrator: Plugin = async (ctx) => {
             if (lines.length > 2 && !category) lines.push("");
             lines.push("### /blueprint (Aterrizaje y tickets)");
             for (const meta of blueprintRoles) {
-              lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${models.roles[meta.role]}\``);
+              const assignment = models.roles[meta.role];
+              lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${formatModelTarget(assignment)}\` → fallback \`${formatModelTarget(assignment.alternative)}\``);
             }
           }
 
@@ -1004,9 +1026,13 @@ export const MrOrchestrator: Plugin = async (ctx) => {
           }
           const spec = await loadSpec(paths, workspaceId);
           const acceptance = spec?.requirements.filter((r) => next.requirements.includes(r.id)) ?? [];
+          const flow = await loadFlowState(paths, workspaceId);
+          const implementer = flow !== undefined && "difficulty" in flow
+            ? implementationAgentForDifficulty(flow.difficulty)
+            : undefined;
           return {
             title: `SDD Next Task: ${next.id}`,
-            output: canonicalJson({ task: next, acceptance }).trimEnd(),
+            output: canonicalJson({ implementer, task: next, acceptance }).trimEnd(),
           };
         },
       }),

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-11
+
+### Added
+
+- Per-role primary and `alternative.model` assignments, with automatic alternative promotion after non-recoverable quota exhaustion.
+- Deterministic implementer selection: `mr-general` for Fibonacci 1-3 and `mr-sdd-apply` for Fibonacci 5+.
+
+### Changed
+
+- Restored the documented Judgment Day threshold: Lite flows finish after implementation; Full flows continue through the two independent judges and bounded fix loop.
+- Upgraded the governed roster: GPT-5.6 Sol powers implementation/planning, while DeepSeek V4 Pro and Kimi K2.7 Code provide diverse OpenCode Go judgment.
+- Model configuration UIs and tools now display and edit both primary and alternative slots.
+
 ## [0.6.1] - 2026-09-11
 
 ### Changed
@@ -84,4 +97,11 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Bun-only runtime, package management, build, test, and CLI workflow using the public npm registry.
 - GitHub Actions verification for type checking, linting, and tests.
 
+[0.7.0]: https://github.com/marioccarloss/orchestrator/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/marioccarloss/orchestrator/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/marioccarloss/orchestrator/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/marioccarloss/orchestrator/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/marioccarloss/orchestrator/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/marioccarloss/orchestrator/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/marioccarloss/orchestrator/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/marioccarloss/orchestrator/releases/tag/v0.1.0

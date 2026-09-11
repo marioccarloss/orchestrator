@@ -86,8 +86,8 @@ mrcode
 | `orchestrator` | Primary | Control de flujo y preguntas | Orquestador principal. Es el **único** agente donde se permite ejecutar `/flow`. |
 | `mr-explore` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Mapeo rápido de archivos, lectura de código y consultas al grafo de Atlas. |
 | `mr-plan` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Planificación estructurada en formato JSON combinando SDD + RPI. |
-| `mr-general` | Subagent | Edición y bash controlados | Implementación quirúrgica de tareas delimitadas en el código fuente. |
-| `mr-sdd-apply` | Subagent | Edición y bash controlados | Aplicación de cambios bajo metodología SDD con verificación. |
+| `mr-general` | Subagent | Edición y bash controlados | Único implementador en dificultad 1-3; modelo potente porque el flujo Lite no ejecuta juicio ni fix. |
+| `mr-sdd-apply` | Subagent | Edición y bash controlados | Implementador especializado en dificultad 5+; aplica cada criterio SDD con verificación estricta. |
 | `mr-judge-a` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Primer revisor ciego adversarial del diff generado. |
 | `mr-judge-b` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Segundo revisor ciego adversarial independiente. |
 | `mr-fix` | Subagent | Edición y bash controlados | Aplica exclusivamente las correcciones indicadas en el veredicto fusionado. |
@@ -116,7 +116,8 @@ Ejecuta el ciclo de vida completo de un requerimiento o ticket de forma controla
    - `mr-plan` genera una cápsula JSON de plan determinista.
    - Se muestra el plan y se solicita aprobación al usuario.
 4. **Implementación Quirúrgica:**
-   - `mr-general` o `mr-sdd-apply` ejecutan la tarea paso a paso con verificaciones intermedias.
+   - Dificultad 1-3: solo `mr-general` ejecuta cada tarea.
+   - Dificultad 5+: solo `mr-sdd-apply` ejecuta cada tarea con criterios SDD estrictos.
 5. **Día del Juicio (solo dificultad >= 5):**
    - `mr-judge-a` y `mr-judge-b` evalúan el diff en paralelo.
    - Se fusiona el veredicto y `mr-fix` aplica parches si existen observaciones críticas.
@@ -164,7 +165,7 @@ Forense y cirujano de código para React:
 - Genera un parche mínimo y quirúrgico que respeta las normas de gobernanza.
 
 #### `/flow-models`
-Abre un flujo guiado dentro de la TUI de OpenCode mediante sus preguntas interactivas. Primero selecciona el proceso/step, después el proveedor y el modelo disponible; la elección actualiza `models.json`, las definiciones globales y todos los workspaces registrados. Para el editor directo, buscable y sin intervención del modelo usa `mr flow-models`. Reinicia las sesiones activas para aplicar la nueva asignación.
+Abre un flujo guiado dentro de la TUI de OpenCode mediante sus preguntas interactivas. Para cada proceso/step configura un modelo principal y su alternativa específica. La elección actualiza `models.json`, las definiciones globales y todos los workspaces registrados. Para el editor directo, buscable y sin intervención del modelo usa `mr flow-models`. Reinicia las sesiones activas para aplicar la nueva asignación.
 
 ---
 
@@ -236,19 +237,27 @@ Ejemplo de configuración:
 {
   "schemaVersion": 1,
   "roles": {
-    "orchestrator": "github-copilot/gpt-5.6-sol",
-    "explore": "github-copilot/gpt-5.6-sol",
-    "plan": "github-copilot/gpt-5.6-sol",
-    "general": "github-copilot/gpt-5.6-sol",
-    "sddApply": "github-copilot/gpt-5.6-sol",
-    "judgeA": "github-copilot/gpt-5.6-sol",
-    "judgeB": "github-copilot/gpt-5.6-sol",
-    "fix": "github-copilot/gpt-5.6-sol"
+    "general": {
+      "model": "openai/gpt-5.6-sol",
+      "variant": "high",
+      "alternative": { "model": "opencode-go/deepseek-v4-pro", "variant": "high" }
+    },
+    "judgeA": {
+      "model": "opencode-go/deepseek-v4-pro",
+      "variant": "max",
+      "alternative": { "model": "openai/gpt-5.6-sol", "variant": "high" }
+    },
+    "judgeB": {
+      "model": "opencode-go/kimi-k2.7-code",
+      "alternative": { "model": "openai/gpt-5.6-sol", "variant": "high" }
+    }
   }
 }
 ```
 
-*Nota: Cualquier cambio en `models.json` se aplica al workspace ejecutando `mr sync`.*
+Ante `429 insufficient_quota` o `quota_exceeded`, el plugin promueve automáticamente `alternative.model` a `model` para ese rol y conserva el principal fallido como nueva alternativa. La unidad activa queda persistida, pero no se repite automáticamente para evitar duplicar efectos. Reinicia OpenCode y reanuda la tarea.
+
+*Nota: Cualquier cambio manual en `models.json` se aplica al workspace ejecutando `mr sync`.*
 
 ---
 

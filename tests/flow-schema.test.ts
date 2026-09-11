@@ -4,6 +4,7 @@ import {
   FlowStateSchema,
   FlowEventSchema,
   PlanCapsuleSchema,
+  implementationAgentForDifficulty,
   transition,
   canTransition,
   MigrationRegistry,
@@ -141,7 +142,7 @@ test("transition from plan back to explore on rejection", () => {
   assert.equal(next.phase, "explore");
 });
 
-test("transition from implement always requires judgment regardless of difficulty (fail-closed)", () => {
+test("transition from implement skips judgment for Lite and requires it for Full", () => {
   const implementStateLite: FlowState = {
     ...basePlan,
     phase: "implement",
@@ -150,7 +151,7 @@ test("transition from implement always requires judgment regardless of difficult
   };
   const event: FlowEvent = { type: "implement_done", completedFiles: ["src/foo.ts"] };
   const nextLite = transition(implementStateLite, event);
-  assert.equal(nextLite.phase, "judgment");
+  assert.equal(nextLite.phase, "finish");
 
   const implementStateFull: FlowState = {
     ...basePlan,
@@ -160,6 +161,13 @@ test("transition from implement always requires judgment regardless of difficult
   };
   const nextFull = transition(implementStateFull, event);
   assert.equal(nextFull.phase, "judgment");
+});
+
+test("implementation agent follows the Fibonacci execution tier", () => {
+  assert.equal(implementationAgentForDifficulty(1), "mr-general");
+  assert.equal(implementationAgentForDifficulty(3), "mr-general");
+  assert.equal(implementationAgentForDifficulty(5), "mr-sdd-apply");
+  assert.equal(implementationAgentForDifficulty(21), "mr-sdd-apply");
 });
 
 test("abort from any state goes to finish", () => {

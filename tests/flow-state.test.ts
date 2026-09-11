@@ -109,12 +109,13 @@ test("isFlowComplete returns true only for finish", () => {
   assert.equal(isFlowComplete({ phase: "init", schemaVersion: 1, workspaceId: "x", startedAt: "" } as FlowState), false);
 });
 
-test("requiresJudgment returns true for all difficulties (fail-closed)", () => {
-  assert.equal(requiresJudgment(1), true);
-  assert.equal(requiresJudgment(3), true);
+test("requiresJudgment follows Fibonacci Lite and Full thresholds", () => {
+  assert.equal(requiresJudgment(1), false);
+  assert.equal(requiresJudgment(3), false);
   assert.equal(requiresJudgment(5), true);
   assert.equal(requiresJudgment(8), true);
   assert.equal(requiresJudgment(13), true);
+  assert.equal(requiresJudgment(21), true);
 });
 
 test("Event Sourcing: appendFlowEvent, loadFlowEvents, and replayFromOrigin reconstruct state deterministically", async () => {

@@ -5,6 +5,8 @@ import {
   ROLES,
   PRESETS,
   discoverAvailableModels,
+  formatModelTarget,
+  parseModelTarget,
   setModels,
   type ModelRole,
   type RoleCategory,
@@ -24,10 +26,11 @@ export function formatModelMatrix(models: ModelMap, category?: RoleCategory): st
   if (!category || category === "flow") {
     lines.push("── /flow (Entrega quirúrgica y juicio) ──");
     for (const info of flowRoles) {
-      const currentModel = models.roles[info.role];
+      const assignment = models.roles[info.role];
+      const currentModel = formatModelTarget(assignment);
       const isRecommended = currentModel === info.recommendedModel;
       const badge = isRecommended ? " (recomendado)" : "";
-      lines.push(`• ${info.label.padEnd(28)} → ${currentModel}${badge}\n    └ ${info.description}`);
+      lines.push(`• ${info.label.padEnd(28)} → ${currentModel}${badge}\n    ↳ fallback: ${formatModelTarget(assignment.alternative)}\n    └ ${info.description}`);
     }
   }
 
@@ -35,10 +38,11 @@ export function formatModelMatrix(models: ModelMap, category?: RoleCategory): st
     if (lines.length > 0 && !category) lines.push("");
     lines.push("── /blueprint (Aterrizaje de ideas y tickets) ──");
     for (const info of blueprintRoles) {
-      const currentModel = models.roles[info.role];
+      const assignment = models.roles[info.role];
+      const currentModel = formatModelTarget(assignment);
       const isRecommended = currentModel === info.recommendedModel;
       const badge = isRecommended ? " (recomendado)" : "";
-      lines.push(`• ${info.label.padEnd(28)} → ${currentModel}${badge}\n    └ ${info.description}`);
+      lines.push(`• ${info.label.padEnd(28)} → ${currentModel}${badge}\n    ↳ fallback: ${formatModelTarget(assignment.alternative)}\n    └ ${info.description}`);
     }
   }
 
@@ -49,6 +53,7 @@ async function chooseModel(
   role: ModelRole,
   current: string,
   availableModels: readonly string[],
+  slot: "principal" | "alternativo",
 ): Promise<string | undefined> {
   const meta = ROLES.find((item) => item.role === role);
   const choices = Array.from(new Set([current, ...availableModels])).map((model) => ({
@@ -61,7 +66,7 @@ async function chooseModel(
         : {}),
   }));
   const selected = await p.autocomplete<string>({
-    message: `Modelo para ${meta?.label ?? role}`,
+    message: `Modelo ${slot} para ${meta?.label ?? role}`,
     placeholder: "Escribe para filtrar por proveedor o modelo",
     options: [
       ...choices,
@@ -75,10 +80,10 @@ async function chooseModel(
 
   const custom = await p.text({
     message: "Identificador del modelo",
-    placeholder: "provider/model-id",
-    validate: (value) => /^[^\s/]+\/.+$/u.test((value ?? "").trim())
+    placeholder: "provider/model-id[#variant]",
+    validate: (value) => /^[^\s/]+\/[^\s#]+(?:#[a-z0-9][a-z0-9-]*)?$/u.test((value ?? "").trim())
       ? undefined
-      : "Usa el formato provider/model-id",
+      : "Usa el formato provider/model-id[#variant]",
   });
   return p.isCancel(custom) ? undefined : custom.trim();
 }
@@ -89,7 +94,7 @@ async function chooseRole(models: ModelMap): Promise<ModelRole | undefined> {
     options: ROLES.map((item) => ({
       value: item.role,
       label: `[${item.category === "flow" ? "Flow" : "Blueprint"}] ${item.label}`,
-      hint: models.roles[item.role],
+      hint: formatModelTarget(models.roles[item.role]),
     })),
   });
   return p.isCancel(role) ? undefined : role;
@@ -104,7 +109,7 @@ export async function interactiveModelSelector(
     : "flow-models — configuración interactiva de modelos por steps");
 
   const current = await loadModels(paths);
-  let draft: ModelMap = { schemaVersion: current.schemaVersion, roles: { ...current.roles } };
+  let draft: ModelMap = structuredClone(current);
   let catalog = discoverAvailableModels();
   let dirty = false;
   if (catalog.warning !== undefined) p.log.warn(catalog.warning);
@@ -155,7 +160,7 @@ export async function interactiveModelSelector(
       if (!p.isCancel(preset)) {
         const selected = PRESETS[preset];
         if (selected !== undefined) {
-          draft = { schemaVersion: draft.schemaVersion, roles: { ...selected.roles } };
+          draft = structuredClone({ schemaVersion: draft.schemaVersion, roles: selected.roles });
           dirty = true;
         }
       }
@@ -177,12 +182,27 @@ export async function interactiveModelSelector(
     for (const role of roles) {
       const selected = await chooseModel(
         role,
-        draft.roles[role],
+        formatModelTarget(draft.roles[role]),
         catalog.models.filter((model) => !model.startsWith("openrouter/")),
+        "principal",
       );
       if (selected === undefined) break;
-      if (selected !== draft.roles[role]) {
-        draft = { ...draft, roles: { ...draft.roles, [role]: selected } };
+      const alternative = await chooseModel(
+        role,
+        formatModelTarget(draft.roles[role].alternative),
+        catalog.models.filter((model) => !model.startsWith("openrouter/")),
+        "alternativo",
+      );
+      if (alternative === undefined) break;
+      const currentAssignment = draft.roles[role];
+      if (selected !== formatModelTarget(currentAssignment) || alternative !== formatModelTarget(currentAssignment.alternative)) {
+        draft = {
+          ...draft,
+          roles: {
+            ...draft.roles,
+            [role]: { ...parseModelTarget(selected), alternative: parseModelTarget(alternative) },
+          },
+        };
         dirty = true;
       }
     }
