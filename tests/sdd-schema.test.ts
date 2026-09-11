@@ -2,12 +2,16 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import {
   ResearchCapsuleSchema,
+  ResearchCapsulePayloadSchema,
   SpecCapsuleSchema,
+  SpecCapsulePayloadSchema,
   TaskGraphSchema,
+  TaskGraphPayloadSchema,
   validateSddArtifacts,
   nextPendingTask,
   markTaskStatus,
   formatZodIssues,
+  canonicalSddPayload,
   type ResearchCapsule,
   type SpecCapsule,
   type TaskGraph,
@@ -87,6 +91,40 @@ test("schemas accept valid capsules and reject unknown keys", () => {
   const polluted = { ...makeSpec(), invented: true };
   const rejected = SpecCapsuleSchema.safeParse(polluted);
   assert.equal(rejected.success, false);
+});
+
+test("operational capsule schemas exclude volatile persistence timestamps", () => {
+  const { createdAt: _researchCreatedAt, ...research } = makeResearch();
+  const { createdAt: _specCreatedAt, ...spec } = makeSpec();
+  const { createdAt: _tasksCreatedAt, ...tasks } = makeTasks();
+
+  assert.ok(ResearchCapsulePayloadSchema.safeParse(research).success);
+  assert.ok(SpecCapsulePayloadSchema.safeParse(spec).success);
+  assert.ok(TaskGraphPayloadSchema.safeParse(tasks).success);
+  assert.equal(ResearchCapsulePayloadSchema.safeParse(makeResearch()).success, false);
+  assert.equal(SpecCapsulePayloadSchema.safeParse(makeSpec()).success, false);
+  assert.equal(TaskGraphPayloadSchema.safeParse(makeTasks()).success, false);
+
+  const source = makeResearch();
+  const shuffled: ResearchCapsule = {
+    createdAt: "2026-09-11T12:34:56.000Z",
+    unknowns: source.unknowns,
+    constraints: source.constraints,
+    relevantNodes: source.relevantNodes,
+    evidence: source.evidence.map((item) => ({
+      source: item.source,
+      ...(item.line === undefined ? {} : { line: item.line }),
+      file: item.file,
+      claim: item.claim,
+    })),
+    objective: source.objective,
+    ticketId: source.ticketId,
+    schemaVersion: source.schemaVersion,
+  };
+  const first = canonicalSddPayload(source);
+  const second = canonicalSddPayload(shuffled);
+  assert.equal(first, second);
+  assert.doesNotMatch(first, /createdAt/u);
 });
 
 test("schema rejects malformed requirement and task ids", () => {

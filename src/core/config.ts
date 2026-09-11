@@ -7,17 +7,17 @@ import type { MrPaths } from "./paths.js";
 import { ModelMapSchema, type ModelMap, type WorkspaceProfile } from "./schema.js";
 
 const DEFAULT_ROLES: Record<string, string> = {
-  orchestrator: "github-copilot/kimi-k3",
-  explore: "github-copilot/gemini-3.7-flash",
-  plan: "github-copilot/gpt-5.6-sol",
-  general: "github-copilot/kimi-k3",
-  sddApply: "github-copilot/gpt-5.6-sol",
-  judgeA: "github-copilot/grok-4.6",
-  judgeB: "github-copilot/claude-opus-5",
-  fix: "github-copilot/gpt-5.6-sol",
-  bpExtractor: "github-copilot/gpt-4o-mini",
-  bpArchitect: "github-copilot/gemini-3.8-flash",
-  bpTransactor: "github-copilot/gpt-4o-mini",
+  orchestrator: "opencode-go/deepseek-v4.1-flash",
+  explore: "github-copilot/gemini-3.8-flash",
+  plan: "openai/gpt-5.6-sol",
+  general: "opencode-go/deepseek-v4-pro",
+  sddApply: "opencode-go/deepseek-v4.1-flash",
+  judgeA: "github-copilot/claude-opus-4.8-fast",
+  judgeB: "opencode-go/grok-4.6",
+  fix: "opencode-go/muse-spark-1.3-contributor",
+  bpExtractor: "opencode-go/deepseek-v4.1-flash",
+  bpArchitect: "openai/gpt-5.6-sol",
+  bpTransactor: "opencode-go/deepseek-v4.1-flash",
 };
 
 export async function loadModels(paths: MrPaths): Promise<ModelMap> {
@@ -76,13 +76,12 @@ interface AgentDefinition {
   readonly permission?: Record<string, PermissionValue>;
 }
 
-export function commandDefinitions(models: ModelMap): Record<string, CommandDefinition> {
+export function commandDefinitions(_models: ModelMap): Record<string, CommandDefinition> {
   return {
     flow: {
         description: "Inicia o continúa el flujo determinista de entrega quirúrgica de tickets con el Orchestrator",
         agent: "orchestrator",
         template: `You are executing the /flow deterministic workflow.
-Input: $ARGUMENTS
 
 Follow these steps:
 1. Check current flow status using tool \`mr_flow_status\`.
@@ -100,39 +99,48 @@ Follow these steps:
    - Phase 'judgment' (if difficulty >= 5): Request independent adversarial reviews from \`mr-judge-a\` and \`mr-judge-b\`, submit their verdicts via \`mr_flow_judge\`.
    - Phase 'fix' (if judgment failed): Use \`mr-fix\` to address issues and call \`mr_flow_fix\`.
    - Phase 'finish': Verify final state, commit changes, optionally create PR, and invoke \`mr_flow_finish\`.
-4. Always ask and confirm state transitions with the user using the question tool before proceeding to destructive or closing actions.`,
+4. Always ask and confirm state transitions with the user using the question tool before proceeding to destructive or closing actions.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
       },
       atlas: {
         description: "Mapea, indexa y consulta el grafo de componentes y dependencias del workspace",
         agent: "build",
         template: `You are executing the /atlas cartography and dependency query workflow.
-Input: $ARGUMENTS
 
 Steps:
-1. If $ARGUMENTS is empty or contains "index":
+1. If the context input payload is empty or contains "index":
    - Use tool \`mr_atlas_index\` to index (or re-index) workspace TypeScript/React components and dependencies.
    - Report the summary stats (files, nodes, edges, duration) and breakdown.
-2. If $ARGUMENTS specifies a query, component name, or action:
+2. If the context input payload specifies a query, component name, or action:
    - Use tool \`mr_atlas_query\` to search for nodes, inspect dependencies, dependents, or calculate impact analysis.
-3. Report findings clearly to the user with structured markdown.`,
+3. Report findings clearly to the user with structured markdown.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
       },
       trace: {
         description: "Diagnóstico forense y análisis de impacto para componentes React",
         agent: "build",
         template: `You are executing the /trace React forensic diagnosis workflow.
-Input: $ARGUMENTS
 
 Steps:
-1. Extract the target React component name from $ARGUMENTS. If none is specified, ask the user which component to trace.
+1. Extract the target React component name from the context input payload. If none is specified, ask the user which component to trace.
 2. Call tool \`mr_trace_component\` with the componentName.
 3. Review the trace report (stale closures, missing hook dependencies, unused exports, impact).
-4. Present the diagnosis and propose the minimal surgical fix if issues were found.`,
+4. Present the diagnosis and propose the minimal surgical fix if issues were found.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
       },
       propose: {
         description: "Diseña y refina una propuesta técnica/arquitectónica y la guarda tras confirmación",
         agent: "build",
         template: `You are executing the /propose technical and architectural proposal workflow.
-Input: $ARGUMENTS
 
 Steps:
 1. Clarify and iteratively refine the proposal with the user:
@@ -145,13 +153,16 @@ Steps:
 2. Ask the user if the proposal is sufficiently clear and ready to be finalized.
 3. ONLY when the user explicitly confirms (yes / sí / guardar):
    - Use tool \`mr_propose_save\` to persist the proposal into \`.aicontext/deliverables/mr/proposals/\`.
-   - Confirm the created file path to the user.`,
+   - Confirm the created file path to the user.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
       },
       prompt: {
         description: "Evoluciona y aterriza ideas en prompts avanzados y los copia al portapapeles tras confirmación",
         agent: "build",
         template: `You are executing the /prompt prompt engineering workflow.
-Input: $ARGUMENTS
 
 Steps:
 1. Analyze the input and determine the appropriate template (bugfix, feature, refactor, review) or help craft a specialized prompt.
@@ -159,13 +170,16 @@ Steps:
 3. Present the resulting prompt to the user and ask: "¿Deseas copiar este prompt al portapapeles? (sí / no)".
 4. ONLY when the user explicitly confirms (yes / sí / copiar):
    - Use tool \`mr_prompt_copy\` with the final prompt text.
-   - Confirm that the prompt has been copied to the system clipboard via \`pbcopy\` / clipboard.`,
+   - Confirm that the prompt has been copied to the system clipboard via \`pbcopy\` / clipboard.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
       },
       blueprint: {
         description: "Pipeline de aterrizaje de ideas/producto y análisis de tickets sincronizado con GitHub Projects v2 (SDD + RPI)",
         agent: "bp-architect",
         template: `You are executing the /blueprint workflow.
-Input: $ARGUMENTS
 
 Follow this deterministic 3-role pipeline:
 
@@ -177,10 +191,10 @@ Use the \`question\` tool to determine the path:
 ---
 
 ### 2. Path A: Aterrizar Idea (Product & Architecture Synthesis)
-1. **Intake & Context Gathering (bp-extractor / ${models.roles.bpExtractor})**:
+1. **Intake & Context Gathering (bp-extractor)**:
    - Ask the user to describe the idea.
    - Run \`bp-extractor\` to gather only relevant types/signatures from codebase/atlas and active conventions from engram memory (without raw markdowns).
-2. **Initial Synthesis (bp-architect / ${models.roles.bpArchitect})**:
+2. **Initial Synthesis (bp-architect)**:
    - Reason deeply on the idea + gathered signatures + memory.
    - Present a compact, condensed executive summary (under 20 lines).
    - Offload the full working reasoning directly to memory using \`engram_mem_save\` under topic \`blueprint/<slug>\`.
@@ -202,39 +216,41 @@ Use the \`question\` tool to determine the path:
 ---
 
 ### 3. Path B: Analizar / Gestionar Ticket (GitHub Projects v2)
-1. **Target Detection & Extraction (bp-extractor / ${models.roles.bpExtractor})**:
+1. **Target Detection & Extraction (bp-extractor)**:
    - Auto-detect the current repository or prompt the user with available workspace repos.
    - Fetch the ticket / Project v2 item via \`gh\` CLI or GraphQL query tool \`mr_blueprint_graphql\`.
    - Extract only relevant code signatures and Engram memory.
-2. **Analysis & Synthesis (bp-architect / ${models.roles.bpArchitect})**:
+2. **Analysis & Synthesis (bp-architect)**:
    - Evaluate the ticket scope against code contracts and architectural memory.
    - Generate a concise assessment: Objectives, Impact Matrix, Dependencies, and Proposed Modifications.
-3. **Transactional Dispatch (bp-transactor / ${models.roles.bpTransactor})**:
+3. **Transactional Dispatch (bp-transactor)**:
    - If editing, updating, creating sub-tasks, or deleting:
      * Display a concise diff/preview using \`mr_blueprint_safety_gate\` (Safety Gate).
      * Request user confirmation via \`question\` tool before proceeding.
-     * Execute the mutation with \`bp-transactor\` and return the updated Project v2 item URL.`,
+     * Execute the mutation with \`bp-transactor\` and return the updated Project v2 item URL.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
       },
       "flow-models": {
         description: "Configura interactivamente el modelo de cada proceso y step de /flow y /blueprint",
         agent: "orchestrator",
         template: `You are executing the /flow-models interactive model configuration workflow.
 
-Current assignments at command generation time:
-── /flow ──
-${Object.entries(models.roles).filter(([r]) => !r.startsWith("bp")).map(([role, model]) => `- ${role}: ${model}`).join("\n")}
-── /blueprint ──
-${Object.entries(models.roles).filter(([r]) => r.startsWith("bp")).map(([role, model]) => `- ${role}: ${model}`).join("\n")}
-
 Rules:
-1. Use \`mr_models\` with action \`status\` to load the current assignments. Do not rely on the snapshot above after this point.
+1. Use \`mr_models\` with action \`status\` to load the current assignments. The tool result is the only authoritative roster.
 2. Use the native \`question\` tool for every choice so the user gets an interactive terminal UI. Allow choosing by steps: all processes, /flow steps (orchestrator, explore, plan, general, sddApply, judgeA, judgeB, fix), or /blueprint steps (bpExtractor, bpArchitect, bpTransactor).
 3. After a quota failure, call \`mr_models\` with action \`candidates\`, the affected role, and the failed model. Present its alternatives and its quota warning; cancelling means do not call \`set\`.
 4. For a normal process change, call \`mr_models\` with action \`providers\`, ask for the provider, then call it with action \`models\` and that provider. Ask the user to choose or enter a \`provider/model-id\`.
 5. Show the current assignment and mark it clearly. Never select a model without the user's explicit choice.
 6. Persist the selection with \`mr_models\` action \`set\`, role and model. Then offer to configure another process/step.
 7. When finished, show the resulting roster and remind the user to restart active OpenCode sessions.
-8. If the user asks for the direct no-LLM terminal editor, tell them to run \`mr flow-models\`.`,
+8. If the user asks for the direct no-LLM terminal editor, tell them to run \`mr flow-models\`.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
       },
   };
 }
@@ -327,12 +343,42 @@ Contract:
 3. Run the task's verify commands and report real output. If verification fails, fix within scope or report the blocker; never fake results.
 4. Do not mark the task done yourself; the orchestrator calls mr_sdd_task_status after verification.`,
       },
-      "mr-judge-a": readonlyAgent(models.roles.judgeA, "Reviews a change adversarially without editing."),
-      "mr-judge-b": readonlyAgent(models.roles.judgeB, "Performs an independent adversarial review without editing."),
+      "mr-judge-a": readonlyAgent(
+        models.roles.judgeA,
+        "Reviews a change adversarially without editing.",
+        `You are Judge A, the independent security and contract reviewer. You never edit.
+
+Contract:
+1. Review only the supplied ticket/specification and approved diff; do not infer unobserved runtime behavior.
+2. Look for correctness, security, data-contract, concurrency, and scope-boundary failures.
+3. Classify findings as critical, warning, or suggestion and attach exact file/line evidence when available.
+4. Submit one strict verdict through mr_flow_judge with judge=a. Approve only when no critical finding remains.
+5. Stay independent from Judge B and from implementation agents; never reconcile verdicts yourself.`,
+      ),
+      "mr-judge-b": readonlyAgent(
+        models.roles.judgeB,
+        "Performs an independent adversarial review without editing.",
+        `You are Judge B, the independent QA and regression reviewer. You never edit.
+
+Contract:
+1. Review only the supplied ticket/specification and approved diff; do not infer unobserved runtime behavior.
+2. Look for missing tests, edge cases, backwards-compatibility breaks, acceptance-criteria gaps, and unintended side effects.
+3. Classify findings as critical, warning, or suggestion and attach exact file/line evidence when available.
+4. Submit one strict verdict through mr_flow_judge with judge=b. Approve only when no critical finding remains.
+5. Stay independent from Judge A and from implementation agents; never reconcile verdicts yourself.`,
+      ),
       "mr-fix": {
         mode: "subagent",
         model: models.roles.fix,
         description: "Applies only validated review findings.",
+        prompt: `You are the bounded remediation agent. You apply only validated critical findings from Judgment Day.
+
+Contract:
+1. Treat the approved specification, declared file scope, and validated findings as immutable inputs.
+2. Make the smallest correction that resolves each critical finding; preserve unrelated work and do not broaden scope.
+3. Run the declared verification commands and report their real results. Never claim unobserved success.
+4. Stop and report a blocker when a finding cannot be fixed inside the declared scope.
+5. Do not change flow state yourself; the orchestrator calls mr_flow_fix after verification.`,
       },
       "bp-extractor": {
         mode: "subagent",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -121,6 +121,45 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
     assert.doesNotMatch(candidatesRes.output, /^- github-copilot\/kimi-k3$/mu);
     assert.ok(Object.keys(tools["mr_propose_save"]!.args).length >= 5, "mr_propose_save must define arguments");
     assert.ok(Object.keys(tools["mr_prompt_build"]!.args).length >= 2, "mr_prompt_build must define arguments");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("SDD tools keep audit timestamps on disk and out of model-facing JSON", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await MrOrchestrator(ctx.mockContext);
+    assert.ok(hooks.tool);
+    const tools = hooks.tool;
+    const research = {
+      schemaVersion: 1,
+      ticketId: "GH-CACHE",
+      objective: "Stabilize SDD prompt prefixes",
+      evidence: [{ claim: "Capsules are persisted by the SDD tool", file: "src/plugin.ts", line: 909, source: "read" }],
+      relevantNodes: ["saveSddArtifact"],
+      constraints: ["Do not expose audit timestamps to the model"],
+      unknowns: [],
+    };
+
+    const submit = await tools["mr_sdd_submit"]!.execute({
+      kind: "research",
+      payload: JSON.stringify(research),
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(submit.title, "SDD Research Saved");
+
+    const persistedPath = join(ctx.paths.generatedRoot, ctx.profile.id, "sdd", "research.json");
+    const persisted = JSON.parse(await readFile(persistedPath, "utf8")) as Record<string, unknown>;
+    assert.equal(typeof persisted["createdAt"], "string");
+
+    const loaded = await tools["mr_sdd_get"]!.execute({ kind: "research" }, ctx.dummyToolContext) as {
+      title: string;
+      output: string;
+    };
+    assert.equal(loaded.title, "SDD Research");
+    const operational = JSON.parse(loaded.output) as Record<string, unknown>;
+    assert.deepEqual(operational, research);
+    assert.equal("createdAt" in operational, false);
   } finally {
     ctx.cleanup();
   }
@@ -463,4 +502,3 @@ void test("Pillar 6 Structural AST Analysis: mr_flow_implement rejects files wit
     ctx.cleanup();
   }
 });
-
