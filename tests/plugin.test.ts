@@ -1,23 +1,18 @@
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { MrOrchestrator } from "../src/plugin.js";
+import { createMrOrchestrator } from "../src/plugin.js";
 import { resolvePaths } from "../src/core/paths.js";
 import { addWorkspace } from "../src/core/workspace.js";
 import { loadModels, seedModels } from "../src/core/config.js";
 import type { PluginInput, ToolContext } from "@opencode-ai/plugin";
 
 const sourceRoot = process.cwd();
-let contextQueue = Promise.resolve();
 
 async function createPluginContext() {
-  const previousContext = contextQueue;
-  let releaseContext = () => { /* initialized below */ };
-  contextQueue = new Promise<void>((resolve) => { releaseContext = resolve; });
-  await previousContext;
-
   const rawHome = await mkdtemp(join(tmpdir(), "mr-plugin-test-"));
   const home = await realpath(rawHome);
   const workspaceRoot = join(home, "my-repo");
@@ -45,10 +40,6 @@ export function Widget() {
   await seedModels(paths, sourceRoot);
   const profile = await addWorkspace(paths, workspaceRoot);
 
-  // Set HOME so resolvePaths() inside plugin uses our test sandbox
-  const prevHome = process.env["HOME"];
-  process.env["HOME"] = home;
-
   const mockContext: PluginInput = {
     client: {} as unknown as PluginInput["client"],
     project: {} as unknown as PluginInput["project"],
@@ -71,9 +62,7 @@ export function Widget() {
   };
 
   const cleanup = () => {
-    if (prevHome !== undefined) process.env["HOME"] = prevHome;
-    else delete process.env["HOME"];
-    releaseContext();
+    rmSync(home, { recursive: true, force: true });
   };
 
   return { home, workspaceRoot, paths, profile, mockContext, dummyToolContext, cleanup };
@@ -82,7 +71,7 @@ export function Widget() {
 void test("MrOrchestrator plugin exports all required tools with argument schemas", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool, "Plugin must define tools");
     const tools = hooks.tool;
 
@@ -140,7 +129,7 @@ void test("quota exhaustion promotes the role-specific alternative without repla
   const warnings: string[] = [];
   console.warn = (message?: unknown) => { warnings.push(String(message)); };
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks["chat.params"]);
     assert.ok(hooks.event);
     await hooks["chat.params"]({
@@ -177,7 +166,7 @@ void test("quota exhaustion promotes the role-specific alternative without repla
 void test("SDD tools keep audit timestamps on disk and out of model-facing JSON", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const research = {
@@ -216,7 +205,7 @@ void test("SDD tools keep audit timestamps on disk and out of model-facing JSON"
 void test("MrOrchestrator flow tools execute state machine transitions", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const dummyCtx = ctx.dummyToolContext;
@@ -272,7 +261,7 @@ void test("MrOrchestrator flow tools execute state machine transitions", async (
 void test("MrOrchestrator fail-closed CAS: mr_flow_finish aborts if code modified post-approval", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const dummyCtx = ctx.dummyToolContext;
@@ -326,7 +315,7 @@ void test("MrOrchestrator fail-closed CAS: mr_flow_finish aborts if code modifie
 void test("Pillar 7 Scope Enforcement: mr_flow_implement rejects mutations outside plan.files", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const dummyCtx = ctx.dummyToolContext;
@@ -362,7 +351,7 @@ void test("Pillar 7 Scope Enforcement: mr_flow_implement rejects mutations outsi
 void test("Pillar 7 Bounded Fix Loop: mr_flow_fix aborts after 3 attempts and escalates to human", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const dummyCtx = ctx.dummyToolContext;
@@ -415,7 +404,7 @@ void test("Pillar 7 Bounded Fix Loop: mr_flow_fix aborts after 3 attempts and es
 void test("Pillar 3 Fail-Closed Safety Gate: mr_blueprint_graphql aborts mutations without safetyGateTicket", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const dummyCtx = ctx.dummyToolContext;
@@ -438,7 +427,7 @@ void test("Pillar 3 Fail-Closed Safety Gate: mr_blueprint_graphql aborts mutatio
 void test("MrOrchestrator atlas and trace tools index and inspect codebase", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const dummyCtx = ctx.dummyToolContext;
@@ -464,7 +453,7 @@ void test("MrOrchestrator atlas and trace tools index and inspect codebase", asy
 void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit verdict", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const dummyCtx = ctx.dummyToolContext;
@@ -512,7 +501,7 @@ void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit 
 void test("Pillar 6 Structural AST Analysis: mr_flow_implement rejects files with syntax/parse errors", async () => {
   const ctx = await createPluginContext();
   try {
-    const hooks = await MrOrchestrator(ctx.mockContext);
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
     const dummyCtx = ctx.dummyToolContext;
