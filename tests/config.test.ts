@@ -4,20 +4,25 @@ import { agentDefinitions, buildOpenCodeConfig, commandDefinitions } from "../sr
 import type { ModelMap, WorkspaceProfile } from "../src/core/schema.js";
 
 const model = "github-copilot/gpt-5.6-sol";
+const assignment = (value: string) => ({
+  model: value,
+  variant: "high",
+  alternative: { model: "opencode-go/deepseek-v4-pro", variant: "high" },
+});
 const models: ModelMap = {
   schemaVersion: 1,
   roles: {
-    orchestrator: model,
-    explore: model,
-    plan: model,
-    general: model,
-    sddApply: model,
-    judgeA: model,
-    judgeB: model,
-    fix: model,
-    bpExtractor: model,
-    bpArchitect: model,
-    bpTransactor: model,
+    orchestrator: assignment(model),
+    explore: assignment(model),
+    plan: assignment(model),
+    general: assignment(model),
+    sddApply: assignment(model),
+    judgeA: assignment(model),
+    judgeB: assignment(model),
+    fix: assignment(model),
+    bpExtractor: assignment(model),
+    bpArchitect: assignment(model),
+    bpTransactor: assignment(model),
   },
 };
 const profile: WorkspaceProfile = {
@@ -33,13 +38,14 @@ void test("generated opencode config exposes a primary orchestrator and internal
     default_agent: string;
     disabled_providers?: string[];
     command: Record<string, { description?: string; agent?: string; template?: string }>;
-    agent: Record<string, { mode: string; permission?: Record<string, string | Record<string, string>> }>;
+    agent: Record<string, { mode: string; variant?: string; permission?: Record<string, string | Record<string, string>> }>;
   };
   const orchestrator = config.agent["orchestrator"];
   assert.ok(orchestrator);
   assert.equal(config.default_agent, "orchestrator");
   assert.deepEqual(config.disabled_providers, ["openrouter"]);
   assert.equal(orchestrator.mode, "primary");
+  assert.equal(orchestrator.variant, "high");
   assert.equal(orchestrator.permission?.["*"], "allow");
   assert.equal(Object.keys(config.agent).length, 11);
 
@@ -109,7 +115,7 @@ void test("all command templates keep one variable payload at the final cache bo
   const alternateModels: ModelMap = {
     ...models,
     roles: Object.fromEntries(
-      Object.keys(models.roles).map((role) => [role, `alternate/${role}`]),
+      Object.keys(models.roles).map((role) => [role, assignment(`alternate/${role}`)]),
     ) as ModelMap["roles"],
   };
   const commands = commandDefinitions(models);
@@ -127,7 +133,7 @@ void test("flow agent prompts are defined and invariant across model assignments
   const alternateModels: ModelMap = {
     ...models,
     roles: Object.fromEntries(
-      Object.keys(models.roles).map((role) => [role, `alternate/${role}`]),
+      Object.keys(models.roles).map((role) => [role, assignment(`alternate/${role}`)]),
     ) as ModelMap["roles"],
   };
   const agents = agentDefinitions(models);

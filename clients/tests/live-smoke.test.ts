@@ -74,11 +74,11 @@ test("persists a confirmed model change after recreating the real plugin bridge"
     expect(stdout).toContain("github-copilot/gpt-5.6-sol");
 
     const persisted = JSON.parse(await readFile(join(configRoot, "models.json"), "utf8")) as {
-      roles: Record<string, string>;
+      roles: Record<string, { model: string; alternative: { model: string } }>;
     };
-    expect(persisted.roles["explore"]).toBe("github-copilot/gpt-5.6-sol");
-    expect(persisted.roles["plan"]).toBe(initialRoles.plan);
-    expect(persisted.roles["fix"]).toBe(initialRoles.fix);
+    expect(persisted.roles["explore"]?.model).toBe("github-copilot/gpt-5.6-sol");
+    expect(persisted.roles["plan"]?.model).toBe(initialRoles.plan);
+    expect(persisted.roles["fix"]?.model).toBe(initialRoles.fix);
   } finally {
     await rm(sandbox, { recursive: true, force: true });
   }

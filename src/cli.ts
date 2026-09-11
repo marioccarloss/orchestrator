@@ -6,7 +6,7 @@ import { loadModels, seedModels, syncWorkspace } from "./core/config.js";
 import { runDoctor } from "./core/doctor.js";
 import { install, planUninstall, uninstall } from "./core/install.js";
 import { launch } from "./core/launch.js";
-import { setModelPreset, setModelRole, type ModelRole } from "./core/models.js";
+import { setModelPreset, setModelRole, type ModelRole, type ModelSlot } from "./core/models.js";
 import { resolvePaths } from "./core/paths.js";
 import { addWorkspace, detectWorkspace, loadRegistry, removeWorkspace } from "./core/workspace.js";
 import { approve, failure, heading, info, success, warning } from "./tui/index.js";
@@ -24,7 +24,7 @@ Usage:
   mr workspace add PATH
   mr workspace list
   mr workspace remove ID
-  mr models [list | set <role> <model> | preset <key>]
+  mr models [list | set <role> <model> [model|alternative] | preset <key>]
   mr flow-models
   mr sync [ID]
   mr doctor
@@ -121,8 +121,12 @@ async function commandModels(arguments_: readonly string[]): Promise<void> {
   if (sub === "set" && arguments_[1] !== undefined && arguments_[2] !== undefined) {
     const role = arguments_[1] as ModelRole;
     const model = arguments_[2];
-    await setModelRole(paths, role, model);
-    success(`Rol '${role}' actualizado a '${model}' y workspaces sincronizados.`);
+    const slot = (arguments_[3] ?? "model") as ModelSlot;
+    if (slot !== "model" && slot !== "alternative") {
+      throw new Error("Usage: mr models set <role> <model> [model|alternative]");
+    }
+    await setModelRole(paths, role, model, slot);
+    success(`Rol '${role}.${slot}' actualizado a '${model}' y workspaces sincronizados.`);
     return;
   }
   if (sub === "preset" && arguments_[1] !== undefined) {
