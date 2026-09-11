@@ -17,6 +17,10 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Upgraded the governed roster: GPT-5.6 Sol powers implementation/planning, while DeepSeek V4 Pro and Kimi K2.7 Code provide diverse OpenCode Go judgment.
 - Model configuration UIs and tools now display and edit both primary and alternative slots.
 
+### Fixed
+
+- Serialized plugin test sandboxes that mutate `HOME` and installed client-package dependencies in CI before root test discovery.
+
 ## [0.6.1] - 2026-09-11
 
 ### Changed

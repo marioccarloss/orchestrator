@@ -16,6 +16,7 @@ jobs:
         with:
           bun-version: 1.2.21
       - run: bun install --registry https://registry.npmjs.org --frozen-lockfile
+      - run: bun install --cwd clients --registry https://registry.npmjs.org --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint
       - run: bun run test
