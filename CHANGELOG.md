@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-11
+
+### Added
+
+- Static, model-invariant contracts for the Flow judges and bounded remediation agent.
+- Regression coverage for command suffix stability, model-invariant agent prompts, timestamp-free SDD context, canonical capsule ordering, and the governed model roster.
+
+### Changed
+
+- Moved `$ARGUMENTS` to a single final `[CONTEXT_INPUT_PAYLOAD]` boundary in every generated command so fixed instructions remain cacheable.
+- Removed generated model snapshots from `/blueprint` and `/flow-models`; the latter now loads the authoritative roster with `mr_models status`.
+- Split SDD/RPI capsules into timestamp-free operational payloads and persisted artifacts with audit metadata. `mr_sdd_get` and generated markdown no longer expose volatile timestamps.
+- Updated the repository seed and missing-role defaults to the governed eleven-role model roster.
+
 ## [0.5.0] - 2026-09-07
 
 ### Added

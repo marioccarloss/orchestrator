@@ -129,6 +129,7 @@ test("renderResearchCapsule produces evidence table", () => {
   assert.ok(md.includes("`src/core/atlas.ts:700`"));
   assert.ok(md.includes("invalidation policy"));
   assert.ok(md.includes("Generado por script"));
+  assert.doesNotMatch(md, /2026-09-01T00:00:00\.000Z/u);
 });
 
 test("renderSpecCapsule produces EARS acceptance criteria", () => {
@@ -151,6 +152,7 @@ test("renderSpecCapsule produces EARS acceptance criteria", () => {
   assert.ok(md.includes("**Dado** a cached graph"));
   assert.ok(md.includes("**Cuando** HEAD changes"));
   assert.ok(md.includes("**Entonces** the graph reindexes"));
+  assert.doesNotMatch(md, /2026-09-01T00:00:00\.000Z/u);
 });
 
 test("renderTaskGraph shows progress and file tables", () => {
@@ -173,6 +175,7 @@ test("renderTaskGraph shows progress and file tables", () => {
   assert.ok(md.includes("(1/1 completadas)"));
   assert.ok(md.includes("✅ T1: Add stamp"));
   assert.ok(md.includes("`src/core/atlas.ts`"));
+  assert.doesNotMatch(md, /2026-09-01T00:00:00\.000Z/u);
 });
 
 test("renderSddIssues separates errors and warnings", () => {

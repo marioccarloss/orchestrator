@@ -21,6 +21,25 @@ import { addWorkspace } from "../src/core/workspace.js";
 import type { WorkspaceProfile } from "../src/core/schema.js";
 import { classifyQuotaError, resolveModelRole } from "../src/core/quota.js";
 
+void test("repository models.json keeps the governed role roster", async () => {
+  const configured = JSON.parse(await readFile(join(process.cwd(), "models.json"), "utf8")) as {
+    roles: Record<string, string>;
+  };
+  assert.deepEqual(configured.roles, {
+    orchestrator: "opencode-go/deepseek-v4.1-flash",
+    explore: "github-copilot/gemini-3.8-flash",
+    plan: "openai/gpt-5.6-sol",
+    general: "opencode-go/deepseek-v4-pro",
+    sddApply: "opencode-go/deepseek-v4.1-flash",
+    judgeA: "github-copilot/claude-opus-4.8-fast",
+    judgeB: "opencode-go/grok-4.6",
+    fix: "opencode-go/muse-spark-1.3-contributor",
+    bpExtractor: "opencode-go/deepseek-v4.1-flash",
+    bpArchitect: "openai/gpt-5.6-sol",
+    bpTransactor: "opencode-go/deepseek-v4.1-flash",
+  });
+});
+
 void test("all 11 roles are defined with labels, descriptions, and recommended models", () => {
   const expectedRoles: ModelRole[] = [
     "orchestrator",
