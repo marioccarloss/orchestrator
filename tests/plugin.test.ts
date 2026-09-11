@@ -10,8 +10,14 @@ import { loadModels, seedModels } from "../src/core/config.js";
 import type { PluginInput, ToolContext } from "@opencode-ai/plugin";
 
 const sourceRoot = process.cwd();
+let contextQueue = Promise.resolve();
 
 async function createPluginContext() {
+  const previousContext = contextQueue;
+  let releaseContext = () => { /* initialized below */ };
+  contextQueue = new Promise<void>((resolve) => { releaseContext = resolve; });
+  await previousContext;
+
   const rawHome = await mkdtemp(join(tmpdir(), "mr-plugin-test-"));
   const home = await realpath(rawHome);
   const workspaceRoot = join(home, "my-repo");
@@ -66,6 +72,8 @@ export function Widget() {
 
   const cleanup = () => {
     if (prevHome !== undefined) process.env["HOME"] = prevHome;
+    else delete process.env["HOME"];
+    releaseContext();
   };
 
   return { home, workspaceRoot, paths, profile, mockContext, dummyToolContext, cleanup };
