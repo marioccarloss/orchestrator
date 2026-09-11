@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-09-11
+
+### Changed
+
+- Propagated the fixed-prefix/context-suffix contract to native Codex, Cursor, Claude Code, Antigravity, and AGY workflow adapters.
+- Expanded external Flow guidance for typed SDD submissions, deterministic task progression, fail-closed verification, blind dual judgment, and bounded remediation.
+- Kept adapter role contracts provider-neutral so the generated prompts do not embed stale model assignments.
+
 ## [0.6.0] - 2026-09-11
 
 ### Added
