@@ -19,7 +19,7 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Serialized plugin test sandboxes that mutate `HOME` and installed client-package dependencies in CI before root test discovery.
+- Isolated plugin test sandboxes through explicit path injection and installed client-package dependencies in CI before root test discovery.
 
 ## [0.6.1] - 2026-09-11
 
