@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { generatedConfigPath } from "./config.js";
+import { capabilityPaths, loadCapabilitySelection } from "./capabilities.js";
 import { loadManifest } from "./install.js";
 import type { MrPaths } from "./paths.js";
 import { runCommand } from "./process.js";
@@ -22,10 +23,39 @@ function commandVersion(command: string, arguments_: readonly string[]): CheckRe
 }
 
 export async function runDoctor(paths: MrPaths, env: NodeJS.ProcessEnv = process.env): Promise<readonly CheckResult[]> {
+  const capability = capabilityPaths(paths);
+  const selection = await loadCapabilitySelection(paths);
+  const selected = new Set(selection.selected);
   const checks: CheckResult[] = [
     commandVersion(paths.bunBinary, ["--version"]),
     commandVersion("opencode", ["--version"]),
   ];
+
+  if (selected.has("codebase-memory")) checks.push(commandVersion(capability.codebaseMemory, ["--version"]));
+  if (selected.has("codegraph")) checks.push(commandVersion(capability.codegraph, ["--version"]));
+  if (selected.has("engram")) checks.push(commandVersion(capability.engram, ["--version"]));
+  for (const [name, path, detail, capabilityId] of [
+    ["i-have-adhd", capability.adhdSkill, "installed for Orchestrator presentation only", "i-have-adhd"],
+    ["figma-live-mcp", capability.figmaLive, "server binary installed", "figma-live"],
+    ["Figma plugin manifest", capability.figmaPluginManifest, `import manually in Figma: ${capability.figmaPluginManifest}`, "figma-live"],
+  ] as const) {
+    if (!selected.has(capabilityId)) continue;
+    try {
+      await access(path);
+      checks.push({ name, ok: true, detail });
+    } catch {
+      checks.push({ name, ok: false, detail: `missing: ${path}` });
+    }
+  }
+  for (const id of ["github", "jira"] as const) {
+    if (!selected.has(id)) continue;
+    const ready = selection.credentials[id] === "ready";
+    checks.push({
+      name: `${id} credentials`,
+      ok: ready,
+      detail: ready ? "marked ready by user" : `pending; complete OAuth and run mr capabilities install`,
+    });
+  }
 
   const pathDirectories = (env["PATH"] ?? "").split(delimiter);
   checks.push({

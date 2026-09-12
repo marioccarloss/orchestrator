@@ -36,7 +36,11 @@ const home = homedir();
 const configHome = process.env["XDG_CONFIG_HOME"] ?? join(home, ".config");
 const dataHome = process.env["XDG_DATA_HOME"] ?? join(home, ".local", "share");
 const manifestPath = join(dataHome, "mr-orchestrator-clients", "manifest.json");
-const openCodePaths = [join(configHome, "opencode", "opencode.json"), join(configHome, "opencode", "opencode.jsonc")];
+const openCodePaths = [
+  join(configHome, "mr-orchestrator", "recommended-mcps.json"),
+  join(configHome, "opencode", "opencode.json"),
+  join(configHome, "opencode", "opencode.jsonc"),
+];
 
 function targetPath(target: ConfigTarget): string {
   if (target === "codex") return join(home, ".codex", "config.toml");

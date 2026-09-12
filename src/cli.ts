@@ -3,13 +3,16 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadModels, seedModels, syncWorkspace } from "./core/config.js";
+import { CAPABILITY_IDS, LOCAL_CAPABILITY_IDS, capabilityPaths, defaultCapabilitySelection, detectInstalledCapabilities, loadCapabilitySelection, saveCapabilitySelection, type CapabilitySelection } from "./core/capabilities.js";
 import { runDoctor } from "./core/doctor.js";
 import { install, planUninstall, uninstall } from "./core/install.js";
 import { launch } from "./core/launch.js";
 import { setModelPreset, setModelRole, type ModelRole, type ModelSlot } from "./core/models.js";
 import { resolvePaths } from "./core/paths.js";
 import { addWorkspace, detectWorkspace, loadRegistry, removeWorkspace } from "./core/workspace.js";
+import { spawnInteractive } from "./core/process.js";
 import { approve, failure, heading, info, success, warning } from "./tui/index.js";
+import { formatCapabilityGuide, interactiveCapabilitySelector } from "./tui/capabilities.js";
 import { formatModelMatrix, interactiveModelSelector } from "./tui/models.js";
 
 const sourceRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -19,7 +22,8 @@ function usage(): never {
   console.log(`mr-orchestrator
 
 Usage:
-  mr install [--workspace PATH] [--no-models]
+  mr install [--workspace PATH] [--no-models] [--capabilities-later]
+  mr capabilities [status | install | all]
   mr uninstall [--dry-run] [--purge] [--yes]
   mr workspace add PATH
   mr workspace list
@@ -43,9 +47,54 @@ async function version(): Promise<string> {
   return packageJson.version;
 }
 
+async function runCapabilityInstaller(selection: CapabilitySelection): Promise<boolean> {
+  const local = selection.selected.filter((id) => LOCAL_CAPABILITY_IDS.includes(id));
+  if (local.length === 0) return true;
+  const code = await spawnInteractive("/bin/sh", [
+    join(sourceRoot, "scripts", "install-capabilities.sh"),
+    paths.bunBinary,
+    ...local,
+  ], { cwd: sourceRoot, env: process.env });
+  return code === 0;
+}
+
+function capabilityReminder(selection: CapabilitySelection): void {
+  const pendingCredentials = (["github", "jira"] as const)
+    .filter((id) => selection.selected.includes(id) && selection.credentials[id] === "pending");
+  if (selection.selected.length < CAPABILITY_IDS.length || pendingCredentials.length > 0) {
+    warning(`Configuración de capacidades pendiente. Ejecuta \`mr capabilities install\` más tarde.${pendingCredentials.length > 0 ? ` Credenciales: ${pendingCredentials.join(", ")}.` : ""}`);
+  }
+  if (selection.selected.includes("figma-live")) {
+    info(`Figma: importa manualmente ${capabilityPaths(paths).figmaPluginManifest}`);
+  }
+}
+
+async function chooseCapabilities(
+  arguments_: readonly string[] = [],
+  options: { readonly initialInstall?: boolean } = {},
+): Promise<CapabilitySelection | null> {
+  if (arguments_.includes("--capabilities-later")) {
+    info("Skills y MCP aplazados. Continúa después con `mr capabilities install`.");
+    return { ...defaultCapabilitySelection(), selected: [], updatedAt: new Date().toISOString() };
+  }
+  if (process.stdin.isTTY && process.stdout.isTTY) return interactiveCapabilitySelector(paths);
+  if (options.initialInstall) {
+    info("Selección interactiva de skills/MCP omitida: se instalará la selección recomendada y GitHub/Jira quedarán pendientes de credenciales.");
+    return defaultCapabilitySelection();
+  }
+  info("Sin TTY: se reanudará la selección de capacidades guardada.");
+  return loadCapabilitySelection(paths);
+}
+
 async function commandInstall(arguments_: readonly string[]): Promise<void> {
   heading("mr-orchestrator install");
+  const capabilities = await chooseCapabilities(arguments_, { initialInstall: true });
+  if (capabilities === null) return;
   await seedModels(paths, sourceRoot);
+  await saveCapabilitySelection(paths, capabilities);
+  if (!(await runCapabilityInstaller(capabilities))) {
+    warning("Una o más capacidades no pudieron instalarse. La instalación principal continuará; reintenta con `mr capabilities install`.");
+  }
   if (!arguments_.includes("--no-models") && process.stdin.isTTY && process.stdout.isTTY) {
     await interactiveModelSelector(paths, { installation: true, sync: false });
     heading("Instalando mr-orchestrator");
@@ -57,10 +106,42 @@ async function commandInstall(arguments_: readonly string[]): Promise<void> {
   const workspaceRoot = option(arguments_, "--workspace");
   if (workspaceRoot !== undefined) {
     const profile = await addWorkspace(paths, workspaceRoot);
-    await syncWorkspace(paths, profile);
+    await syncWorkspace(paths, profile, sourceRoot);
     info(`Registered ${profile.name}: ${profile.root}`);
   }
+  capabilityReminder(capabilities);
   success("Installation complete. Run `mr doctor`.");
+}
+
+async function commandCapabilities(arguments_: readonly string[]): Promise<void> {
+  const action = arguments_[0] ?? "status";
+  if (action === "status") {
+    const selection = await loadCapabilitySelection(paths);
+    console.log(formatCapabilityGuide(selection, await detectInstalledCapabilities(paths, selection)));
+    info("Para instalar, reanudar o cambiar la selección: `mr capabilities install`.");
+    return;
+  }
+  let selection: CapabilitySelection | null;
+  if (action === "all") {
+    const current = await loadCapabilitySelection(paths);
+    selection = {
+      ...current,
+      selected: [...CAPABILITY_IDS],
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  else if (action === "install") selection = await chooseCapabilities();
+  else throw new Error("Usage: mr capabilities [status | install | all]");
+  if (selection === null) return;
+  await saveCapabilitySelection(paths, selection);
+  if (!(await runCapabilityInstaller(selection))) {
+    warning("La descarga quedó incompleta. Puedes continuar trabajando y reintentar con `mr capabilities install`.");
+  }
+  await install(paths, sourceRoot, await version());
+  const registry = await loadRegistry(paths);
+  for (const workspace of registry.workspaces) await syncWorkspace(paths, workspace, sourceRoot);
+  capabilityReminder(selection);
+  success("Selección de capacidades aplicada.");
 }
 
 async function commandUninstall(arguments_: readonly string[]): Promise<void> {
@@ -142,6 +223,7 @@ async function main(): Promise<void> {
   const [command, ...arguments_] = process.argv.slice(2);
   switch (command) {
     case "install": await commandInstall(arguments_); break;
+    case "capabilities": await commandCapabilities(arguments_); break;
     case "uninstall": await commandUninstall(arguments_); break;
     case "workspace": await commandWorkspace(arguments_); break;
     case "models": await commandModels(arguments_); break;

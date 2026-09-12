@@ -1,6 +1,6 @@
 # Manual de Uso de mr-orchestrator
 
-Esta guía explica en detalle cómo operar con `mr-orchestrator`, cómo interactuar con los comandos en los diferentes modos (`Orchestrator` y `build`), y cómo sacar el máximo provecho de sus capacidades de orquestación y ahorro de tokens.
+Esta guía explica cómo operar `mr-orchestrator` desde el modo normal de desarrollo. Los comandos seleccionan internamente el agente especializado; no necesitas cambiar manualmente a `Orchestrator` para usar `/flow`.
 
 ---
 
@@ -8,9 +8,9 @@ Esta guía explica en detalle cómo operar con `mr-orchestrator`, cómo interact
 
 - **`mr` (CLI Administrativo):** Herramienta de línea de comandos para gestionar la instalación, configuración de workspaces, diagnósticos y modelos.
 - **`mrcode` (Lanzador de OpenCode):** Wrapper inteligente que detecta en qué workspace te encuentras (inspeccionando el directorio de trabajo actual y sus ancestros) y arranca `opencode` inyectando la configuración compilada adecuada.
-- **Modos de Agente:**
-  - Modo `Orchestrator`: Modo primario enfocado en la orquestación integral de tareas y entrega de tickets mediante `/flow`.
-  - Modo `build`: Modo de desarrollo y asistencia donde se ejecutan los comandos técnicos especializados (`/atlas`, `/trace`, `/propose`, `/prompt`).
+- **Agentes internos:**
+  - `build` es el agente predeterminado para desarrollo y asistencia.
+  - `/flow` declara `agent: orchestrator`, por lo que OpenCode despacha automáticamente ese comando al coordinador primario sin pedir un cambio de modo.
 
 ---
 
@@ -75,7 +75,7 @@ cd ~/Projects/my-workspace/apps/api
 mrcode
 ```
 
-`mrcode` detectará automáticamente el workspace registrado y lanzará la interfaz TUI de OpenCode configurada con el modo `Orchestrator`.
+`mrcode` detectará automáticamente el workspace registrado y lanzará la interfaz TUI de OpenCode en el agente normal `build`. Al ejecutar `/flow`, OpenCode usa automáticamente el coordinador interno.
 
 ---
 
@@ -83,9 +83,9 @@ mrcode
 
 | Agente / Rol | Modo | Permisos | Propósito |
 |---|---|---|---|
-| `orchestrator` | Primary | Control de flujo y preguntas | Orquestador principal. Es el **único** agente donde se permite ejecutar `/flow`. |
+| `orchestrator` | Primary interno | Control de flujo y preguntas | Coordinador de `/flow`; el comando lo selecciona automáticamente. |
 | `mr-explore` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Mapeo rápido de archivos, lectura de código y consultas al grafo de Atlas. |
-| `mr-plan` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Planificación estructurada en formato JSON combinando SDD + RPI. |
+| `mr-plan` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Blueprint-lite, especificación y tareas en JSON tipado combinando SDD + RPI. |
 | `mr-general` | Subagent | Edición y bash controlados | Único implementador en dificultad 1-3; modelo potente porque el flujo Lite no ejecuta juicio ni fix. |
 | `mr-sdd-apply` | Subagent | Edición y bash controlados | Implementador especializado en dificultad 5+; aplica cada criterio SDD con verificación estricta. |
 | `mr-judge-a` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Primer revisor ciego adversarial del diff generado. |
@@ -96,7 +96,7 @@ mrcode
 
 ## 5. Comandos de Trabajo
 
-### En Modo `Orchestrator`:
+### `/flow` desde el modo normal:
 
 #### `/flow + [prompt]`
 Ejecuta el ciclo de vida completo de un requerimiento o ticket de forma controlada y determinista.
@@ -112,15 +112,20 @@ Ejecuta el ciclo de vida completo de un requerimiento o ticket de forma controla
    - Realiza un `git pull` de la rama base más reciente (`develop` o la default branch).
    - Genera la rama correspondiente siguiendo la receta de convención del workspace (ej: `feature/GH-123-slug` o `bugfix/GH-123-slug`) con una **única confirmación** del usuario.
 3. **Exploración y Planificación (SDD + RPI):**
-   - `mr-explore` mapea dependencias con Atlas y Engram.
-   - `mr-plan` genera una cápsula JSON de plan determinista.
-   - Se muestra el plan y se solicita aprobación al usuario.
+    - `mr-explore` mapea dependencias con Atlas y Engram.
+    - `mr-plan` ejecuta primero un Blueprint-lite en JSON. Si el ticket ya está claro, continúa sin preguntar. Si existe una ambigüedad que cambia comportamiento, contrato, seguridad, alcance o aceptación, devuelve como máximo tres preguntas ordenadas por riesgo.
+    - Las respuestas se convierten en un `PlanningBrief` `READY`; los supuestos solo pueden ser de riesgo bajo o medio. Este artefacto no genera Markdown.
+    - Después genera `SpecCapsule` y `TaskGraph`; su Markdown visible se renderiza por script con cero tokens de autoría LLM.
+    - Se muestra una explicación determinista de cinco líneas (`qué`, `por qué`, `cómo`, `prueba`) y se solicita aprobación. El agente no vuelve a parafrasearla.
 4. **Implementación Quirúrgica:**
-   - Dificultad 1-3: solo `mr-general` ejecuta cada tarea.
-   - Dificultad 5+: solo `mr-sdd-apply` ejecuta cada tarea con criterios SDD estrictos.
+    - Dificultad 1-3: solo `mr-general` ejecuta cada tarea.
+    - Dificultad 5+: solo `mr-sdd-apply` ejecuta cada tarea con criterios SDD estrictos.
+    - Cada `next-task` incorpora una nota ultracondensada `what/why/touch/prove` para que el developer entienda la intención, el alcance y cómo se demostrará sin añadir una explicación libre del modelo.
 5. **Día del Juicio (solo dificultad >= 5):**
-   - `mr-judge-a` y `mr-judge-b` evalúan el diff en paralelo.
-   - Se fusiona el veredicto y `mr-fix` aplica parches si existen observaciones críticas.
+    - `mr-judge-a` y `mr-judge-b` evalúan el diff en paralelo.
+    - Cada hallazgo debe declarar severidad, archivo, línea, lado (`new`/`old`) y un fragmento textual exacto del diff. El plugin rechaza mecánicamente citas inexistentes o requisitos desconocidos.
+    - Los dos veredictos quedan ligados al hash CAS del mismo diff; un cambio posterior invalida el juicio y los veredictos de rondas anteriores no se reutilizan.
+    - Se fusiona el veredicto y `mr-fix` aplica únicamente hallazgos críticos validados.
 6. **Compuerta de Finalización:**
    - Pregunta en la terminal: *"¿Damos por finalizada la tarea? (sí / no / otra)"*.
    - Si se indica *"no"* u *"otra"*, el ciclo continúa con ajustes.
@@ -182,10 +187,18 @@ Estas herramientas son invocadas internamente por los comandos y agentes, pero p
 | `mr_flow_ticket` | Carga el contenido del ticket en el flujo |
 | `mr_flow_plan` | Somete el plan de implementación para aprobación |
 | `mr_flow_implement` | Marca la implementación como completada |
-| `mr_flow_judge` | Somete el veredicto de un juez para el diff actual |
+| `mr_flow_judge` | Somete hallazgos estructurados; verifica archivo, línea, lado, snippet, requisito y hash del diff antes de aceptar el veredicto |
 | `mr_flow_fix` | Marca las correcciones como aplicadas |
 | `mr_flow_finish` | Finaliza el flujo con commit y PR opcional |
 | `mr_flow_abort` | Aborta el flujo actual |
+
+Cada estado incluye una línea de progreso tipo pedido:
+
+```text
+✓ Ticket  →  ✓ Research  →  ● Planning  →  ○ Implementation  →  ○ Review  →  ○ Delivery
+```
+
+También muestra el coste estimado por OpenCode, tokens de entrada/salida/razonamiento y uso de caché para las sesiones del coordinador y sus subagentes. Las actualizaciones repetidas del mismo mensaje se deduplican. El valor monetario proviene de la estimación de OpenCode basada en su catálogo de precios: no es una factura y puede ser `$0` cuando el proveedor o una suscripción no expone precio fiable. Tras cerrar el Flow, `/flow` status conserva el último total conocido. Los adaptadores MCP para clientes externos no reciben eventos de uso del host, por lo que allí el importe permanece en cero hasta que el cliente exponga esa telemetría.
 
 ### Herramientas SDD/RPI (`mr_sdd_*`)
 
@@ -193,15 +206,23 @@ Pipeline determinista de especificación y ejecución de tareas:
 
 | Tool | Propósito |
 |---|---|
-| `mr_sdd_submit` | Sube una cápsula tipada (research, spec, tasks) como JSON compacto. Valida con Zod + guardrails estructurales. Renderiza Markdown por script sin coste de tokens. |
-| `mr_sdd_get` | Lee cápsulas SDD como JSON compacto. `kind=next-task` devuelve la siguiente tarea accionable con criterios de aceptación pre-unidos. |
+| `mr_sdd_submit` | Sube una cápsula tipada (`research`, `brief`, `spec`, `tasks`) como JSON compacto. `brief=NEEDS_INPUT` devuelve 1-3 preguntas sin persistir; `brief=READY` persiste solo JSON. Las demás cápsulas renderizan Markdown por script sin coste de tokens. |
+| `mr_sdd_get` | Lee cápsulas SDD como JSON compacto. `kind=brief` lee el Blueprint-lite aprobado; `kind=next-task` devuelve la siguiente tarea accionable, criterios de aceptación y `developerNote` ultracondensada. |
 | `mr_sdd_task_status` | Marca el estado de una tarea (`pending`, `in_progress`, `done`, `blocked`). Solo marca `done` tras pasar los comandos de verificación. |
 
 **Flujo SDD/RPI típico:**
 1. `mr_sdd_submit kind=research` — Cápsula de evidencia del explore (archivos, líneas, constraints).
-2. `mr_sdd_submit kind=spec` — Especificación de requisitos R1..Rn con criterios de aceptación.
-3. `mr_sdd_submit kind=tasks` — Grafo de tareas T1..Tn con dependencias, archivos, verify y doneWhen.
-4. `mr_sdd_get kind=next-task` → implementar → `mr_sdd_task_status taskId done` (repetir).
+2. `mr_sdd_submit kind=brief` — Auto-continúa con `READY` o solicita hasta tres decisiones materiales con `NEEDS_INPUT`; el brief es JSON-only.
+3. `mr_sdd_submit kind=spec` — Especificación de requisitos R1..Rn con criterios de aceptación.
+4. `mr_sdd_submit kind=tasks` — Grafo de tareas T1..Tn con dependencias, archivos, verify y doneWhen.
+5. `mr_sdd_get kind=next-task` → implementar → `mr_sdd_task_status taskId done` (repetir).
+
+### Grounding y evidencia insuficiente
+
+- Todos los comandos y agentes reciben un contrato común: solo pueden usar tickets, cápsulas, resultados de tools, especificaciones y código/diffs inspeccionados.
+- Cuando falta evidencia esencial deben detenerse con `{"status":"INSUFFICIENT_EVIDENCE","missing":[...],"nextAction":"..."}`. `mr_sdd_submit` y `mr_flow_judge` reconocen este resultado sin persistir datos inventados ni avanzar la FSM.
+- En dificultad 5+, una tarea que modifica un archivo sin evidencia previa en ResearchCapsule es un error bloqueante. En Lite permanece como advertencia.
+- Los agentes generados usan `temperature: 0` y `top_p: 1`. Esto reduce variabilidad, pero no promete repetibilidad absoluta entre proveedores.
 
 ### Herramientas Atlas (`mr_atlas_*`)
 
@@ -297,11 +318,11 @@ O borra el caché para forzar re-indexado en la próxima consulta:
 rm ~/.cache/mr-orchestrator/<workspaceId>/atlas-graph.json
 ```
 
-### `/flow` no funciona en modo `build`
+### `/flow` no aparece o no encuentra sus tools
 
-**Causa:** Por diseño y seguridad, `/flow` requiere el control estricto de la máquina de estados y las compuertas interactivas del modo `Orchestrator`.
+**Causa:** El workspace no está registrado o la configuración generada es anterior a la instalación actual.
 
-**Solución:** Cambia al modo `Orchestrator` en la TUI de OpenCode, o ejecuta `mrcode` que lo configura por defecto.
+**Solución:** Ejecuta `mr workspace add <ruta>` si corresponde, luego `mr sync` y reinicia OpenCode. No cambies manualmente a `Orchestrator`: `/flow` ya declara ese agente internamente.
 
 ### Modifiqué `.aicontext` y no veo los cambios
 
@@ -313,8 +334,8 @@ rm ~/.cache/mr-orchestrator/<workspaceId>/atlas-graph.json
 
 ## 9. Preguntas Frecuentes
 
-**¿Por qué `/flow` no funciona en modo `build`?**
-Por diseño y seguridad, `/flow` requiere el control estricto de la máquina de estados y las compuertas interactivas del modo `Orchestrator`. El guard interno rechaza la ejecución de `/flow` fuera de su modo correspondiente.
+**¿Tengo que cambiar al modo `Orchestrator` para ejecutar `/flow`?**
+No. `build` es el agente predeterminado y `/flow` especifica `agent: orchestrator` en su definición. OpenCode ejecuta ese comando con el coordinador adecuado automáticamente.
 
 **¿Qué pasa si modifico los archivos de `.aicontext` del workspace?**
 `mr-orchestrator` compila la convención en memoria cacheada por hash. Cuando ejecutas `mr sync` o inicias un nuevo `/flow`, se recalculan las convenciones sin mutar tu repositorio git.

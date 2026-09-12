@@ -53,7 +53,8 @@ Tradicionalmente, los frameworks de agentes delegan la lógica de control, los b
 │   │   ├── schema.ts           # Esquemas Zod: Workspaces, ModelMap, Manifest, etc.
 │   │   ├── flow-schema.ts      # FSM Core: FlowState, FlowEvent, PlanCapsule, Verdicts, Migrations
 │   │   ├── flow-state.ts       # Persistencia y transiciones del estado de flujo
-│   │   ├── sdd-schema.ts       # Esquemas Zod para cápsulas SDD/RPI: ResearchCapsule, SpecCapsule, TaskGraph
+│   │   ├── sdd-schema.ts       # Esquemas Zod: ResearchCapsule, PlanningBrief, SpecCapsule, TaskGraph
+│   │   ├── flow-metrics.ts     # Coste/tokens por Flow, deduplicados por mensaje y sesión
 │   │   ├── render.ts           # Render determinista a Markdown (planes, status, veredictos)
 │   │   ├── ticket.ts           # Puerto y adaptadores de tickets (GitHub, Jira, GitLab, ask-once)
 │   │   ├── git.ts              # Resolutor de convenciones git, generación de ramas y PR ports
@@ -138,12 +139,12 @@ GitHub MCP Adapter    Jira Adapter          GitLab Stub
 ```text
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │   EXPLORE   │────>│    PLAN     │────>│  IMPLEMENT  │────>│    JUDGE    │
-│  (Research) │     │(Spec+Tasks) │     │  (Execute)  │     │  (Review)   │
+│  (Research) │     │(Brief+SDD)  │     │  (Execute)  │     │  (Review)   │
 └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
        │                   │                   │                   │
        ▼                   ▼                   ▼                   ▼
-  ResearchCapsule     SpecCapsule        TaskGraph           Verdicts
-  (evidencias)        (requisitos)       (tareas)            (A/B fusionados)
+  ResearchCapsule    PlanningBrief      TaskGraph           Verdicts
+  (evidencias)       + SpecCapsule      (tareas)            (A/B fusionados)
 ```
 
 ### Cápsulas SDD/RPI
@@ -151,6 +152,7 @@ GitHub MCP Adapter    Jira Adapter          GitLab Stub
 | Cápsula | Esquema Zod | Contenido | Renderizado |
 |---|---|---|---|
 | `ResearchCapsule` | `ResearchCapsuleSchema` | Evidencias (archivo:línea), constraints, unknowns | `renderResearchCapsule` |
+| `PlanningBrief` | `PlanningBriefSchema` | Blueprint-lite: decisiones y supuestos; `NEEDS_INPUT` limita la aclaración a 1-3 preguntas materiales | Ninguno (JSON-only) |
 | `SpecCapsule` | `SpecCapsuleSchema` | Requisitos R1..Rn con criterios de aceptación | `renderSpecCapsule` |
 | `TaskGraph` | `TaskGraphSchema` | Tareas T1..Tn con `dependsOn`, `files`, `verify`, `doneWhen` | `renderTaskGraph` |
 
@@ -160,12 +162,30 @@ Antes de aceptar una cápsula `TaskGraph`, el sistema valida:
 - **Cobertura de requisitos:** Cada R1..Rn debe estar cubierto por al menos una tarea.
 - **Aciclicidad:** El grafo de dependencias `dependsOn` no puede tener ciclos.
 - **Requisitos conocidos:** Las tareas solo pueden referenciar requisitos definidos en el `SpecCapsule`.
+- **Grounding por archivo:** En flujos Full, todo archivo modificado debe aparecer en la evidencia de Research; en Lite se reporta como warning.
+
+### Controles anti-alucinación
+
+- Un contrato estático común prohíbe inventar hechos y define `INSUFFICIENT_EVIDENCE` como salida canónica cuando falta contexto esencial.
+- Los agentes se generan con `temperature: 0` y `top_p: 1`; no se configura `seed` porque OpenCode no ofrece una opción portable entre proveedores.
+- Research, PlanningBrief, Spec y Tasks usan `z.strictObject`, límites de longitud y validación cruzada fail-closed.
+- Cada finding de Judgment Day cita `file`, `line`, `side`, `source=diff` y un snippet exacto. El plugin reconstruye ambos lados del diff y rechaza citas no verificables, requisitos desconocidos y combinaciones incoherentes de `approved`/hallazgos críticos.
+- Los veredictos incluyen el hash CAS de la ronda y se descartan si pertenecen a otro diff.
+- Los prompts de Research y Judgment contienen ejemplos estáticos mínimos de salida válida y rechazo por evidencia insuficiente, conservando el prefijo cacheable.
 
 ### Herramientas `mr_sdd_*`
 
-- **`mr_sdd_submit`:** Valida y persiste cápsulas. En éxito, renderiza Markdown por script (cero tokens de LLM) y devuelve un ack compacto. En fallo, devuelve los issues exactos de Zod para corrección.
+- **`mr_sdd_submit`:** Valida cápsulas. `brief=NEEDS_INPUT` devuelve hasta tres preguntas sin persistir; `brief=READY` persiste solo JSON. Research, Spec y Tasks renderizan Markdown por script (cero tokens de LLM) y devuelven un ack compacto.
 - **`mr_sdd_get`:** Lee cápsulas como JSON compacto. `kind=next-task` devuelve la siguiente tarea accionable con sus criterios de aceptación pre-unidos — el briefing exacto para implementar.
 - **`mr_sdd_task_status`:** Progresión determinista de estados. Solo marca `done` tras pasar los comandos `verify` de la tarea.
+
+### Progreso, coste y explicación didáctica
+
+- `renderFlowStatus` deriva mecánicamente un pipeline de seis pasos: Ticket → Research → Planning → Implementation → Review → Delivery. Review aparece omitido en Lite.
+- El hook `message.updated` toma `AssistantMessage.cost` y tokens normalizados de OpenCode. Cada message ID conserva el máximo observado para no sumar actualizaciones parciales repetidas.
+- `session.created` enlaza sesiones hijas con la sesión raíz de `/flow`; así el total incluye planner, implementadores y jueces cuando OpenCode reporta su uso.
+- `flow-metrics.json` conserva el Flow activo o el último finalizado. El coste es una estimación de OpenCode, no una garantía de facturación; proveedores sin pricing fiable pueden reportar cero.
+- `renderPlanExplanation` produce cinco líneas deterministas tras Planning. `buildTaskDeveloperNote` añade `what/why/touch/prove` al briefing de cada tarea. Los prompts prohíben que el agente duplique o expanda estas explicaciones.
 
 ---
 
@@ -175,6 +195,9 @@ Antes de aceptar una cápsula `TaskGraph`, el sistema valida:
 2. **Caché en disco con TTL y Hash:** Los esquemas de Figma y el contenido de tickets se descargan una sola vez a `.cache/` local.
 3. **Persistencia Engram en fronteras:** Las decisiones se graban en Engram exclusivamente al finalizar fases clave (e.g. fin de Plan, fin de Implementación), evitando la sobrecarga de llamadas continuas a memoria.
 4. **Skeletons deterministas (`mr_atlas_skeleton`):** Extrae imports y firmas de archivos fuente (TS/TSX/Java) o estructura de claves de configs (JSON/YAML) con cuerpos elididos, reduciendo el consumo de tokens en un 85-90% frente a la lectura completa.
+5. **Prefijos cacheables y chaining finitario:** Reglas y ejemplos permanecen antes de un único `[CONTEXT_INPUT_PAYLOAD]`; cada fase intercambia únicamente la cápsula tipada necesaria para la siguiente.
+6. **Blueprint-lite adaptativo:** La comprobación se resuelve en el mismo pase del planner. Los tickets claros añaden solo un `PlanningBrief` compacto; una segunda invocación ocurre únicamente cuando una decisión de alto impacto requiere respuesta humana.
+7. **Explicaciones sin segunda generación:** Los resúmenes didácticos se derivan por script de cápsulas ya existentes; no requieren una llamada adicional ni Markdown libre del modelo.
 
 ---
 
@@ -210,7 +233,7 @@ bun run check
 |---|---|---|---|
 | **F0** | **Scaffold, Toolchain & Launcher** | ✅ Completado | Repositorio independiente, Bun aislado, registry de workspaces, `mr install/uninstall` con manifest, launcher `mrcode` y `mr doctor`. |
 | **F1** | **FSM Core, Schemas & Render** | ✅ Completado | Modelado de estados de `/flow` (`FlowStateSchema`), esquemas Zod de `PlanCapsule`, framework de migraciones con versionado (`MigrationRegistry`) y motor de render determinista a Markdown (`renderPlanCapsule`, `renderFlowStatus`, `renderVerdict`). |
-| **F2** | **OpenCode Plugin & Guardias** | ✅ Completado | Plugin nativo TypeScript (`@opencode-ai/plugin`), guard `command.execute.before` para control estricto de modos (`Orchestrator` vs `build`), 9 herramientas `mr_flow_*` y TUI interactivo `mr models`. |
+| **F2** | **OpenCode Plugin & Guardias** | ✅ Completado | Plugin nativo TypeScript (`@opencode-ai/plugin`), despacho de `/flow` al coordinador mediante la asignación declarativa de agente, herramientas `mr_flow_*` y TUI interactivo `mr models`. |
 | **F3** | **`/flow` Lite & Adapters** | ✅ Completado | Flujo completo de dificultad 1-3 con arquitectura hexagonal (`TicketPort`, `PrPort`, `GitConventionResolver`), adaptadores GitHub/Jira/GitLab, ask-once de plataforma y generación determinista de ramas/commits. |
 | **F4** | **Judgment Day (Jueces A/B)** | ✅ Completado | Flujo de dificultad 5+ con revisión adversarial paralela (`mr-judge-a` vs `mr-judge-b`), fusión estricta de veredictos (`mergeVerdicts`), y bucle de corrección acotado (`FixLoopState`) con escalado a humano tras 3 intentos. |
 | **F5** | **Cartógrafo `/atlas`** | ✅ Completado | Indexador determinista con **tree-sitter** (TypeScript/TSX y Java) y parser YAML/JSON sobre repositorios frontend/backend, grafo JSON con nodos y aristas, análisis de impacto (`getImpactAnalysis`), `governance.json` y persistencia en caché XDG. |

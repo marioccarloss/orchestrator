@@ -149,8 +149,8 @@ test("transition from implement skips judgment for Lite and requires it for Full
     difficulty: 3,
     completedFiles: [],
   };
-  const event: FlowEvent = { type: "implement_done", completedFiles: ["src/foo.ts"] };
-  const nextLite = transition(implementStateLite, event);
+  const liteEvent: FlowEvent = { type: "implement_done", completedFiles: ["src/foo.ts"] };
+  const nextLite = transition(implementStateLite, liteEvent);
   assert.equal(nextLite.phase, "finish");
 
   const implementStateFull: FlowState = {
@@ -159,8 +159,13 @@ test("transition from implement skips judgment for Lite and requires it for Full
     difficulty: 5,
     completedFiles: [],
   };
-  const nextFull = transition(implementStateFull, event);
+  const legacyFull = transition(implementStateFull, liteEvent);
+  assert.equal(legacyFull.phase, "judgment");
+  if (legacyFull.phase === "judgment") assert.equal(legacyFull.diffHash, "legacy-unbound");
+  const fullEvent: FlowEvent = { type: "implement_done", completedFiles: ["src/foo.ts"], diffHash: "a".repeat(64) };
+  const nextFull = transition(implementStateFull, fullEvent);
   assert.equal(nextFull.phase, "judgment");
+  if (nextFull.phase === "judgment") assert.equal(nextFull.diffHash, "a".repeat(64));
 });
 
 test("implementation agent follows the Fibonacci execution tier", () => {

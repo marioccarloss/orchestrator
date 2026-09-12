@@ -163,12 +163,81 @@ void test("quota exhaustion promotes the role-specific alternative without repla
   }
 });
 
+void test("Flow status tracks order-style progress and provider-reported usage across child sessions", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    assert.ok(hooks.tool);
+    assert.ok(hooks.event);
+    const tools = hooks.tool;
+    await tools["mr_flow_start"]!.execute({ difficulty: 5, ticketId: "GH-USAGE", hasFigma: false }, ctx.dummyToolContext);
+
+    const assistantMessage = {
+      id: "message-root",
+      sessionID: "test-session",
+      role: "assistant",
+      time: { created: Date.now(), completed: Date.now() },
+      parentID: "user-message",
+      modelID: "gpt-5.6-sol",
+      providerID: "openai",
+      mode: "orchestrator",
+      path: { cwd: ctx.workspaceRoot, root: ctx.workspaceRoot },
+      cost: 0.01,
+      tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 40, write: 0 } },
+    };
+    await hooks.event({ event: { type: "message.updated", properties: { info: assistantMessage } } } as never);
+    await hooks.event({ event: { type: "message.updated", properties: { info: { ...assistantMessage, cost: 0.012, tokens: { ...assistantMessage.tokens, output: 25 } } } } } as never);
+    await hooks.event({ event: { type: "session.created", properties: { info: { id: "child-session", parentID: "test-session" } } } } as never);
+    await hooks.event({ event: { type: "message.updated", properties: { info: {
+      ...assistantMessage,
+      id: "message-child",
+      sessionID: "child-session",
+      cost: 0.02,
+      tokens: { input: 80, output: 10, reasoning: 0, cache: { read: 10, write: 2 } },
+    } } } } as never);
+
+    await tools["mr_flow_ticket"]!.execute({ title: "Track Flow usage", description: "Show progress and spend" }, ctx.dummyToolContext);
+    const status = await tools["mr_flow_status"]!.execute({}, ctx.dummyToolContext) as { output: string };
+    assert.match(status.output, /✓ Ticket {2}→ {2}● Research/u);
+    assert.match(status.output, /\$0\.0320 USD/u);
+    assert.match(status.output, /180\/35\/5/u);
+    assert.match(status.output, /2 sesiones/u);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("Flow status remains available through MCP facades that omit ToolContext", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    assert.ok(hooks.tool);
+    await hooks.tool["mr_flow_start"]!.execute({ difficulty: 3, ticketId: "GH-MCP", hasFigma: false }, undefined as never);
+    const status = await hooks.tool["mr_flow_status"]!.execute({}, undefined as never) as { output: string };
+    assert.match(status.output, /Coste estimado por OpenCode/u);
+    assert.match(status.output, /1 sesiones/u);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 void test("SDD tools keep audit timestamps on disk and out of model-facing JSON", async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
     const tools = hooks.tool;
+    const blocked = await tools["mr_sdd_submit"]!.execute({
+      kind: "research",
+      payload: JSON.stringify({
+        status: "INSUFFICIENT_EVIDENCE",
+        missing: ["source defining the requested behavior"],
+        nextAction: "inspect the defining symbol",
+      }),
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(blocked.title, "SDD research Blocked");
+    assert.ok(blocked.output.includes("INSUFFICIENT_EVIDENCE"));
+
     const research = {
       schemaVersion: 1,
       ticketId: "GH-CACHE",
@@ -197,6 +266,127 @@ void test("SDD tools keep audit timestamps on disk and out of model-facing JSON"
     const operational = JSON.parse(loaded.output) as Record<string, unknown>;
     assert.deepEqual(operational, research);
     assert.equal("createdAt" in operational, false);
+
+    const needsInput = await tools["mr_sdd_submit"]!.execute({
+      kind: "brief",
+      payload: JSON.stringify({
+        schemaVersion: 1,
+        ticketId: "GH-CACHE",
+        status: "NEEDS_INPUT",
+        questions: [{
+          id: "Q1",
+          question: "Must existing clients remain compatible?",
+          reason: "The answer changes the public contract",
+          risk: "high",
+          options: ["yes", "no"],
+        }],
+      }),
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(needsInput.title, "SDD Planning Input Required");
+    assert.equal(JSON.parse(needsInput.output).status, "NEEDS_INPUT");
+
+    const readyBrief = {
+      schemaVersion: 1,
+      ticketId: "GH-CACHE",
+      status: "READY",
+      mode: "guided",
+      decisions: [{ questionId: "Q1", decision: "Preserve existing clients", source: "user" }],
+      assumptions: [],
+    };
+    const briefSubmit = await tools["mr_sdd_submit"]!.execute({
+      kind: "brief",
+      payload: JSON.stringify(readyBrief),
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(briefSubmit.title, "SDD Planning Brief Saved");
+    assert.doesNotMatch(briefSubmit.output, /\.md/u);
+
+    const loadedBrief = await tools["mr_sdd_get"]!.execute({ kind: "brief" }, ctx.dummyToolContext) as {
+      title: string;
+      output: string;
+    };
+    assert.equal(loadedBrief.title, "SDD Planning Brief");
+    assert.deepEqual(JSON.parse(loadedBrief.output), readyBrief);
+
+    await tools["mr_sdd_submit"]!.execute({
+      kind: "brief",
+      payload: needsInput.output,
+    }, ctx.dummyToolContext);
+    const clearedBrief = await tools["mr_sdd_get"]!.execute({ kind: "brief" }, ctx.dummyToolContext) as { output: string };
+    assert.equal(clearedBrief.output, "No planning brief found.");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("active Flow planning requires a READY Blueprint-lite brief before the spec", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    assert.ok(hooks.tool);
+    const tools = hooks.tool;
+    await tools["mr_flow_start"]!.execute({ difficulty: 3, ticketId: "GH-BRIEF", hasFigma: false }, ctx.dummyToolContext);
+    await tools["mr_flow_ticket"]!.execute({
+      title: "Require planning brief",
+      description: "Exercise the adaptive planning gate",
+      platform: "github",
+    }, ctx.dummyToolContext);
+
+    const spec = {
+      schemaVersion: 1,
+      ticketId: "GH-BRIEF",
+      goal: "Require an assessed planning brief",
+      scopeIn: ["Flow planning"],
+      scopeOut: [],
+      requirements: [{
+        id: "R1",
+        statement: "Planning must be assessed before specification",
+        acceptance: [{ when: "a Flow submits a spec", then: "a READY brief already exists" }],
+      }],
+      risks: [],
+    };
+    const rejected = await tools["mr_sdd_submit"]!.execute({ kind: "spec", payload: JSON.stringify(spec) }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(rejected.title, "SDD Spec Rejected");
+    assert.match(rejected.output, /No READY planning brief/u);
+
+    await tools["mr_sdd_submit"]!.execute({
+      kind: "brief",
+      payload: JSON.stringify({
+        schemaVersion: 1,
+        ticketId: "GH-BRIEF",
+        status: "READY",
+        mode: "auto",
+        decisions: [],
+        assumptions: [],
+      }),
+    }, ctx.dummyToolContext);
+    const accepted = await tools["mr_sdd_submit"]!.execute({ kind: "spec", payload: JSON.stringify(spec) }, ctx.dummyToolContext) as { title: string };
+    assert.equal(accepted.title, "SDD Spec Saved");
+
+    await tools["mr_sdd_submit"]!.execute({
+      kind: "tasks",
+      payload: JSON.stringify({
+        schemaVersion: 1,
+        ticketId: "GH-BRIEF",
+        tasks: [{
+          id: "T1",
+          title: "Enforce planning gate",
+          dependsOn: [],
+          requirements: ["R1"],
+          files: [{ path: "src/plugin.ts", action: "modify", reason: "Reject specs without briefs", risk: "medium" }],
+          verify: ["bun test tests/plugin.test.ts"],
+          doneWhen: ["Specs require a READY brief"],
+          status: "pending",
+        }],
+      }),
+    }, ctx.dummyToolContext);
+    const nextTask = await tools["mr_sdd_get"]!.execute({ kind: "next-task" }, ctx.dummyToolContext) as { output: string };
+    const nextPayload = JSON.parse(nextTask.output) as { developerNote: { what: string; why: string; touch: string; prove: string } };
+    assert.deepEqual(nextPayload.developerNote, {
+      what: "Enforce planning gate",
+      why: "Planning must be assessed before specification",
+      touch: "src/plugin.ts",
+      prove: "bun test tests/plugin.test.ts",
+    });
   } finally {
     ctx.cleanup();
   }
@@ -293,9 +483,11 @@ void test("MrOrchestrator fail-closed CAS: mr_flow_finish aborts if code modifie
     // Submit verdicts for judges A and B
     const judgeACtx = { ...dummyCtx, agent: "mr-judge-a" };
     const judgeBCtx = { ...dummyCtx, agent: "mr-judge-b" };
-    await tools["mr_flow_judge"]!.execute({ judge: "a", approved: true }, judgeACtx);
-    const judgeBRes = await tools["mr_flow_judge"]!.execute({ judge: "b", approved: true }, judgeBCtx) as { title: string };
-    assert.equal(judgeBRes.title, "Judgment Complete");
+    const judgeResults = await Promise.all([
+      tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: true, findings: [] }, judgeACtx),
+      tools["mr_flow_judge"]!.execute({ judge: "b", status: "SUPPORTED", approved: true, findings: [] }, judgeBCtx),
+    ]) as { title: string }[];
+    assert.deepEqual(new Set(judgeResults.map((result) => result.title)), new Set(["Verdict Recorded", "Judgment Complete"]));
 
     // Mutate file post-approval in workspaceRoot
     const targetFile = join(ctx.workspaceRoot, "src", "secure.ts");
@@ -373,23 +565,33 @@ void test("Pillar 7 Bounded Fix Loop: mr_flow_fix aborts after 3 attempts and es
 
     const judgeACtx = { ...dummyCtx, agent: "mr-judge-a" };
     const judgeBCtx = { ...dummyCtx, agent: "mr-judge-b" };
+    await writeFile(join(ctx.workspaceRoot, "src", "Widget.tsx"), "export const bug = true;\n");
+    const findings = [{
+      severity: "critical" as const,
+      claim: "Bug still present",
+      file: "src/Widget.tsx",
+      line: 1,
+      side: "new" as const,
+      source: "diff" as const,
+      evidence: "export const bug = true;",
+    }];
 
     // Round 1
     await tools["mr_flow_implement"]!.execute({ completedFiles: ["src/Widget.tsx"] }, dummyCtx);
-    await tools["mr_flow_judge"]!.execute({ judge: "a", approved: false, critical: ["Bug still present"] }, judgeACtx);
-    await tools["mr_flow_judge"]!.execute({ judge: "b", approved: false, critical: ["Bug still present"] }, judgeBCtx);
+    await tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: false, findings }, judgeACtx);
+    await tools["mr_flow_judge"]!.execute({ judge: "b", status: "SUPPORTED", approved: false, findings }, judgeBCtx);
     await tools["mr_flow_fix"]!.execute({}, dummyCtx);
 
     // Round 2
     await tools["mr_flow_implement"]!.execute({ completedFiles: ["src/Widget.tsx"] }, dummyCtx);
-    await tools["mr_flow_judge"]!.execute({ judge: "a", approved: false, critical: ["Bug still present"] }, judgeACtx);
-    await tools["mr_flow_judge"]!.execute({ judge: "b", approved: false, critical: ["Bug still present"] }, judgeBCtx);
+    await tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: false, findings }, judgeACtx);
+    await tools["mr_flow_judge"]!.execute({ judge: "b", status: "SUPPORTED", approved: false, findings }, judgeBCtx);
     await tools["mr_flow_fix"]!.execute({}, dummyCtx);
 
     // Round 3 (Attempt 3 rejected by judgment)
     await tools["mr_flow_implement"]!.execute({ completedFiles: ["src/Widget.tsx"] }, dummyCtx);
-    await tools["mr_flow_judge"]!.execute({ judge: "a", approved: false, critical: ["Bug still present"] }, judgeACtx);
-    await tools["mr_flow_judge"]!.execute({ judge: "b", approved: false, critical: ["Bug still present"] }, judgeBCtx);
+    await tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: false, findings }, judgeACtx);
+    await tools["mr_flow_judge"]!.execute({ judge: "b", status: "SUPPORTED", approved: false, findings }, judgeBCtx);
 
     // Calling mr_flow_fix at attempt 3 MUST throw and escalate to human review
     await assert.rejects(
@@ -478,20 +680,47 @@ void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit 
     // Orchestrator or worker trying to vote as Judge A MUST throw Role Segregation Violation
     const orchestratorCtx = { ...dummyCtx, agent: "orchestrator" };
     await assert.rejects(
-      () => tools["mr_flow_judge"]!.execute({ judge: "a", approved: true }, orchestratorCtx),
+      () => tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: true, findings: [] }, orchestratorCtx),
       /Role Segregation Violation: Caller 'orchestrator' is unauthorized to submit verdict for Judge A/
     );
 
     // Judge B trying to vote as Judge A MUST throw Role Segregation Violation
     const judgeBCtx = { ...dummyCtx, agent: "mr-judge-b" };
     await assert.rejects(
-      () => tools["mr_flow_judge"]!.execute({ judge: "a", approved: true }, judgeBCtx),
+      () => tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: true, findings: [] }, judgeBCtx),
       /Role Segregation Violation: Caller 'mr-judge-b' is unauthorized to submit verdict for Judge A/
     );
 
     // Authorized Judge A succeeds
     const judgeACtx = { ...dummyCtx, agent: "mr-judge-a" };
-    const resA = await tools["mr_flow_judge"]!.execute({ judge: "a", approved: true }, judgeACtx) as { title: string };
+    const blocked = await tools["mr_flow_judge"]!.execute({
+      judge: "a",
+      status: "INSUFFICIENT_EVIDENCE",
+      approved: false,
+      findings: [],
+      missing: ["current runtime trace"],
+      nextAction: "collect the trace",
+    }, judgeACtx) as { title: string };
+    assert.equal(blocked.title, "Judgment Blocked");
+
+    const unsupported = await tools["mr_flow_judge"]!.execute({
+      judge: "a",
+      status: "SUPPORTED",
+      approved: false,
+      findings: [{
+        severity: "critical",
+        claim: "Invented issue",
+        file: "src/missing.ts",
+        line: 99,
+        side: "new",
+        source: "diff",
+        evidence: "invented",
+      }],
+    }, judgeACtx) as { title: string; output: string };
+    assert.equal(unsupported.title, "Judgment Rejected");
+    assert.ok(unsupported.output.includes("not a visible new-side diff line"));
+
+    const resA = await tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: true, findings: [] }, judgeACtx) as { title: string };
     assert.equal(resA.title, "Verdict Recorded");
   } finally {
     ctx.cleanup();

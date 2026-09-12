@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import test from "node:test";
-import { agentDefinitions, buildOpenCodeConfig, commandDefinitions } from "../src/core/config.js";
+import { agentDefinitions, buildGlobalDefinitionFiles, buildOpenCodeConfig, commandDefinitions } from "../src/core/config.js";
+import { resolvePaths } from "../src/core/paths.js";
 import type { ModelMap, WorkspaceProfile } from "../src/core/schema.js";
 
 const model = "github-copilot/gpt-5.6-sol";
@@ -33,21 +35,24 @@ const profile: WorkspaceProfile = {
   contextRoot: "/workspace/.aicontext",
 };
 
-void test("generated opencode config exposes a primary orchestrator and internal roster", () => {
+void test("generated opencode config keeps normal development as default and exposes the internal roster", () => {
   const config = buildOpenCodeConfig(profile, models, "/generated") as {
     default_agent: string;
     disabled_providers?: string[];
     command: Record<string, { description?: string; agent?: string; template?: string }>;
-    agent: Record<string, { mode: string; variant?: string; permission?: Record<string, string | Record<string, string>> }>;
+    agent: Record<string, { mode: string; variant?: string; temperature?: number; top_p?: number; permission?: Record<string, string | Record<string, string>> }>;
   };
   const orchestrator = config.agent["orchestrator"];
   assert.ok(orchestrator);
-  assert.equal(config.default_agent, "orchestrator");
+  assert.equal(config.default_agent, "build");
   assert.deepEqual(config.disabled_providers, ["openrouter"]);
   assert.equal(orchestrator.mode, "primary");
   assert.equal(orchestrator.variant, "high");
+  assert.equal(orchestrator.temperature, 0);
+  assert.equal(orchestrator.top_p, 1);
   assert.equal(orchestrator.permission?.["*"], "allow");
   assert.equal(Object.keys(config.agent).length, 11);
+  assert.equal(config.command["flow"]?.agent, "orchestrator", "/flow must dispatch internally without a manual mode switch");
 
   const subagents = [
     "mr-explore",
@@ -125,6 +130,9 @@ void test("all command templates keep one variable payload at the final cache bo
   for (const [name, command] of Object.entries(commands)) {
     assert.equal(command.template.match(/\$ARGUMENTS/gu)?.length, 1, `/${name} must contain one payload variable`);
     assert.ok(command.template.endsWith(suffix), `/${name} must place the variable payload at the end`);
+    if (command.agent === "build") {
+      assert.ok(command.template.includes("INSUFFICIENT_EVIDENCE"), `/${name} must ground the built-in build agent`);
+    }
     assert.equal(command.template, alternateCommands[name]?.template, `/${name} must not embed model assignments`);
   }
 });
@@ -152,7 +160,33 @@ void test("flow agent prompts are defined and invariant across model assignments
   for (const name of names) {
     assert.ok(agents[name]?.prompt, `${name} must define a frozen prompt`);
     assert.equal(agents[name]?.prompt, alternateAgents[name]?.prompt, `${name} prompt must not embed model state`);
+    assert.equal(agents[name]?.temperature, 0, `${name} must use deterministic temperature`);
+    assert.equal(agents[name]?.top_p, 1, `${name} must avoid extra nucleus sampling constraints`);
+    assert.ok(agents[name]?.prompt?.includes("INSUFFICIENT_EVIDENCE"), `${name} must include the grounding sentinel`);
   }
+
+  assert.ok(agents["mr-explore"]?.prompt?.includes("Controlled output examples"));
+  assert.ok(agents["mr-plan"]?.prompt?.includes("Blueprint-lite"));
+  assert.ok(agents["mr-plan"]?.prompt?.includes("NEEDS_INPUT"));
+  assert.ok(agents["orchestrator"]?.prompt?.includes("OpenCode-estimated spend"));
+  assert.ok(agents["orchestrator"]?.prompt?.includes("ONLY Flow role allowed to explain"));
+  assert.ok(agents["orchestrator"]?.prompt?.includes("lead with the next action"));
+  for (const name of ["mr-general", "mr-sdd-apply", "mr-judge-a", "mr-judge-b", "mr-fix"]) {
+    assert.ok(agents[name]?.prompt?.includes("not a user-facing narrator"), `${name} must stay internal`);
+  }
+  assert.ok(commandDefinitions(models)["flow"]?.template.includes("developerNote"));
+  assert.ok(agents["mr-judge-a"]?.prompt?.includes("Controlled verdict examples"));
+  assert.ok(agents["mr-judge-b"]?.prompt?.includes("Controlled verdict examples"));
+});
+
+void test("global agent definitions serialize deterministic sampling settings", () => {
+  const paths = resolvePaths({ HOME: "/tmp/mr-grounding-config" });
+  const files = buildGlobalDefinitionFiles(paths, models);
+  const explore = files.get(join(paths.opencodeAgentsRoot, "mr-explore.md"));
+  assert.ok(explore);
+  assert.match(explore, /^temperature: 0$/mu);
+  assert.match(explore, /^top_p: 1$/mu);
+  assert.ok(explore.includes("INSUFFICIENT_EVIDENCE"));
 });
 
 void test("generated config safely merges workspace MCPs and resolves workspace instructions", () => {
@@ -171,4 +205,31 @@ void test("generated config safely merges workspace MCPs and resolves workspace 
   ]);
   assert.deepEqual(config.mcp, mcp);
   assert.ok(config.agent["orchestrator"]);
+});
+
+void test("workspace config installs recommended MCPs while preserving user overrides", () => {
+  const paths = resolvePaths({ HOME: "/tmp/mr-config-capabilities" });
+  const config = buildOpenCodeConfig(profile, models, paths.generatedRoot, {
+    mcp: {
+      github: { type: "remote", url: "https://custom.example/mcp", headers: { Authorization: "preserved" } },
+    },
+  }, paths) as {
+    mcp: Record<string, { url?: string; command?: string[]; headers?: Record<string, string> }>;
+    plugin: string[];
+  };
+  assert.equal(Object.keys(config.mcp).length, 7);
+  assert.equal(config.mcp["github"]?.url, "https://custom.example/mcp");
+  assert.equal(config.mcp["github"]?.headers?.["Authorization"], "preserved");
+  assert.match(config.mcp["figma-live"]?.command?.[0] ?? "", /figma-live-mcp/u);
+  assert.match(config.plugin[0] ?? "", /i-have-adhd/u);
+});
+
+void test("workspace config omits deferred capabilities", () => {
+  const paths = resolvePaths({ HOME: "/tmp/mr-config-deferred" });
+  const config = buildOpenCodeConfig(profile, models, paths.generatedRoot, {}, paths, ["engram"]) as {
+    mcp: Record<string, unknown>;
+    plugin: string[];
+  };
+  assert.deepEqual(Object.keys(config.mcp), ["engram"]);
+  assert.doesNotMatch(config.plugin.join("\n"), /i-have-adhd/u);
 });
