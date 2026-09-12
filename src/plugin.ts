@@ -2,13 +2,13 @@ import { tool, type Plugin, type PluginInput } from "@opencode-ai/plugin";
 import { loadFlowState, clearFlowState, applyEvent } from "./core/flow-state.js";
 import { loadRegistry, detectWorkspace } from "./core/workspace.js";
 import { resolvePaths } from "./core/paths.js";
-import { renderPlanCapsule, renderFlowStatus, renderVerdict } from "./core/render.js";
+import { buildTaskDeveloperNote, renderFlowStatus, renderFlowUsage, renderPlanExplanation, renderVerdict } from "./core/render.js";
 import { loadModels } from "./core/config.js";
 import { buildModelCandidates, discoverAvailableModels, formatModelTarget, promoteAlternativeModel, ROLES, setModelRole, type ModelRole } from "./core/models.js";
-import { writeFile, readFile, mkdir } from "node:fs/promises";
+import { writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { implementationAgentForDifficulty, type FlowState, type FlowEvent, type PlanCapsule, type MergedVerdict } from "./core/flow-schema.js";
-import { getDiffHash } from "./core/judgment.js";
+import { implementationAgentForDifficulty, JudgeFindingsSchema, JudgeVerdictSchema, requiresJudgment, type FlowState, type FlowEvent, type PlanCapsule } from "./core/flow-schema.js";
+import { getDiffHash, getFullDiff, mergeVerdicts, validateJudgeFindings } from "./core/judgment.js";
 import { canonicalJson, sha256 } from "./core/files.js";
 import { runCommand } from "./core/process.js";
 import {
@@ -29,6 +29,7 @@ import {
 } from "./core/atlas.js";
 import {
   ResearchCapsulePayloadSchema,
+  PlanningAssessmentPayloadSchema,
   SpecCapsulePayloadSchema,
   TaskGraphPayloadSchema,
   validateSddArtifacts,
@@ -36,6 +37,7 @@ import {
   markTaskStatus,
   saveSddArtifact,
   loadResearch,
+  loadPlanningBrief,
   loadSpec,
   loadTasks,
   formatZodIssues,
@@ -65,6 +67,16 @@ import {
 } from "./core/blueprint-schema.js";
 import { classifyQuotaError, resolveModelRole } from "./core/quota.js";
 import { PersistentMemoryStore } from "./core/memory-store.js";
+import { InsufficientEvidenceSchema } from "./core/grounding.js";
+import {
+  bindChildFlowSession,
+  bindFlowSession,
+  finalizeFlowMetrics,
+  loadFlowMetrics,
+  recordFlowAssistantUsage,
+  startFlowMetrics,
+  summarizeFlowMetrics,
+} from "./core/flow-metrics.js";
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
@@ -77,6 +89,59 @@ export async function createMrOrchestrator(
   const workspaceId = workspace?.id ?? "unknown";
   const workspaceRoot = workspace?.root ?? ctx.directory;
   const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string }>();
+  let judgmentWriteQueue: Promise<void> = Promise.resolve();
+  let usageWriteQueue: Promise<void> = Promise.resolve();
+
+  async function withJudgmentWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = judgmentWriteQueue;
+    let release = (): void => { /* assigned synchronously below */ };
+    judgmentWriteQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async function withUsageWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = usageWriteQueue;
+    let release = (): void => { /* assigned synchronously below */ };
+    usageWriteQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  function flowTicketId(state: FlowState): string {
+    if ("ticket" in state) return state.ticket.ref.id;
+    if ("ticketId" in state) return state.ticketId;
+    return "pending";
+  }
+
+  function toolSessionID(context: { readonly sessionID: string } | undefined): string {
+    return context?.sessionID ?? "external-client";
+  }
+
+  async function ensureFlowUsage(state: FlowState, sessionID: string): Promise<void> {
+    await withUsageWriteLock(async () => {
+      const current = await loadFlowMetrics(paths, workspaceId);
+      if (current === undefined || current.flowStartedAt !== state.startedAt) {
+        await startFlowMetrics(paths, workspaceId, flowTicketId(state), state.startedAt, sessionID);
+        return;
+      }
+      await bindFlowSession(paths, workspaceId, sessionID);
+    });
+  }
+
+  async function renderStatus(state: FlowState, sessionID: string, completed = false): Promise<string> {
+    await ensureFlowUsage(state, sessionID);
+    const metrics = await loadFlowMetrics(paths, workspaceId);
+    return renderFlowStatus(state, metrics === undefined ? undefined : summarizeFlowMetrics(metrics), { completed });
+  }
 
   async function ensureFlowState(): Promise<FlowState> {
     const state = await loadFlowState(paths, workspaceId);
@@ -102,7 +167,7 @@ export async function createMrOrchestrator(
     return graph;
   }
 
-  async function writeSddMarkdown(kind: SddKind, ticketId: string, markdown: string): Promise<string> {
+  async function writeSddMarkdown(kind: Exclude<SddKind, "brief">, ticketId: string, markdown: string): Promise<string> {
     const dir = workspace?.root !== undefined
       ? join(workspace.root, ".aicontext", "deliverables", "mr", "sdd")
       : join(paths.dataRoot, workspaceId, "sdd");
@@ -115,6 +180,27 @@ export async function createMrOrchestrator(
 
   return {
     event: async ({ event }) => {
+      if (event.type === "session.created") {
+        const parentID = event.properties.info.parentID;
+        if (parentID !== undefined) {
+          await withUsageWriteLock(async () => bindChildFlowSession(paths, workspaceId, parentID, event.properties.info.id));
+        }
+        return;
+      }
+      if (event.type === "message.updated") {
+        const info = event.properties.info;
+        if (info.role === "assistant") {
+          await withUsageWriteLock(async () => recordFlowAssistantUsage(paths, workspaceId, {
+            id: info.id,
+            sessionID: info.sessionID,
+            providerID: info.providerID,
+            modelID: info.modelID,
+            cost: info.cost,
+            tokens: info.tokens,
+          }));
+        }
+        return;
+      }
       if (event.type !== "session.error") return;
       const quotaFailure = classifyQuotaError(event.properties.error);
       const sessionID = event.properties.sessionID;
@@ -138,6 +224,11 @@ export async function createMrOrchestrator(
         );
       }
     },
+    "command.execute.before": async (input, _output) => {
+      if (input.command !== "flow") return;
+      const state = await loadFlowState(paths, workspaceId);
+      if (state !== undefined) await ensureFlowUsage(state, input.sessionID);
+    },
     "chat.params": async (input, _output) => {
       const role = resolveModelRole(input.agent);
       if (role === undefined) return;
@@ -152,12 +243,14 @@ export async function createMrOrchestrator(
       mr_flow_status: tool({
         description: "Get the current mr-orchestrator flow status",
         args: {},
-        execute: async (_args, _context) => {
+        execute: async (_args, context) => {
           const state = await loadFlowState(paths, workspaceId);
           if (state === undefined) {
-            return { title: "Flow Status", output: "No active flow. Run `/flow` to start." };
+            const metrics = await loadFlowMetrics(paths, workspaceId);
+            const lastUsage = metrics === undefined ? "" : `\n\nÚltimo flujo (${metrics.ticketId}, ${metrics.status}):\n${renderFlowUsage(summarizeFlowMetrics(metrics))}`;
+            return { title: "Flow Status", output: `No active flow. Run \`/flow\` to start.${lastUsage}` };
           }
-          return { title: "Flow Status", output: renderFlowStatus(state) };
+          return { title: "Flow Status", output: await renderStatus(state, toolSessionID(context)) };
         },
       }),
 
@@ -168,7 +261,7 @@ export async function createMrOrchestrator(
           ticketId: tool.schema.string().describe("Identificador del ticket (ej: GH-42, 123)"),
           hasFigma: tool.schema.boolean().optional().describe("Indica si existe diseño en Figma para la tarea"),
         },
-        execute: async (args, _context) => {
+        execute: async (args, context) => {
           const rawDifficulty = args.difficulty;
           const validDifficulties: (1 | 3 | 5 | 8 | 13 | 21)[] = [1, 3, 5, 8, 13, 21];
           const difficulty = validDifficulties.includes(rawDifficulty as 1 | 3 | 5 | 8 | 13 | 21)
@@ -183,7 +276,9 @@ export async function createMrOrchestrator(
             hasFigma,
           };
           const state = await applyEvent(paths, workspaceId, event);
-          return { title: "Flow Started", output: renderFlowStatus(state) };
+          const sessionID = toolSessionID(context);
+          await withUsageWriteLock(async () => startFlowMetrics(paths, workspaceId, ticketId, state.startedAt, sessionID));
+          return { title: "Flow Started", output: await renderStatus(state, sessionID) };
         },
       }),
 
@@ -197,7 +292,7 @@ export async function createMrOrchestrator(
           branch: tool.schema.string().optional().describe("Rama git calculada"),
           baseBranch: tool.schema.string().optional().describe("Rama base (develop o main)"),
         },
-        execute: async (args, _context) => {
+        execute: async (args, context) => {
           const state = await ensureFlowState();
           if (state.phase !== "context") {
             return { title: "Error", output: `Cannot load ticket in phase ${state.phase}. Expected 'context'.` };
@@ -224,7 +319,7 @@ export async function createMrOrchestrator(
             baseBranch,
           };
           const next = await applyEvent(paths, workspaceId, event);
-          return { title: "Ticket Loaded", output: renderFlowStatus(next) };
+          return { title: "Ticket Loaded", output: await renderStatus(next, toolSessionID(context)) };
         },
       }),
 
@@ -249,7 +344,7 @@ export async function createMrOrchestrator(
             }),
           ).optional().describe("Tests planificados"),
         },
-        execute: async (args, _context) => {
+        execute: async (args, context) => {
           const state = await ensureFlowState();
           if (state.phase !== "plan" && state.phase !== "explore") {
             return { title: "Error", output: `Cannot submit plan in phase ${state.phase}. Expected 'plan' or 'explore'.` };
@@ -266,7 +361,8 @@ export async function createMrOrchestrator(
           };
           const event: FlowEvent = { type: "plan_approved", plan };
           const next = await applyEvent(paths, workspaceId, event);
-          return { title: "Plan Approved", output: `${renderPlanCapsule(plan)}\n\n${renderFlowStatus(next)}` };
+          const tasks = await loadTasks(paths, workspaceId);
+          return { title: "Plan Approved", output: `${renderPlanExplanation(plan, tasks?.tasks.length)}\n\n${await renderStatus(next, toolSessionID(context))}` };
         },
       }),
 
@@ -275,7 +371,7 @@ export async function createMrOrchestrator(
         args: {
           completedFiles: tool.schema.array(tool.schema.string()).describe("Lista de rutas de archivos modificados o creados"),
         },
-        execute: async (args, _context) => {
+        execute: async (args, context) => {
           const state = await ensureFlowState();
           if (state.phase !== "implement") {
             throw new Error(`Fail-Closed Error: Cannot complete implementation in phase ${state.phase}. Expected 'implement'.`);
@@ -317,23 +413,45 @@ export async function createMrOrchestrator(
           }
 
           const completedFiles = args.completedFiles ?? [];
-          const event: FlowEvent = { type: "implement_done", completedFiles };
+          const diffHash = requiresJudgment(state.difficulty) ? await getDiffHash(workspaceRoot) : undefined;
+          if (diffHash !== undefined) {
+            const verdictDir = join(paths.generatedRoot, workspaceId);
+            await Promise.all([
+              rm(join(verdictDir, "verdict-a.json"), { force: true }),
+              rm(join(verdictDir, "verdict-b.json"), { force: true }),
+            ]);
+          }
+          const event: FlowEvent = {
+            type: "implement_done",
+            completedFiles,
+            ...(diffHash === undefined ? {} : { diffHash }),
+          };
           const next = await applyEvent(paths, workspaceId, event);
           if (next.phase === "judgment") {
-            return { title: "Judgment Required", output: `Implementation complete. Deterministic adversarial judgment phase initiated.\n\n${renderFlowStatus(next)}` };
+            return { title: "Judgment Required", output: `Implementation complete. Deterministic adversarial judgment phase initiated.\n\n${await renderStatus(next, toolSessionID(context))}` };
           }
-          return { title: "Implementation Complete", output: `Implementation complete. Lite flow skips Judgment Day.\n\n${renderFlowStatus(next)}` };
+          return { title: "Implementation Complete", output: `Implementation complete. Lite flow skips Judgment Day.\n\n${await renderStatus(next, toolSessionID(context))}` };
         },
       }),
 
       mr_flow_judge: tool({
-        description: "Submit a judge verdict for the current diff",
+        description: "Submit an evidence-backed judge verdict for the current diff. Findings are rejected unless their file, diff side, line, and exact snippet are mechanically verified.",
         args: {
           judge: tool.schema.enum(["a", "b"]).describe("Identificador del juez revisor ('a' o 'b')"),
+          status: tool.schema.enum(["SUPPORTED", "INSUFFICIENT_EVIDENCE"]).describe("SUPPORTED para un veredicto respaldado; INSUFFICIENT_EVIDENCE para detenerse sin adivinar"),
           approved: tool.schema.boolean().describe("Si el juez aprueba los cambios sin objeciones críticas"),
-          critical: tool.schema.array(tool.schema.string()).optional().describe("Problemas críticos que bloquean la aprobación"),
-          warnings: tool.schema.array(tool.schema.string()).optional().describe("Advertencias no bloqueantes"),
-          suggestions: tool.schema.array(tool.schema.string()).optional().describe("Sugerencias de mejora"),
+          findings: tool.schema.array(tool.schema.object({
+            severity: tool.schema.enum(["critical", "warning", "suggestion"]),
+            claim: tool.schema.string(),
+            file: tool.schema.string(),
+            line: tool.schema.number().int().positive(),
+            side: tool.schema.enum(["new", "old"]),
+            source: tool.schema.literal("diff"),
+            evidence: tool.schema.string(),
+            requirementId: tool.schema.string().optional(),
+          })).describe("Hallazgos estructurados; cada uno debe citar una línea visible del lado new u old del diff"),
+          missing: tool.schema.array(tool.schema.string()).optional().describe("Evidencia específica ausente cuando status=INSUFFICIENT_EVIDENCE"),
+          nextAction: tool.schema.string().optional().describe("Acción mínima para obtener la evidencia ausente"),
         },
         execute: async (args, _context) => {
           const state = await ensureFlowState();
@@ -352,68 +470,99 @@ export async function createMrOrchestrator(
             );
           }
 
-          const judge = args.judge;
-          const approved = args.approved;
-          const critical = args.critical ?? [];
-          const warnings = args.warnings ?? [];
-          const suggestions = args.suggestions ?? [];
+          if (args.status === "INSUFFICIENT_EVIDENCE") {
+            if (args.approved || args.findings.length > 0) {
+              return { title: "Judgment Rejected", output: "INSUFFICIENT_EVIDENCE requires approved=false and findings=[]." };
+            }
+            const insufficient = InsufficientEvidenceSchema.safeParse({
+              status: args.status,
+              missing: args.missing,
+              nextAction: args.nextAction,
+            });
+            if (!insufficient.success) {
+              return { title: "Judgment Rejected", output: `INSUFFICIENT_EVIDENCE requires non-empty missing[] and nextAction: ${formatZodIssues(insufficient.error)}` };
+            }
+            return {
+              title: "Judgment Blocked",
+              output: canonicalJson(insufficient.data),
+            };
+          }
 
-          // Store individual verdict
-          const verdictDir = join(paths.generatedRoot, workspaceId);
-          await mkdir(verdictDir, { recursive: true });
-          const verdictPath = join(verdictDir, `verdict-${judge}.json`);
-          await writeFile(verdictPath, JSON.stringify({
+          const parsedFindings = JudgeFindingsSchema.safeParse(args.findings);
+          if (!parsedFindings.success) {
+            return { title: "Judgment Rejected", output: `Invalid finding schema: ${formatZodIssues(parsedFindings.error)}` };
+          }
+          const diffHash = await getDiffHash(workspaceRoot);
+          if (state.diffHash === "legacy-unbound") {
+            throw new Error("Legacy judgment state has no bound diff hash. Abort and restart the Full flow before judging.");
+          }
+          if (diffHash !== state.diffHash) {
+            throw new Error("CAS Integrity Violation: Code changed after judgment began. Re-run implementation verification before judging.");
+          }
+          const diff = await getFullDiff(workspaceRoot);
+          const spec = await loadSpec(paths, workspaceId);
+          const requirementIds = spec === undefined
+            ? undefined
+            : new Set(spec.requirements.map((requirement) => requirement.id));
+          const validationIssues = validateJudgeFindings(diff, parsedFindings.data, {
+            approved: args.approved,
+            ...(requirementIds === undefined ? {} : { requirementIds }),
+          });
+          if (validationIssues.length > 0) {
+            return {
+              title: "Judgment Rejected",
+              output: `Unsupported verdict:\n${validationIssues.map((issue) => `- ${issue}`).join("\n")}`,
+            };
+          }
+
+          const verdict = JudgeVerdictSchema.parse({
             schemaVersion: 1,
-            judge,
-            approved,
-            critical,
-            warnings,
-            suggestions,
+            judge: args.judge,
+            status: "SUPPORTED",
+            approved: args.approved,
+            diffHash,
+            findings: parsedFindings.data,
             reviewedAt: new Date().toISOString(),
-          }, null, 2));
+          });
 
-          // Check if both judges have voted
-          const verdictAPath = join(verdictDir, "verdict-a.json");
-          const verdictBPath = join(verdictDir, "verdict-b.json");
-          const [verdictA, verdictB] = await Promise.all([
-            readFile(verdictAPath, "utf8").then((c) => JSON.parse(c) as { approved: boolean; critical: string[]; warnings: string[]; suggestions: string[] }).catch(() => null),
-            readFile(verdictBPath, "utf8").then((c) => JSON.parse(c) as { approved: boolean; critical: string[]; warnings: string[]; suggestions: string[] }).catch(() => null),
-          ]);
+          return withJudgmentWriteLock(async () => {
+            const latest = await loadFlowState(paths, workspaceId);
+            if (latest?.phase !== "judgment" || latest.diffHash !== state.diffHash) {
+              return { title: "Judgment Stale", output: "The judgment phase or diff changed before this verdict could be persisted. Re-read flow status." };
+            }
 
-          if (verdictA === null || verdictB === null) {
-            return { title: "Verdict Recorded", output: `Judge ${judge} verdict recorded. Waiting for other judge.` };
-          }
+            // Store individual verdict only while the same judgment round is active.
+            const verdictDir = join(paths.generatedRoot, workspaceId);
+            await mkdir(verdictDir, { recursive: true });
+            const verdictPath = join(verdictDir, `verdict-${args.judge}.json`);
+            await writeFile(verdictPath, canonicalJson(verdict));
 
-          // Merge verdicts
-          const merged: MergedVerdict = {
-            schemaVersion: 1,
-            approved: verdictA.approved && verdictB.approved,
-            critical: [...verdictA.critical, ...verdictB.critical],
-            warnings: [...verdictA.warnings, ...verdictB.warnings],
-            suggestions: [...verdictA.suggestions, ...verdictB.suggestions],
-            judgeA: { schemaVersion: 1, judge: "a", ...verdictA, reviewedAt: new Date().toISOString() },
-            judgeB: { schemaVersion: 1, judge: "b", ...verdictB, reviewedAt: new Date().toISOString() },
-            mergedAt: new Date().toISOString(),
-          };
+            const verdictAPath = join(verdictDir, "verdict-a.json");
+            const verdictBPath = join(verdictDir, "verdict-b.json");
+            const [verdictA, verdictB] = await Promise.all([
+              readFile(verdictAPath, "utf8").then((content) => JudgeVerdictSchema.parse(JSON.parse(content) as unknown)).catch(() => null),
+              readFile(verdictBPath, "utf8").then((content) => JudgeVerdictSchema.parse(JSON.parse(content) as unknown)).catch(() => null),
+            ]);
 
-          let approvalDigest: string | undefined;
-          if (merged.approved) {
-            approvalDigest = await getDiffHash(workspaceRoot);
-          }
+            if (verdictA === null || verdictB === null || verdictA.diffHash !== state.diffHash || verdictB.diffHash !== state.diffHash) {
+              return { title: "Verdict Recorded", output: `Judge ${args.judge} verdict recorded for ${state.diffHash}. Waiting for the other judge on the same diff.` };
+            }
 
-          const event: FlowEvent = merged.approved
-            ? { type: "judgment_passed", approvalDigest }
-            : { type: "judgment_failed", verdict: { critical: merged.critical, warnings: merged.warnings, suggestions: merged.suggestions } };
-          const next = await applyEvent(paths, workspaceId, event);
+            const merged = mergeVerdicts(verdictA, verdictB);
+            const event: FlowEvent = merged.approved
+              ? { type: "judgment_passed", approvalDigest: state.diffHash }
+              : { type: "judgment_failed", verdict: { critical: merged.critical, warnings: merged.warnings, suggestions: merged.suggestions } };
+            const next = await applyEvent(paths, workspaceId, event);
 
-          return { title: "Judgment Complete", output: `${renderVerdict(merged)}\n\n${renderFlowStatus(next)}` };
+            return { title: "Judgment Complete", output: `${renderVerdict(merged)}\n\n${await renderStatus(next, toolSessionID(_context))}` };
+          });
         },
       }),
 
       mr_flow_fix: tool({
         description: "Mark fixes as applied and return to implementation",
         args: {},
-        execute: async (_args, _context) => {
+        execute: async (_args, context) => {
           const state = await ensureFlowState();
           if (state.phase !== "fix") {
             throw new Error(`Fail-Closed Error: Cannot fix in phase ${state.phase}. Expected 'fix'.`);
@@ -429,7 +578,7 @@ export async function createMrOrchestrator(
 
           const event: FlowEvent = { type: "fix_done" };
           const next = await applyEvent(paths, workspaceId, event);
-          return { title: "Fix Applied", output: renderFlowStatus(next) };
+          return { title: "Fix Applied", output: await renderStatus(next, toolSessionID(context)) };
         },
       }),
 
@@ -439,7 +588,7 @@ export async function createMrOrchestrator(
           commitHash: tool.schema.string().optional().describe("Hash del commit generado"),
           prUrl: tool.schema.string().optional().describe("URL de la Pull Request creada"),
         },
-        execute: async (args, _context) => {
+        execute: async (args, context) => {
           const state = await ensureFlowState();
           if (state.phase !== "finish") {
             return { title: "Error", output: `Cannot finish in phase ${state.phase}. Expected 'finish'.` };
@@ -459,20 +608,25 @@ export async function createMrOrchestrator(
           const prUrl = args.prUrl;
           const event: FlowEvent = { type: "finish_confirmed", commitHash, prUrl };
           const next = await applyEvent(paths, workspaceId, event);
+          await withUsageWriteLock(async () => finalizeFlowMetrics(paths, workspaceId, "completed"));
+          const output = await renderStatus(next, toolSessionID(context), true);
           await clearFlowState(paths, workspaceId);
-          return { title: "Flow Complete", output: renderFlowStatus(next) };
+          return { title: "Flow Complete", output };
         },
       }),
 
       mr_flow_abort: tool({
         description: "Abort the current flow",
         args: {},
-        execute: async (_args, _context) => {
+        execute: async (_args, context) => {
           await ensureFlowState();
           const event: FlowEvent = { type: "abort" };
           const _next = await applyEvent(paths, workspaceId, event);
+          await ensureFlowUsage(_next, toolSessionID(context));
+          const metrics = await withUsageWriteLock(async () => finalizeFlowMetrics(paths, workspaceId, "aborted"));
           await clearFlowState(paths, workspaceId);
-          return { title: "Flow Aborted", output: "Flow has been aborted and state cleared." };
+          const usage = metrics === undefined ? "" : `\n${renderFlowUsage(summarizeFlowMetrics(metrics))}`;
+          return { title: "Flow Aborted", output: `Flow has been aborted and state cleared.${usage}` };
         },
       }),
 
@@ -932,9 +1086,9 @@ export async function createMrOrchestrator(
       // ─── SDD + RPI Tools (grafos tipados; markdown por script) ─────────────
 
       mr_sdd_submit: tool({
-        description: "Submit a typed SDD/RPI capsule as compact JSON (kind: research|spec|tasks). Validates with zod + structural guardrails; on success renders user-facing markdown BY SCRIPT and returns a compact ack. On validation failure returns the exact issues to fix — retry with corrected JSON.",
+        description: "Submit a typed SDD/RPI capsule as compact JSON (kind: research|brief|spec|tasks). brief is the Blueprint-lite planning assessment: NEEDS_INPUT returns up to 3 risk-prioritized questions without persistence; READY persists JSON only. Other kinds render user-facing markdown BY SCRIPT. Validation failures return exact issues.",
         args: {
-          kind: tool.schema.enum(["research", "spec", "tasks"]).describe("Tipo de cápsula: research (evidencias explore), spec (requisitos+criterios), tasks (grafo de tareas)"),
+          kind: tool.schema.enum(["research", "brief", "spec", "tasks"]).describe("Tipo de cápsula: research (evidencias), brief (Blueprint-lite), spec (requisitos+criterios), tasks (grafo de tareas)"),
           payload: tool.schema.string().describe("JSON conforme al schema operativo de la cápsula, sin prosa ni timestamps de auditoría como createdAt"),
         },
         execute: async (args, _context) => {
@@ -946,6 +1100,13 @@ export async function createMrOrchestrator(
           }
 
           const kind = args.kind as SddKind;
+          const insufficient = InsufficientEvidenceSchema.safeParse(raw);
+          if (insufficient.success) {
+            return {
+              title: `SDD ${kind} Blocked`,
+              output: canonicalJson(insufficient.data),
+            };
+          }
 
           if (kind === "research") {
             const parsed = ResearchCapsulePayloadSchema.safeParse(raw);
@@ -960,10 +1121,41 @@ export async function createMrOrchestrator(
             };
           }
 
+          if (kind === "brief") {
+            const parsed = PlanningAssessmentPayloadSchema.safeParse(raw);
+            if (!parsed.success) {
+              return { title: "SDD Planning Brief Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
+            }
+            const flow = await loadFlowState(paths, workspaceId);
+            if (flow !== undefined && "ticket" in flow && flow.ticket.ref.id !== parsed.data.ticketId) {
+              return { title: "SDD Planning Brief Rejected", output: `❌ Flow ticket '${flow.ticket.ref.id}' != planning brief ticket '${parsed.data.ticketId}'` };
+            }
+            if (parsed.data.status === "NEEDS_INPUT") {
+              await rm(join(paths.generatedRoot, workspaceId, "sdd", "brief.json"), { force: true });
+              return {
+                title: "SDD Planning Input Required",
+                output: canonicalJson(parsed.data),
+              };
+            }
+            const savedPath = await saveSddArtifact(paths, workspaceId, kind, parsed.data);
+            return {
+              title: "SDD Planning Brief Saved",
+              output: `✅ brief: ${parsed.data.mode}, ${parsed.data.decisions.length} decisiones, ${parsed.data.assumptions.length} supuestos\njson: ${savedPath}`,
+            };
+          }
+
           if (kind === "spec") {
             const parsed = SpecCapsulePayloadSchema.safeParse(raw);
             if (!parsed.success) {
               return { title: "SDD Spec Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
+            }
+            const brief = await loadPlanningBrief(paths, workspaceId);
+            const flow = await loadFlowState(paths, workspaceId);
+            if (flow !== undefined && (flow.phase === "explore" || flow.phase === "plan") && brief === undefined) {
+              return { title: "SDD Spec Rejected", output: "❌ No READY planning brief found. Submit kind=brief before kind=spec." };
+            }
+            if (brief !== undefined && brief.ticketId !== parsed.data.ticketId) {
+              return { title: "SDD Spec Rejected", output: `❌ Planning brief ticket '${brief.ticketId}' != spec ticket '${parsed.data.ticketId}'` };
             }
             const savedPath = await saveSddArtifact(paths, workspaceId, kind, parsed.data);
             const renderedPath = await writeSddMarkdown(kind, parsed.data.ticketId, renderSpecCapsule(parsed.data));
@@ -982,7 +1174,10 @@ export async function createMrOrchestrator(
             return { title: "SDD Tasks Rejected", output: "❌ No spec found. Submit kind=spec before kind=tasks." };
           }
           const research = await loadResearch(paths, workspaceId);
-          const issues = validateSddArtifacts(spec, parsed.data, research);
+          const flow = await loadFlowState(paths, workspaceId);
+          const issues = validateSddArtifacts(spec, parsed.data, research, {
+            requireEvidenceForModifiedFiles: flow !== undefined && "difficulty" in flow && requiresJudgment(flow.difficulty),
+          });
           const errors = issues.filter((issue) => issue.severity === "error");
           if (errors.length > 0) {
             return { title: "SDD Tasks Rejected", output: `❌ guardrails:\n${renderSddIssues(errors)}` };
@@ -999,15 +1194,20 @@ export async function createMrOrchestrator(
       }),
 
       mr_sdd_get: tool({
-        description: "Read SDD/RPI capsules as compact JSON (token-cheap). kind=next-task returns the next actionable task with its acceptance criteria pre-joined — the exact briefing to implement now.",
+        description: "Read SDD/RPI capsules as compact JSON (token-cheap). kind=brief returns the persisted READY Blueprint-lite assessment. kind=next-task returns the next actionable task with acceptance criteria pre-joined.",
         args: {
-          kind: tool.schema.enum(["research", "spec", "tasks", "next-task"]).describe("Cápsula a leer, o next-task para la siguiente tarea accionable"),
+          kind: tool.schema.enum(["research", "brief", "spec", "tasks", "next-task"]).describe("Cápsula a leer, o next-task para la siguiente tarea accionable"),
         },
         execute: async (args, _context) => {
           if (args.kind === "research") {
             const research = await loadResearch(paths, workspaceId);
             if (research === undefined) return { title: "SDD Research", output: "No research capsule found." };
             return { title: "SDD Research", output: canonicalSddPayload(research) };
+          }
+          if (args.kind === "brief") {
+            const brief = await loadPlanningBrief(paths, workspaceId);
+            if (brief === undefined) return { title: "SDD Planning Brief", output: "No planning brief found." };
+            return { title: "SDD Planning Brief", output: canonicalSddPayload(brief) };
           }
           if (args.kind === "spec") {
             const spec = await loadSpec(paths, workspaceId);
@@ -1034,7 +1234,12 @@ export async function createMrOrchestrator(
             : undefined;
           return {
             title: `SDD Next Task: ${next.id}`,
-            output: canonicalJson({ implementer, task: next, acceptance }).trimEnd(),
+            output: canonicalJson({
+              implementer,
+              developerNote: buildTaskDeveloperNote(next, acceptance),
+              task: next,
+              acceptance,
+            }).trimEnd(),
           };
         },
       }),

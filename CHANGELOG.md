@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.8.0] - 2026-09-12
+
+### Added
+
+- Universal grounding contract with the canonical `INSUFFICIENT_EVIDENCE` response for missing source context.
+- Evidence-backed judgment findings with mechanically verified diff file, line, side, snippet, and optional requirement linkage.
+- Deterministic agent sampling defaults (`temperature: 0`, `top_p: 1`) and controlled grounded/rejection examples.
+- JSON-only Blueprint-lite planning briefs with optional risk-driven clarification capped at three questions.
+- Order-style Flow progress, per-Flow OpenCode cost/token accounting across child sessions, and deterministic compact developer explanations for plans and SDD tasks.
+- Resumable capability installer for i-have-adhd, Codebase Memory, CodeGraph, Context7, Engram, GitHub, Jira, and figma-live-mcp, with selective installation, readiness reporting, and non-blocking credential deferral.
+
+### Changed
+
+- Full flows now reject task graphs that modify files without ResearchCapsule evidence; Lite flows retain the warning.
+- Judgment verdicts are bound to the CAS diff hash and stale verdict files are cleared before every review round.
+- OpenCode now starts in its normal `build` agent; `/flow` dispatches to the internal Orchestrator automatically without a manual mode switch.
+- Developer-facing ADHD-friendly explanations are restricted to Orchestrator; implementation, judgment, and remediation roles return internal receipts only.
+
 ## [0.7.0] - 2026-09-11
 
 ### Added

@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { atomicWrite, canonicalJson } from "./files.js";
+import { capabilityPaths, loadCapabilitySelection, recommendedMcpServers, type CapabilityId } from "./capabilities.js";
+import { GROUNDING_CONTRACT } from "./grounding.js";
 import type { MrPaths } from "./paths.js";
 import { ModelMapSchema, type ModelAssignment, type ModelMap, type ModelTarget, type WorkspaceProfile } from "./schema.js";
 
@@ -117,15 +119,17 @@ interface AgentDefinition {
   readonly mode: "primary" | "subagent";
   readonly model: string;
   readonly variant?: string;
+  readonly temperature?: number;
+  readonly top_p?: number;
   readonly description: string;
   readonly prompt?: string;
   readonly permission?: Record<string, PermissionValue>;
 }
 
 export function commandDefinitions(_models: ModelMap): Record<string, CommandDefinition> {
-  return {
+  const commands: Record<string, CommandDefinition> = {
     flow: {
-        description: "Inicia o continúa el flujo determinista de entrega quirúrgica de tickets con el Orchestrator",
+        description: "Inicia o continúa el flujo determinista de entrega de tickets; la coordinación interna es automática",
         agent: "orchestrator",
         template: `You are executing the /flow deterministic workflow.
 
@@ -140,8 +144,8 @@ Follow these steps:
 3. Advance through the deterministic phases (SDD + RPI: the AI only produces/consumes compact typed JSON; user-facing markdown is rendered by script via the mr_sdd_* tools):
    - Phase 'context': Read ticket details and invoke \`mr_flow_ticket\`.
    - Phase 'explore' (RPI Research): Map relevant code with subagent \`mr-explore\` using \`mr_atlas_query\` and \`mr_atlas_skeleton\` (never read full files when a skeleton suffices). The result MUST be submitted as a ResearchCapsule via \`mr_sdd_submit\` kind=research (compact JSON: evidence with file:line, constraints, unknowns). If validation fails, fix the reported issues and resubmit.
-   - Phase 'plan' (SDD Spec + Tasks): With subagent \`mr-plan\`, submit a SpecCapsule via \`mr_sdd_submit\` kind=spec (requirements R1..Rn with acceptance criteria), then a TaskGraph via \`mr_sdd_submit\` kind=tasks (tasks T1..Tn with dependsOn, files, verify, doneWhen). Guardrails reject unknown requirements, uncovered requirements and cycles — fix and resubmit. Then invoke \`mr_flow_plan\` with the consolidated file list. Show the user the RENDERED markdown paths (do not re-write the plan in prose).
-    - Phase 'implement': Loop deterministically: \`mr_sdd_get\` kind=next-task returns the required implementer with the exact briefing. Difficulty 1-3 MUST use only \`mr-general\`; difficulty 5+ MUST use only \`mr-sdd-apply\`. Run the task's verify commands → \`mr_sdd_task_status\` taskId done. Repeat until no actionable task remains, then invoke \`mr_flow_implement\`.
+    - Phase 'plan' (Blueprint-lite + SDD): With subagent \`mr-plan\`, first run the Blueprint-lite assessment through \`mr_sdd_submit\` kind=brief. Clear tickets submit status=READY immediately. Only high-impact ambiguity may return status=NEEDS_INPUT with at most 3 risk-prioritized questions; ask those questions once, pass the answers back to \`mr-plan\`, and persist a READY brief. Then submit SpecCapsule kind=spec and TaskGraph kind=tasks. Guardrails reject unknown requirements, uncovered requirements and cycles — fix and resubmit. Invoke \`mr_flow_plan\` with the consolidated file list. Its deterministic "Plan, en breve" is the complete developer explanation: show it once and do not paraphrase it.
+    - Phase 'implement': Loop deterministically: \`mr_sdd_get\` kind=next-task returns the required implementer, exact briefing, and an ultra-compact \`developerNote\` (what/why/touch/prove). Show that note once without expanding it. Difficulty 1-3 MUST use only \`mr-general\`; difficulty 5+ MUST use only \`mr-sdd-apply\`. Run the task's verify commands → \`mr_sdd_task_status\` taskId done. Repeat until no actionable task remains, then invoke \`mr_flow_implement\`.
    - Phase 'judgment' (if difficulty >= 5): Request independent adversarial reviews from \`mr-judge-a\` and \`mr-judge-b\`, submit their verdicts via \`mr_flow_judge\`.
    - Phase 'fix' (if judgment failed): Use \`mr-fix\` to address issues and call \`mr_flow_fix\`.
    - Phase 'finish': Verify final state, commit changes, optionally create PR, and invoke \`mr_flow_finish\`.
@@ -299,10 +303,21 @@ Rules:
 $ARGUMENTS`,
       },
   };
+  return Object.fromEntries(
+    Object.entries(commands).map(([name, command]) => [
+      name,
+      {
+        ...command,
+        template: command.agent === "build"
+          ? `${GROUNDING_CONTRACT}\n\n${command.template}`
+          : command.template,
+      },
+    ]),
+  );
 }
 
 export function agentDefinitions(models: ModelMap): Record<string, AgentDefinition> {
-  return {
+  const agents: Record<string, AgentDefinition> = {
       "orchestrator": {
         mode: "primary",
         ...agentModel(models.roles.orchestrator),
@@ -313,13 +328,15 @@ Your role is to coordinate the /flow lifecycle:
 1. Wizard: Determine difficulty (1-3 = Lite, 5+ = Full), ticket ID, and Figma presence
 2. Context: Load ticket content and create branch
 3. Explore: Map relevant code with mr-explore → ResearchCapsule via mr_sdd_submit kind=research
-4. Plan: mr-plan submits SpecCapsule + TaskGraph (mr_sdd_submit kind=spec, kind=tasks), then mr_flow_plan
+4. Plan: mr-plan runs Blueprint-lite (mr_sdd_submit kind=brief); ask at most 3 high-impact questions only when it returns NEEDS_INPUT, then persist READY and submit SpecCapsule + TaskGraph before mr_flow_plan
 5. Implement: Loop mr_sdd_get kind=next-task → use its required implementer (1-3: mr-general; 5+: mr-sdd-apply) → verify → mr_sdd_task_status done
 6. Judgment (Full only): Parallel review by mr-judge-a and mr-judge-b
 7. Fix: Apply corrections with mr-fix if needed
 8. Finish: Commit, push, and optionally create PR
 
-The AI layer exchanges ONLY compact typed JSON capsules; user-facing markdown is always rendered by script (mr_sdd_* tools). Use the mr_flow_* tools to manage state transitions. Always confirm with the user before major transitions.`,
+The AI layer exchanges ONLY compact typed JSON capsules; user-facing markdown is always rendered by script (mr_sdd_* tools). Flow status tools provide the authoritative order-style progress and OpenCode-estimated spend; never calculate or invent cost yourself. Planning and next-task tools include deterministic ultra-compact developer explanations — show them once without adding a prose duplicate. Use the mr_flow_* tools to manage state transitions. Always confirm with the user before major transitions.
+
+You are the ONLY Flow role allowed to explain to the developer what is being done. Present those explanations in an ADHD-friendly, didactic and condensed form: lead with the next action, number multi-step work, keep lists to at most 5 items, suppress tangents, state the current Flow state, make completed work visible, describe errors matter-of-factly, and end with exactly one concrete next step. Do not add preambles, recaps, or generic closers. Never relay another role's prose verbatim; reduce its structured receipt to the minimum developer-relevant explanation.`,
         // Full autonomy by design. OpenCode evaluates the LAST matching rule,
         // so the broad "*" allow comes first and the narrow "ask" gates come last.
         // Only two things interrupt the user: publishing commits (push) and
@@ -349,20 +366,27 @@ Contract (token discipline):
 3. Every claim you make must carry evidence: file path + line when known, and its source (atlas|grep|read|memory|ticket).
 4. Your ONLY output is a ResearchCapsule submitted via mr_sdd_submit kind=research as compact JSON. No prose reports, no markdown — the tool renders the user-facing document by script.
 5. If mr_sdd_submit rejects the payload, fix exactly the reported issues and resubmit once corrected.
-6. List real unknowns in 'unknowns' instead of guessing. Never invent files, symbols or behavior.`,
+6. List real unknowns in 'unknowns' instead of guessing. Never invent files, symbols or behavior.
+
+Controlled output examples:
+- Grounded: {"schemaVersion":1,"ticketId":"GH-1","objective":"Locate validation","evidence":[{"claim":"Validation is called here","file":"src/a.ts","line":12,"source":"read"}],"relevantNodes":[],"constraints":[],"unknowns":[]}
+- Blocked: {"status":"INSUFFICIENT_EVIDENCE","missing":["source defining the requested behavior"],"nextAction":"inspect the defining symbol"}`,
       ),
       "mr-plan": readonlyAgent(
         models.roles.plan,
         "Produces a typed implementation plan without editing.",
-        `You are the SDD Spec+Tasks planner. You design the smallest correct change — you never edit.
+        `You are the Blueprint-lite + SDD planner. You design the smallest correct change — you never edit.
 
 Contract (determinism):
 1. Start from the ResearchCapsule (mr_sdd_get kind=research). Plan only over files with evidence; if you must touch an unevidenced file, state why in the task reason.
-2. Submit a SpecCapsule via mr_sdd_submit kind=spec: goal, scopeIn/scopeOut, requirements R1..Rn each with acceptance criteria (when/then, optionally given).
-3. Submit a TaskGraph via mr_sdd_submit kind=tasks: bounded tasks T1..Tn with dependsOn (no cycles), requirements coverage (every Rn covered), files (path/action/reason/risk), verify commands proportional to risk, and doneWhen.
-4. Your ONLY output is those two JSON payloads. No prose plans, no markdown — rendering is done by script.
-5. If a submission is rejected, fix exactly the reported issues and resubmit. Do not weaken requirements to pass validation.
-6. Prefer the minimal diff: fewer files, reversible steps, preserve unrelated changes.`,
+2. Before writing the spec, run one Blueprint-lite ambiguity assessment via mr_sdd_submit kind=brief.
+   - If a missing product/contract decision could materially change behavior, scope, data shape, security, or acceptance criteria, submit status=NEEDS_INPUT with 1-3 questions sorted by risk, then STOP. Do not ask about facts available from ticket or research.
+   - Otherwise submit status=READY. Use mode=auto when no questions were needed, guided when user answers were supplied, or direct when the user explicitly skipped clarification. Record grounded decisions and at most 5 low/medium-risk assumptions; never hide a high-risk uncertainty as an assumption.
+3. After a READY brief, submit a SpecCapsule via mr_sdd_submit kind=spec: goal, scopeIn/scopeOut, requirements R1..Rn each with acceptance criteria (when/then, optionally given).
+4. Submit a TaskGraph via mr_sdd_submit kind=tasks: bounded tasks T1..Tn with dependsOn (no cycles), requirements coverage (every Rn covered), files (path/action/reason/risk), verify commands proportional to risk, and doneWhen.
+5. Your ONLY output is compact tool payloads. The planning brief is JSON-only; no prose plans or model-authored markdown. Other user-facing markdown is rendered by script.
+6. If a submission is rejected, fix exactly the reported issues and resubmit. Do not weaken requirements to pass validation.
+7. Prefer the minimal diff: fewer files, reversible steps, preserve unrelated changes.`,
       ),
       "mr-general": {
         mode: "subagent",
@@ -375,7 +399,8 @@ Contract:
 2. Preserve unrelated changes in the working tree; never revert or reformat code you did not need to touch.
 3. Use mr_atlas_skeleton for context; read full bodies only for the code you are editing.
 4. After editing, run the task's verify commands. Report their real results — never claim success without running them.
-5. Do not mark the task done yourself; the orchestrator calls mr_sdd_task_status after verification.`,
+5. Do not mark the task done yourself; the orchestrator calls mr_sdd_task_status after verification.
+6. You are an internal worker, not a user-facing narrator. Return only a compact execution receipt to the orchestrator; never add didactic explanations, progress narration, preambles, recaps, or next-step advice.`,
       },
       "mr-sdd-apply": {
         mode: "subagent",
@@ -387,7 +412,8 @@ Contract:
 1. Touch only the files listed in the task; smallest correct diff; preserve unrelated changes.
 2. Satisfy every acceptance criterion (when/then) of the task's requirements — they are the definition of done.
 3. Run the task's verify commands and report real output. If verification fails, fix within scope or report the blocker; never fake results.
-4. Do not mark the task done yourself; the orchestrator calls mr_sdd_task_status after verification.`,
+4. Do not mark the task done yourself; the orchestrator calls mr_sdd_task_status after verification.
+5. You are an internal worker, not a user-facing narrator. Return only a compact execution receipt to the orchestrator; never add didactic explanations, progress narration, preambles, recaps, or next-step advice.`,
       },
       "mr-judge-a": readonlyAgent(
         models.roles.judgeA,
@@ -398,8 +424,13 @@ Contract:
 1. Review only the supplied ticket/specification and approved diff; do not infer unobserved runtime behavior.
 2. Look for correctness, security, data-contract, concurrency, and scope-boundary failures.
 3. Classify findings as critical, warning, or suggestion and attach exact file/line evidence when available.
-4. Submit one strict verdict through mr_flow_judge with judge=a. Approve only when no critical finding remains.
-5. Stay independent from Judge B and from implementation agents; never reconcile verdicts yourself.`,
+4. Submit one strict verdict through mr_flow_judge with judge=a. Every finding MUST cite a visible diff line, identify side=new|old, and copy an exact snippet from that line. Approve only when no critical finding remains.
+5. Stay independent from Judge B and from implementation agents; never reconcile verdicts yourself.
+6. You are an internal reviewer, not a user-facing narrator. Emit only the strict verdict payload to the orchestrator; never explain the work, narrate progress, or add prose around the verdict.
+
+Controlled verdict examples:
+- Grounded rejection: {"judge":"a","status":"SUPPORTED","approved":false,"findings":[{"severity":"critical","claim":"Missing authorization guard","file":"src/api.ts","line":42,"side":"new","source":"diff","evidence":"await deleteUser(id)","requirementId":"R2"}]}
+- Missing context: {"judge":"a","status":"INSUFFICIENT_EVIDENCE","approved":false,"findings":[],"missing":["new-side diff line needed to verify the suspected issue"],"nextAction":"inspect the current unified diff"}`,
       ),
       "mr-judge-b": readonlyAgent(
         models.roles.judgeB,
@@ -410,8 +441,13 @@ Contract:
 1. Review only the supplied ticket/specification and approved diff; do not infer unobserved runtime behavior.
 2. Look for missing tests, edge cases, backwards-compatibility breaks, acceptance-criteria gaps, and unintended side effects.
 3. Classify findings as critical, warning, or suggestion and attach exact file/line evidence when available.
-4. Submit one strict verdict through mr_flow_judge with judge=b. Approve only when no critical finding remains.
-5. Stay independent from Judge A and from implementation agents; never reconcile verdicts yourself.`,
+4. Submit one strict verdict through mr_flow_judge with judge=b. Every finding MUST cite a visible diff line, identify side=new|old, and copy an exact snippet from that line. Approve only when no critical finding remains.
+5. Stay independent from Judge A and from implementation agents; never reconcile verdicts yourself.
+6. You are an internal reviewer, not a user-facing narrator. Emit only the strict verdict payload to the orchestrator; never explain the work, narrate progress, or add prose around the verdict.
+
+Controlled verdict examples:
+- Grounded rejection: {"judge":"b","status":"SUPPORTED","approved":false,"findings":[{"severity":"warning","claim":"Boundary case lacks coverage","file":"tests/api.test.ts","line":18,"side":"new","source":"diff","evidence":"valid request","requirementId":"R3"}]}
+- Missing context: {"judge":"b","status":"INSUFFICIENT_EVIDENCE","approved":false,"findings":[],"missing":["test diff required to assess regression coverage"],"nextAction":"inspect the changed test files"}`,
       ),
       "mr-fix": {
         mode: "subagent",
@@ -424,7 +460,8 @@ Contract:
 2. Make the smallest correction that resolves each critical finding; preserve unrelated work and do not broaden scope.
 3. Run the declared verification commands and report their real results. Never claim unobserved success.
 4. Stop and report a blocker when a finding cannot be fixed inside the declared scope.
-5. Do not change flow state yourself; the orchestrator calls mr_flow_fix after verification.`,
+5. Do not change flow state yourself; the orchestrator calls mr_flow_fix after verification.
+6. You are an internal remediation worker, not a user-facing narrator. Return only a compact execution receipt to the orchestrator; never add didactic explanations, progress narration, preambles, recaps, or next-step advice.`,
       },
       "bp-extractor": {
         mode: "subagent",
@@ -494,8 +531,8 @@ Your role:
    - Execute the mutation via gh CLI or GraphQL ONLY after user confirmation.
 4. Output a clean summary JSON with the created/updated issue IDs and URLs:
    {
-     "status": "success" | "aborted",
-     "items": [ { "id": string, "url": string, "action": "created" | "updated" | "deleted" } ]
+      "status": "success" | "aborted" | "INSUFFICIENT_EVIDENCE",
+      "items": [ { "id": string, "url": string, "action": "created" | "updated" | "deleted" } ]
    }`,
         permission: {
           edit: "deny",
@@ -509,11 +546,28 @@ Your role:
         },
       },
   };
+  return Object.fromEntries(
+    Object.entries(agents).map(([name, agent]) => [
+      name,
+      {
+        ...agent,
+        temperature: 0,
+        top_p: 1,
+        ...(agent.prompt === undefined ? {} : { prompt: `${GROUNDING_CONTRACT}\n\n${agent.prompt}` }),
+      },
+    ]),
+  );
 }
 
 interface WorkspaceOpenCodeOverlay {
   readonly instructions?: unknown;
   readonly mcp?: unknown;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function overlayInstructions(profile: WorkspaceProfile, overlay: WorkspaceOpenCodeOverlay): string[] {
@@ -530,15 +584,23 @@ export function buildOpenCodeConfig(
   models: ModelMap,
   generatedRoot: string,
   overlay: WorkspaceOpenCodeOverlay = {},
+  paths?: MrPaths,
+  enabledCapabilities?: readonly CapabilityId[],
 ): object {
   const pluginPath = join(generatedRoot, profile.id, "plugin.js");
+  const recommendedMcp = paths === undefined ? {} : recommendedMcpServers(paths, enabledCapabilities);
+  const mcp = { ...recommendedMcp, ...record(overlay.mcp) };
+  const adhdEnabled = enabledCapabilities === undefined || enabledCapabilities.includes("i-have-adhd");
+  const plugins = paths === undefined || !adhdEnabled ? [pluginPath] : [capabilityPaths(paths).adhdPlugin, pluginPath];
   return {
     $schema: "https://opencode.ai/config.json",
-    default_agent: "orchestrator",
+    // Developers start in OpenCode's normal build agent. /flow explicitly
+    // dispatches to the primary orchestrator, so no manual mode switch is needed.
+    default_agent: "build",
     disabled_providers: ["openrouter"],
     instructions: [join(profile.root, "AGENTS.md"), ...overlayInstructions(profile, overlay)],
-    ...(overlay.mcp === undefined ? {} : { mcp: overlay.mcp }),
-    plugin: [pluginPath],
+    ...(Object.keys(mcp).length === 0 ? {} : { mcp }),
+    plugin: plugins,
     command: commandDefinitions(models),
     agent: agentDefinitions(models),
     tool_output: { max_lines: 300, max_bytes: 24_000 },
@@ -583,6 +645,8 @@ export function buildGlobalDefinitionFiles(paths: MrPaths, models: ModelMap): Ma
       `model: ${def.model}`,
     ];
     if (def.variant !== undefined) lines.push(`variant: ${def.variant}`);
+    if (def.temperature !== undefined) lines.push(`temperature: ${String(def.temperature)}`);
+    if (def.top_p !== undefined) lines.push(`top_p: ${String(def.top_p)}`);
     if (def.permission !== undefined) {
       lines.push("permission:");
       for (const [key, value] of Object.entries(def.permission)) {
@@ -621,7 +685,8 @@ export async function syncWorkspace(paths: MrPaths, profile: WorkspaceProfile, s
       throw error;
     }
   }
-  const config = buildOpenCodeConfig(profile, models, paths.generatedRoot, overlay);
+  const capabilities = await loadCapabilitySelection(paths);
+  const config = buildOpenCodeConfig(profile, models, paths.generatedRoot, overlay, paths, capabilities.selected);
   const output = generatedConfigPath(paths, profile.id);
   await atomicWrite(output, canonicalJson(config));
   await writeGlobalDefinitions(paths, models);

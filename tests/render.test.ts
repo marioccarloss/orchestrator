@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { renderPlanCapsule, renderFlowStatus, renderVerdict, renderProposal, renderPrompt } from "../src/core/render.js";
+import { buildTaskDeveloperNote, renderPlanCapsule, renderPlanExplanation, renderFlowStatus, renderVerdict, renderProposal, renderPrompt } from "../src/core/render.js";
 import type { PlanCapsule, FlowState, MergedVerdict } from "../src/core/flow-schema.js";
 
 const samplePlan: PlanCapsule = {
@@ -45,22 +45,30 @@ const sampleVerdict: MergedVerdict = {
   critical: ["Missing error handling in edge case"],
   warnings: ["Consider adding loading state"],
   suggestions: ["Add aria-label for accessibility"],
+  findings: [
+    { severity: "critical", claim: "Missing error handling in edge case", file: "src/login.ts", line: 12, side: "new", source: "diff", evidence: "await login()" },
+    { severity: "warning", claim: "Consider adding loading state", file: "src/login.ts", line: 13, side: "new", source: "diff", evidence: "setUser(user)" },
+    { severity: "suggestion", claim: "Add aria-label for accessibility", file: "src/Login.tsx", line: 8, side: "new", source: "diff", evidence: "<button>" },
+  ],
   judgeA: {
     schemaVersion: 1,
     judge: "a",
+    status: "SUPPORTED",
     approved: false,
-    critical: ["Missing error handling"],
-    warnings: [],
-    suggestions: [],
+    diffHash: "a".repeat(64),
+    findings: [{ severity: "critical", claim: "Missing error handling in edge case", file: "src/login.ts", line: 12, side: "new", source: "diff", evidence: "await login()" }],
     reviewedAt: "2026-08-31T12:00:00.000Z",
   },
   judgeB: {
     schemaVersion: 1,
     judge: "b",
+    status: "SUPPORTED",
     approved: true,
-    critical: [],
-    warnings: ["Add loading state"],
-    suggestions: ["Add aria-label"],
+    diffHash: "a".repeat(64),
+    findings: [
+      { severity: "warning", claim: "Consider adding loading state", file: "src/login.ts", line: 13, side: "new", source: "diff", evidence: "setUser(user)" },
+      { severity: "suggestion", claim: "Add aria-label for accessibility", file: "src/Login.tsx", line: 8, side: "new", source: "diff", evidence: "<button>" },
+    ],
     reviewedAt: "2026-08-31T12:00:00.000Z",
   },
   mergedAt: "2026-08-31T12:00:00.000Z",
@@ -76,12 +84,55 @@ test("renderPlanCapsule produces markdown", () => {
 });
 
 test("renderFlowStatus produces markdown", () => {
-  const md = renderFlowStatus(sampleState);
+  const md = renderFlowStatus(sampleState, {
+    ticketId: "GH-42",
+    status: "active",
+    cost: 0.01234,
+    messages: 2,
+    sessions: 2,
+    tokens: { input: 120, output: 30, reasoning: 10, cacheRead: 80, cacheWrite: 0 },
+  });
   assert.ok(md.includes("Estado del Flujo"));
   assert.ok(md.includes("plan"));
   assert.ok(md.includes("root-abc123"));
   assert.ok(md.includes("GH-42"));
   assert.ok(md.includes("bugfix/GH-42-login-button"));
+  assert.ok(md.includes("✓ Ticket  →  ✓ Research  →  ● Planning"));
+  assert.ok(md.includes("— Review"));
+  assert.ok(md.includes("$0.0123 USD"));
+  assert.ok(md.includes("120/30/10"));
+});
+
+test("renderPlanExplanation is deterministic and ultra-compact", () => {
+  const explanation = renderPlanExplanation(samplePlan, 2);
+  assert.ok(explanation.includes("Plan, en breve"));
+  assert.ok(explanation.includes("**Qué**: Fix the login button alignment"));
+  assert.ok(explanation.includes("**Por qué**: CSS flexbox misconfiguration"));
+  assert.ok(explanation.includes("2 tareas; 2 archivos"));
+  assert.ok(explanation.split("\n").length <= 5);
+});
+
+test("buildTaskDeveloperNote teaches what, why, touch and proof without prose expansion", () => {
+  const note = buildTaskDeveloperNote({
+    id: "T1",
+    title: "Track Flow usage",
+    dependsOn: [],
+    requirements: ["R1"],
+    files: [{ path: "src/core/flow-metrics.ts", action: "create", reason: "Persist usage", risk: "medium" }],
+    verify: ["bun test tests/flow-metrics.test.ts"],
+    doneWhen: ["Usage is deduplicated"],
+    status: "pending",
+  }, [{
+    id: "R1",
+    statement: "Developers can see provider-reported spend per Flow",
+    acceptance: [{ when: "Flow runs", then: "usage is visible" }],
+  }]);
+  assert.deepEqual(note, {
+    what: "Track Flow usage",
+    why: "Developers can see provider-reported spend per Flow",
+    touch: "src/core/flow-metrics.ts",
+    prove: "bun test tests/flow-metrics.test.ts",
+  });
 });
 
 test("renderVerdict produces markdown", () => {
@@ -90,6 +141,7 @@ test("renderVerdict produces markdown", () => {
   assert.ok(md.includes("RECHAZADO"));
   assert.ok(md.includes("Missing error handling in edge case"));
   assert.ok(md.includes("Consider adding loading state"));
+  assert.ok(md.includes("src/login.ts:12"));
 });
 
 test("renderProposal produces markdown", () => {

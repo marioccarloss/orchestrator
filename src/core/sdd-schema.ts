@@ -8,7 +8,8 @@ import type { MrPaths } from "./paths.js";
 //
 // Best of both worlds, wired into the /flow phases:
 //   explore  → ResearchCapsule (RPI: evidence-based findings, no prose)
-//   plan     → SpecCapsule (SDD: requirements + acceptance criteria)
+//   plan     → PlanningBrief (Blueprint-lite: risk-driven clarification)
+//            → SpecCapsule (SDD: requirements + acceptance criteria)
 //            → TaskGraph   (SDD tasks + RPI plan: bounded, verifiable DAG)
 //   implement→ tasks served one at a time ("pase gol"), marked done deterministically
 //
@@ -45,6 +46,71 @@ export const ResearchCapsuleSchema = ResearchCapsulePayloadSchema.extend({
 });
 
 export type ResearchCapsule = z.infer<typeof ResearchCapsuleSchema>;
+
+// ── Planning brief (Blueprint-lite) ──────────────────────────────────────────
+
+export const PlanningQuestionSchema = z.strictObject({
+  id: z.string().regex(/^Q\d+$/u, "Question id must match Q<number>, e.g. Q1"),
+  question: z.string().min(1).max(240),
+  reason: z.string().min(1).max(240),
+  risk: z.enum(["medium", "high"]),
+  options: z.array(z.string().min(1).max(120)).max(5).default([]),
+});
+
+export const PlanningNeedsInputPayloadSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  ticketId: z.string().min(1),
+  status: z.literal("NEEDS_INPUT"),
+  questions: z.array(PlanningQuestionSchema).min(1).max(3),
+}).superRefine((payload, context) => {
+  const ids = new Set<string>();
+  let mediumSeen = false;
+  for (const [index, question] of payload.questions.entries()) {
+    if (ids.has(question.id)) {
+      context.addIssue({ code: "custom", path: ["questions", index, "id"], message: `Duplicate question id ${question.id}` });
+    }
+    ids.add(question.id);
+    if (question.risk === "medium") mediumSeen = true;
+    if (question.risk === "high" && mediumSeen) {
+      context.addIssue({ code: "custom", path: ["questions", index, "risk"], message: "Questions must be ordered high risk before medium risk" });
+    }
+  }
+});
+
+export type PlanningNeedsInputPayload = z.infer<typeof PlanningNeedsInputPayloadSchema>;
+
+export const PlanningDecisionSchema = z.strictObject({
+  questionId: z.string().regex(/^Q\d+$/u).optional(),
+  decision: z.string().min(1).max(300),
+  source: z.enum(["user", "ticket", "research"]),
+});
+
+export const PlanningAssumptionSchema = z.strictObject({
+  statement: z.string().min(1).max(300),
+  risk: z.enum(["low", "medium"]),
+});
+
+export const PlanningBriefPayloadSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  ticketId: z.string().min(1),
+  status: z.literal("READY"),
+  mode: z.enum(["auto", "guided", "direct"]),
+  decisions: z.array(PlanningDecisionSchema).max(8).default([]),
+  assumptions: z.array(PlanningAssumptionSchema).max(5).default([]),
+});
+
+export type PlanningBriefPayload = z.infer<typeof PlanningBriefPayloadSchema>;
+
+export const PlanningAssessmentPayloadSchema = z.discriminatedUnion("status", [
+  PlanningNeedsInputPayloadSchema,
+  PlanningBriefPayloadSchema,
+]);
+
+export const PlanningBriefSchema = PlanningBriefPayloadSchema.extend({
+  createdAt: z.iso.datetime(),
+});
+
+export type PlanningBrief = z.infer<typeof PlanningBriefSchema>;
 
 // ── Spec (SDD) ────────────────────────────────────────────────────────────────
 
@@ -125,6 +191,10 @@ export interface SddValidationIssue {
   readonly message: string;
 }
 
+export interface SddValidationOptions {
+  readonly requireEvidenceForModifiedFiles?: boolean;
+}
+
 /**
  * Structural guardrails beyond zod shape validation:
  *  - task DAG: no unknown or cyclic dependsOn references
@@ -136,6 +206,7 @@ export function validateSddArtifacts(
   spec: SpecCapsulePayload,
   tasks: TaskGraphPayload,
   research?: ResearchCapsulePayload,
+  options: SddValidationOptions = {},
 ): readonly SddValidationIssue[] {
   const issues: SddValidationIssue[] = [];
   const requirementIds = new Set(spec.requirements.map((r) => r.id));
@@ -192,13 +263,20 @@ export function validateSddArtifacts(
   };
   for (const task of tasks.tasks) visit(task.id, []);
 
+  if (research === undefined && options.requireEvidenceForModifiedFiles === true) {
+    issues.push({ severity: "error", message: "Research capsule is required before task validation in Full flows" });
+  }
+
   if (research !== undefined) {
+    if (research.ticketId !== spec.ticketId) {
+      issues.push({ severity: "error", message: `Research ticket '${research.ticketId}' != spec ticket '${spec.ticketId}'` });
+    }
     const evidenceFiles = new Set(research.evidence.map((e) => e.file));
     for (const task of tasks.tasks) {
       for (const file of task.files) {
         if (file.action === "modify" && !evidenceFiles.has(file.path)) {
           issues.push({
-            severity: "warning",
+            severity: options.requireEvidenceForModifiedFiles === true ? "error" : "warning",
             message: `Task ${task.id} modifies '${file.path}' without research evidence — verify before editing`,
           });
         }
@@ -232,12 +310,13 @@ export function markTaskStatus(tasks: TaskGraph, taskId: string, status: SddTask
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
-export type SddKind = "research" | "spec" | "tasks";
-export type SddArtifact = ResearchCapsule | SpecCapsule | TaskGraph;
-export type SddArtifactPayload = ResearchCapsulePayload | SpecCapsulePayload | TaskGraphPayload;
+export type SddKind = "research" | "brief" | "spec" | "tasks";
+export type SddArtifact = ResearchCapsule | PlanningBrief | SpecCapsule | TaskGraph;
+export type SddArtifactPayload = ResearchCapsulePayload | PlanningBriefPayload | SpecCapsulePayload | TaskGraphPayload;
 
 const SDD_FILES: Record<SddKind, string> = {
   research: "research.json",
+  brief: "brief.json",
   spec: "spec.json",
   tasks: "tasks.json",
 };
@@ -261,6 +340,7 @@ export async function saveSddArtifact(
   const persisted = (() => {
     switch (kind) {
       case "research": return ResearchCapsuleSchema.parse({ ...artifact, createdAt });
+      case "brief": return PlanningBriefSchema.parse({ ...artifact, createdAt });
       case "spec": return SpecCapsuleSchema.parse({ ...artifact, createdAt });
       case "tasks": return TaskGraphSchema.parse({ ...artifact, createdAt });
     }
@@ -273,6 +353,7 @@ export async function saveSddArtifact(
 export function toOperationalSddPayload(artifact: SddArtifact): SddArtifactPayload {
   const { createdAt: _createdAt, ...payload } = artifact;
   if ("objective" in payload) return ResearchCapsulePayloadSchema.parse(payload);
+  if ("status" in payload) return PlanningBriefPayloadSchema.parse(payload);
   if ("goal" in payload) return SpecCapsulePayloadSchema.parse(payload);
   return TaskGraphPayloadSchema.parse(payload);
 }
@@ -294,6 +375,13 @@ export async function loadResearch(paths: MrPaths, workspaceId: string): Promise
   const raw = await loadJson<unknown>(join(sddDir(paths, workspaceId), SDD_FILES.research));
   if (raw === undefined) return undefined;
   const parsed = ResearchCapsuleSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
+}
+
+export async function loadPlanningBrief(paths: MrPaths, workspaceId: string): Promise<PlanningBrief | undefined> {
+  const raw = await loadJson<unknown>(join(sddDir(paths, workspaceId), SDD_FILES.brief));
+  if (raw === undefined) return undefined;
+  const parsed = PlanningBriefSchema.safeParse(raw);
   return parsed.success ? parsed.data : undefined;
 }
 

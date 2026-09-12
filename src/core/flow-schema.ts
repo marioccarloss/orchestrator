@@ -189,7 +189,7 @@ export const FlowEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("explore_done"), atlasCache: z.string().optional() }),
   z.object({ type: z.literal("plan_approved"), plan: PlanCapsuleSchema }),
   z.object({ type: z.literal("plan_rejected") }),
-  z.object({ type: z.literal("implement_done"), completedFiles: z.array(z.string()) }),
+  z.object({ type: z.literal("implement_done"), completedFiles: z.array(z.string()), diffHash: z.string().min(1).optional() }),
   z.object({ type: z.literal("judgment_needed"), diffHash: z.string().min(1) }),
   z.object({ type: z.literal("judgment_passed"), approvalDigest: z.string().min(1).optional() }),
   z.object({ type: z.literal("judgment_failed"), verdict: z.object({ critical: z.array(z.string()), warnings: z.array(z.string()), suggestions: z.array(z.string()) }) }),
@@ -363,7 +363,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           baseBranch: state.baseBranch,
           plan: state.plan,
           fixAttempt: state.fixAttempt ?? 0,
-          diffHash: "pending",
+          diffHash: event.diffHash ?? "legacy-unbound",
         };
       }
       if (event.type === "judgment_needed") {
@@ -506,13 +506,27 @@ export class MigrationRegistry {
 
 // ─── Verdict Schemas ─────────────────────────────────────────────────────────
 
-export const JudgeVerdictSchema = z.object({
+export const JudgeFindingSchema = z.strictObject({
+  severity: z.enum(["critical", "warning", "suggestion"]),
+  claim: z.string().min(1).max(500),
+  file: z.string().min(1),
+  line: z.number().int().positive(),
+  side: z.enum(["new", "old"]),
+  source: z.literal("diff"),
+  evidence: z.string().min(1).max(500),
+  requirementId: z.string().regex(/^R\d+$/u).optional(),
+});
+
+export type JudgeFinding = z.infer<typeof JudgeFindingSchema>;
+export const JudgeFindingsSchema = z.array(JudgeFindingSchema);
+
+export const JudgeVerdictSchema = z.strictObject({
   schemaVersion: z.literal(1),
   judge: z.enum(["a", "b"]),
+  status: z.literal("SUPPORTED"),
   approved: z.boolean(),
-  critical: z.array(z.string()).default([]),
-  warnings: z.array(z.string()).default([]),
-  suggestions: z.array(z.string()).default([]),
+  diffHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  findings: JudgeFindingsSchema.default([]),
   reviewedAt: z.iso.datetime(),
 });
 
@@ -524,6 +538,7 @@ export const MergedVerdictSchema = z.object({
   critical: z.array(z.string()).default([]),
   warnings: z.array(z.string()).default([]),
   suggestions: z.array(z.string()).default([]),
+  findings: JudgeFindingsSchema.default([]),
   judgeA: JudgeVerdictSchema,
   judgeB: JudgeVerdictSchema,
   mergedAt: z.iso.datetime(),

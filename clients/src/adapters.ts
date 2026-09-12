@@ -16,10 +16,14 @@ const descriptions: Record<Workflow, string> = {
   "flow-models": "Inspect and change mr-orchestrator role model assignments with explicit confirmation",
 };
 
+const grounding = `Grounding contract (mandatory): use only supplied tickets, typed capsules, tool results, specifications, and inspected source/diffs. Never invent files, behavior, requirements, or command results. When essential evidence is missing, stop with {"status":"INSUFFICIENT_EVIDENCE","missing":["<specific missing evidence>"],"nextAction":"<smallest action that can obtain it>"}.`;
+
 function workflowBody(workflow: Workflow, input: string): string {
   const binding = `First call \`mr_bind_workspace\` with exactly one registered workspaceId or workspacePath. Use the current project root only when it is registered; if binding fails, ask the user which registered workspace to use.`;
   if (workflow === "flow") {
-    return `You are executing the mr-orchestrator /flow workflow.
+    return `${grounding}
+
+You are executing the mr-orchestrator /flow workflow.
 
 ${binding}
 
@@ -28,29 +32,31 @@ ${binding}
 3. Advance only through the phase reported by the state machine:
    - context: inspect the ticket and call \`mr_flow_ticket\`.
    - explore: gather file:line evidence with \`mr_atlas_query\` / \`mr_atlas_skeleton\` and submit a valid ResearchCapsule with \`mr_sdd_submit(kind: "research")\`.
-   - plan: submit SpecCapsule and TaskGraph with \`mr_sdd_submit(kind: "spec")\` and \`mr_sdd_submit(kind: "tasks")\`. Verify acyclic DAG and full Rn -> Tn coverage. Then call \`mr_flow_plan\` with the consolidated files.
-   - implement: repeatedly call \`mr_sdd_get(kind: "next-task")\` for the next task ("pase gol"). Respect its required implementer: Fibonacci 1-3 uses only general; 5+ uses only sdd-apply. Implement within declared task files, run its verification commands, mark it done with \`mr_sdd_task_status\`, then call \`mr_flow_implement\` when no actionable task remains.
-   - judgment: for difficulty >= 5, perform two independent blind adversarial reviews and submit both through \`mr_flow_judge\`.
+   - plan: first run Blueprint-lite with \`mr_sdd_submit(kind: "brief")\`. Clear tickets submit READY immediately. Only material ambiguity may return NEEDS_INPUT with at most 3 risk-prioritized questions; ask once, pass answers back to planning, and persist READY. Then submit SpecCapsule and TaskGraph with kinds spec and tasks. Verify acyclic DAG, full Rn -> Tn coverage, and research evidence for every modified file in Full flows. Call \`mr_flow_plan\` with the consolidated files. Show its deterministic "Plan, en breve" once without paraphrasing it.
+   - implement: repeatedly call \`mr_sdd_get(kind: "next-task")\` for the next task ("pase gol"). Show its ultra-compact developerNote (what/why/touch/prove) once without expanding it. Respect its required implementer: Fibonacci 1-3 uses only general; 5+ uses only sdd-apply. Implement within declared task files, run its verification commands, mark it done with \`mr_sdd_task_status\`, then call \`mr_flow_implement\` when no actionable task remains.
+   - judgment: for difficulty >= 5, perform two independent blind adversarial reviews in parallel and submit both through \`mr_flow_judge\`. Each finding must provide severity, claim, file, line, side=new|old, source=diff, and an exact evidence snippet; unsupported citations are rejected mechanically.
    - fix: address validated critical findings and call \`mr_flow_fix\`. Bounded loop of max 3 attempts.
    - gate: execute the authoritative test/verification command (e.g. \`npm run verify\` in code/ for frontend or \`mvn clean verify\` for backend). Fail-closed: exit code 0 required before any commit/push/PR.
    - finish: call \`mr_flow_finish\` only after the user confirms the closing action via interactive prompt.
 4. Preserve role isolation even when this host has no native mr-orchestrator subagents. Run each phase as an independent role pass with only its required evidence. Resolve models from the host configuration; never embed a model snapshot in this prompt:
    - explore role: read-only research and file:line evidence (edit: deny, bash: deny);
-   - plan role: specification and dependency-ordered task graph, without editing code; enforce Gherkin acceptance criteria and an acyclic DAG;
+   - plan role: Blueprint-lite ambiguity assessment, specification, and dependency-ordered task graph without editing code; ask only high-impact questions, enforce Gherkin acceptance criteria and an acyclic DAG;
     - general role: sole implementer for Fibonacci 1-3; implement only the active task with minimal diff and run declared verification commands;
     - sdd-apply role: specialized implementer for Fibonacci 5+; satisfy every acceptance criterion and run strict verification;
    - judge-a role: independent adversarial review as Hardened Security & Contract Auditor; penalize ambiguous types, leaks, concurrency bugs, and side effects outside the diff;
    - judge-b role: independent adversarial review as QA & Regression Specialist; penalize missing tests, edge cases, backwards compatibility, and Gherkin non-compliance;
    - Both judges receive ONLY CAS diff (git diff HEAD) and ticket/spec in isolated blind context. Strict consensus: approval requires both approve; any critical issue rejects and triggers fix role.
    - fix role: apply only validated critical findings, with a maximum of 3 attempts before human escalation.
-5. Treat tool validation errors as authoritative, correct the payload, and retry. Never skip or invent state transitions. Never generate raw prose markdown for SDD capsules; payloads must validate against Zod schemas. Ask for explicit confirmation before destructive mutations, commits, pull requests, aborts, or closing actions.
+5. Treat tool validation errors as authoritative, correct the payload, and retry. Never skip or invent state transitions or provider cost. Flow status is the authoritative progress/spend display. Never generate raw prose markdown for SDD capsules; payloads must validate against Zod schemas. Ask for explicit confirmation before destructive mutations, commits, pull requests, aborts, or closing actions.
 
 ---
 [CONTEXT_INPUT_PAYLOAD]
 ${input}`;
   }
 
-  if (workflow === "blueprint") return `You are executing the mr-orchestrator /blueprint workflow.
+  if (workflow === "blueprint") return `${grounding}
+
+You are executing the mr-orchestrator /blueprint workflow.
 
 ${binding}
 
@@ -72,7 +78,9 @@ ${binding}
 [CONTEXT_INPUT_PAYLOAD]
 ${input}`;
 
-  return `You are executing the mr-orchestrator /flow-models workflow.
+  return `${grounding}
+
+You are executing the mr-orchestrator /flow-models workflow.
 
 ${binding}
 

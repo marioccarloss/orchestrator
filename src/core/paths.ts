@@ -5,6 +5,8 @@ export interface MrPaths {
   readonly configRoot: string;
   readonly dataRoot: string;
   readonly cacheRoot: string;
+  readonly capabilitiesRoot?: string;
+  readonly capabilitiesConfig?: string;
   readonly binRoot: string;
   readonly registry: string;
   readonly models: string;
@@ -25,11 +27,14 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): MrPaths {
   const cacheRoot = join(env["XDG_CACHE_HOME"] ?? join(home, ".cache"), "mr-orchestrator");
   const binRoot = env["MR_BIN_HOME"] ?? join(home, ".local", "bin");
   const bunRoot = join(dataRoot, "toolchains", "bun");
+  const capabilitiesRoot = join(dataRoot, "capabilities");
 
   return {
     configRoot,
     dataRoot,
     cacheRoot,
+    capabilitiesRoot,
+    capabilitiesConfig: join(configRoot, "capabilities.json"),
     binRoot,
     registry: join(configRoot, "workspaces.json"),
     models: join(configRoot, "models.json"),
