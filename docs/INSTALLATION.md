@@ -9,7 +9,7 @@ Este documento detalla paso a paso cómo instalar, configurar, verificar y desin
 `mr-orchestrator` fue diseñado con los siguientes principios de seguridad:
 
 1. **Cero impacto en repositorios de trabajo:** Nunca escribe archivos dentro de los repositorios registrados.
-2. **Toolchain Bun aislada:** Instala su propio binario de Bun fijado en `~/.local/share/mr-orchestrator/toolchains/bun` y expone un shim en `~/.local/bin/bun`. No requiere otro runtime o gestor de paquetes JavaScript.
+2. **Toolchain y capacidades aisladas:** Instala Bun y las capacidades recomendadas bajo `~/.local/share/mr-orchestrator/`, con versiones y checksums fijados.
 3. **No mutación de archivos shell (`.zshrc` / `.bashrc`):** El instalador no escribe silenciosamente en tus archivos rc.
 4. **Instalación basada en Manifest:** Cada archivo creado queda registrado con su hash SHA-256 en `~/.config/mr-orchestrator/install-manifest.json`.
 5. **Desinstalación como reversa exacta:** `mr uninstall` solo elimina archivos de su propiedad que no hayan sido modificados por el usuario.
@@ -66,18 +66,54 @@ O si solo deseas instalar los ejecutables globales sin registrar workspaces de i
 ./install.sh
 ```
 
+Antes de descargar capacidades, el instalador muestra para qué sirve cada skill/MCP, su importancia y si ya está disponible. Las opciones son:
+
+1. **Instalarlos todos** — selección recomendada.
+2. **Elegir uno por uno** — instala únicamente lo marcado.
+3. **Continuar con la selección actual** — reanuda una instalación anterior.
+4. **Continuar y hacerlo más tarde** — instala mr-orchestrator sin bloquearse y deja un recordatorio.
+5. **Cancelar toda la instalación** — no continúa con el instalador principal.
+
+En instalaciones sin terminal interactiva se usa la selección recomendada. Para aplazarla expresamente:
+
+```bash
+./install.sh --workspace ~/Projects/my-workspace --capabilities-later
+```
+
+Para consultar o reanudar después:
+
+```bash
+mr capabilities status
+mr capabilities install
+mr capabilities all
+```
+
 ### ¿Qué hace `install.sh` por dentro?
 1. Verifica si existe el runtime de Bun en `~/.local/share/mr-orchestrator/toolchains/bun/bin/bun`. Si no existe, lo descarga de manera aislada sin alterar `.zshrc`.
-2. Ejecuta `bun install --frozen-lockfile` y compila el código TypeScript (`bun run build`).
-3. Si hay una terminal interactiva, abre `flow-models` para revisar o elegir el modelo disponible de cada proceso/step. Los cambios solo se persisten al seleccionar **Guardar y salir**.
-4. Crea los launchers ejecutables en `~/.local/bin/`:
+2. Abre el selector de capacidades. Instala el skill `i-have-adhd`, `codebase-memory`, CodeGraph, Engram y `figma-live-mcp` elegidos desde revisiones fijadas y valida cada descarga por SHA-256.
+3. Registra también Context7, GitHub y Jira como MCP remotos. GitHub/Jira conservan su autenticación oficial y nunca reciben secretos desde el instalador.
+4. Ejecuta `bun install --frozen-lockfile` y compila el código TypeScript (`bun run build`).
+5. Si hay una terminal interactiva, abre `flow-models` para revisar o elegir el modelo disponible de cada proceso/step. Los cambios solo se persisten al seleccionar **Guardar y salir**.
+6. Crea los launchers ejecutables en `~/.local/bin/`:
    - `~/.local/bin/mr`: CLI administrativo de mr-orchestrator.
    - `~/.local/bin/mrcode`: Wrapper inteligente que detecta el workspace actual y lanza OpenCode con la configuración compilada.
    - `~/.local/bin/bun`: Shim que apunta al runtime aislado de Bun.
-5. Escribe el manifest en `~/.config/mr-orchestrator/install-manifest.json`.
-6. Inicializa `~/.config/mr-orchestrator/models.json` con los modelos por rol elegidos.
-7. Si se pasó `--workspace`, registra el workspace en `~/.config/mr-orchestrator/workspaces.json` y compila su configuración en `~/.config/mr-orchestrator/generated/<workspace-id>/opencode.mr.json`.
-8. **Instala las dependencias del plugin generado** (`bun install` en `~/.config/mr-orchestrator/generated/<workspace-id>/`). Esto es necesario para que el plugin pueda importar `@opencode-ai/plugin`, `zod`, `tree-sitter`, etc. Sin este paso, el plugin falla silenciosamente al cargar.
+7. Escribe el manifest en `~/.config/mr-orchestrator/install-manifest.json` y el catálogo portable en `~/.config/mr-orchestrator/recommended-mcps.json`.
+8. Inicializa `~/.config/mr-orchestrator/models.json` con los modelos por rol elegidos.
+9. Si se pasó `--workspace`, registra el workspace en `~/.config/mr-orchestrator/workspaces.json` y compila su configuración en `~/.config/mr-orchestrator/generated/<workspace-id>/opencode.mr.json`.
+10. **Instala las dependencias del plugin generado** (`bun install` en `~/.config/mr-orchestrator/generated/<workspace-id>/`). Esto es necesario para que el plugin pueda importar `@opencode-ai/plugin`, `zod`, `tree-sitter`, etc. Sin este paso, el plugin falla silenciosamente al cargar.
+
+### Paso manual de Figma
+
+El servidor y el plugin quedan construidos en una ruta aislada. Figma exige una importación explícita que el instalador no puede automatizar:
+
+1. Abre **Figma → Plugins → Development → Import plugin from manifest…**.
+2. Selecciona la ruta `packages/figma-plugin/manifest.json` que imprime `install.sh`.
+3. Ejecuta **Figma Live Bridge** cuando necesites inspección en vivo.
+
+El skill ADHD queda instalado y registrado, pero `/flow` lo aplica automáticamente **solo al Orchestrator**. Los implementadores, jueces y el agente de corrección continúan emitiendo únicamente payloads internos.
+
+GitHub y Jira pueden quedar como `pending` sin abortar nada. El instalador continúa con las capacidades listas y muestra `mr capabilities install` como siguiente acción. Después de completar el OAuth en el cliente, ejecuta ese comando, marca **Ya está credencializado** y la configuración de todos los workspaces se regenera.
 
 En automatizaciones sin TTY el selector se omite automáticamente. También puede omitirse de forma explícita con `./install.sh --no-models`; después se abre con `mr flow-models`.
 
@@ -99,6 +135,13 @@ Deberías ver una salida similar a:
 │
 │
 ●  ✓ opencode: 1.18.25
+│
+●  ✓ codebase-memory-mcp: 0.10.8
+●  ✓ codegraph: 1.6.0
+●  ✓ engram: 1.20.0
+●  ✓ i-have-adhd: installed for Orchestrator presentation only
+●  ✓ figma-live-mcp: server binary installed
+●  ✓ Figma plugin manifest: import manually in Figma: .../manifest.json
 │
 ●  ✓ PATH: ~/.local/bin is configured
 │
@@ -165,6 +208,7 @@ El loader global (`~/.config/opencode/plugins/mr-orchestrator-loader.ts`) detect
 - Los comandos `/flow`, `/atlas`, `/trace`, `/propose`, `/prompt`, `/flow-models`
 - Los 20 tools `mr_flow_*`, `mr_sdd_*`, `mr_atlas_*`, etc.
 - Los agentes `orchestrator`, `mr-explore`, `mr-plan`, etc.
+- Los MCP recomendados, respetando cualquier entrada homónima definida por el usuario.
 
 **Importante:** Si el loader falla, ahora verás un mensaje de error en stderr. Antes, los errores eran silenciosos y los comandos simplemente no aparecían.
 

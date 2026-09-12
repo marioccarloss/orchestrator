@@ -1,10 +1,13 @@
 import type { PlanCapsule, FlowState, MergedVerdict } from "./flow-schema.js";
 import type {
   ResearchCapsulePayload,
+  Requirement,
+  SddTask,
   SpecCapsulePayload,
   TaskGraphPayload,
   SddValidationIssue,
 } from "./sdd-schema.js";
+import type { FlowUsageSummary } from "./flow-metrics.js";
 
 function renderList(items: readonly string[], empty: string): string {
   if (items.length === 0) return `- ${empty}`;
@@ -58,9 +61,42 @@ ${renderTestTable(plan.tests)}
 `;
 }
 
-export function renderFlowStatus(state: FlowState): string {
+function flowProgress(state: FlowState, completed: boolean): string {
+  const rank: Record<FlowState["phase"], number> = {
+    init: 0,
+    wizard: 0,
+    context: 0,
+    explore: 1,
+    plan: 2,
+    implement: 3,
+    judgment: 4,
+    fix: 4,
+    finish: 5,
+  };
+  const labels = ["Ticket", "Research", "Planning", "Implementation", state.phase === "fix" ? "Review/Fix" : "Review", "Delivery"];
+  return labels.map((label, index) => {
+    if (index === 4 && "difficulty" in state && state.difficulty < 5) return `— ${label}`;
+    if (index < rank[state.phase] || (index === 5 && completed)) return `✓ ${label}`;
+    if (index === rank[state.phase]) return `● ${label}`;
+    return `○ ${label}`;
+  }).join("  →  ");
+}
+
+export function renderFlowUsage(usage: FlowUsageSummary): string {
+  const tokens = usage.tokens;
+  return `**Coste estimado por OpenCode**: $${usage.cost.toFixed(4)} USD · tokens in/out/reasoning: ${String(tokens.input)}/${String(tokens.output)}/${String(tokens.reasoning)} · caché: ${String(tokens.cacheRead)} read, ${String(tokens.cacheWrite)} write · ${String(usage.sessions)} sesiones`;
+}
+
+export function renderFlowStatus(
+  state: FlowState,
+  usage?: FlowUsageSummary,
+  options: { readonly completed?: boolean } = {},
+): string {
   const lines = [
     `# Estado del Flujo — ${state.phase}`,
+    "",
+    `**Progreso**: ${flowProgress(state, options.completed ?? false)}`,
+    ...(usage === undefined ? [] : [renderFlowUsage(usage)]),
     "",
     `- **Workspace**: ${state.workspaceId}`,
     `- **Iniciado**: ${state.startedAt}`,
@@ -89,8 +125,45 @@ export function renderFlowStatus(state: FlowState): string {
   return lines.join("\n");
 }
 
+function compactText(value: string, max = 180): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
+}
+
+export function renderPlanExplanation(plan: PlanCapsule, taskCount?: number): string {
+  const paths = plan.files.slice(0, 3).map((file) => `\`${file.path}\``).join(", ");
+  const extra = Math.max(0, plan.files.length - 3);
+  const checks = Object.entries(plan.verification)
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name)
+    .join(" + ");
+  return [
+    "## Plan, en breve",
+    `- **Qué**: ${compactText(plan.summary)}`,
+    `- **Por qué**: ${compactText(plan.rootCause ?? plan.files[0]?.reason ?? "Cumplir los criterios de aceptación con el menor cambio seguro.")}`,
+    `- **Cómo**: ${String(taskCount ?? plan.files.length)} tareas; ${String(plan.files.length)} archivos (${paths}${extra > 0 ? ` +${String(extra)}` : ""}).`,
+    `- **Prueba**: ${checks === "" ? "verificación específica de cada tarea" : checks}.`,
+  ].join("\n");
+}
+
+export function buildTaskDeveloperNote(
+  task: SddTask,
+  requirements: readonly Requirement[],
+): { readonly what: string; readonly why: string; readonly touch: string; readonly prove: string } {
+  const requirementWhy = requirements.map((requirement) => requirement.statement).join("; ");
+  return {
+    what: compactText(task.title, 120),
+    why: compactText(requirementWhy === "" ? (task.doneWhen[0] ?? "Complete the bounded SDD task") : requirementWhy, 180),
+    touch: task.files.map((file) => file.path).join(", "),
+    prove: task.verify.join(" && "),
+  };
+}
+
 export function renderVerdict(verdict: MergedVerdict): string {
   const status = verdict.approved ? "✅ APROBADO" : "❌ RECHAZADO";
+  const evidenceRows = verdict.findings.map((finding) =>
+    `| ${finding.severity} | ${finding.claim} | \`${finding.file}:${String(finding.line)} (${finding.side})\` | \`${finding.evidence}\` |`,
+  );
   return `# Veredicto del Día del Juicio — ${status}
 
 ## Resumen
@@ -105,6 +178,9 @@ ${renderList(verdict.warnings, "Ninguna")}
 
 ## Sugerencias
 ${renderList(verdict.suggestions, "Ninguna")}
+
+## Evidencia Verificada
+${evidenceRows.length === 0 ? "Ninguna" : `| Severidad | Hallazgo | Ubicación | Evidencia |\n|-----------|----------|-----------|-----------|\n${evidenceRows.join("\n")}`}
 
 ---
 *Fusionado el ${verdict.mergedAt}*

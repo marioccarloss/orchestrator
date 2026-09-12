@@ -25,10 +25,10 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
 
 3. 🚀 **[Manual de Uso y Referencia de Comandos (`docs/USAGE.md`)](docs/USAGE.md):**
    - Uso de `mr` (CLI de administración) y `mrcode` (lanzador inteligente de OpenCode).
-   - Modos de operación: modo `Orchestrator` vs modo `build`.
+   - Experiencia unificada: desarrollo normal en `build` y despacho automático de `/flow` al coordinador interno.
    - Roster completo de agentes (`orchestrator`, `mr-explore`, `mr-plan`, `mr-general`, `mr-sdd-apply`, `mr-judge-a`, `mr-judge-b`, `mr-fix`).
    - Guía detallada de comandos: `/flow`, `/propose`, `/prompt`, `/atlas`, `/trace` y `/flow-models`.
-   - Pipeline SDD/RPI con herramientas `mr_sdd_*` (research → spec → tasks → implement).
+   - Pipeline SDD/RPI con Blueprint-lite (`research → brief → spec → tasks → implement`).
    - Configuración de modelos de IA por rol.
    - Troubleshooting y preguntas frecuentes.
 
@@ -43,9 +43,11 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
 
 **Fases F0 a F8 completadas al 100%.**
 - Suite automatizada de pruebas unitarias y de integración en Bun
-- Plugin nativo de OpenCode con guardias de comandos y herramientas FSM
+- Plugin nativo de OpenCode con despacho por agente y herramientas FSM fail-closed
 - Indexador Atlas con **tree-sitter** (TypeScript/TSX + Java) y soporte para configs JSON/YAML
 - Pipeline SDD/RPI determinista: cápsulas JSON tipadas validadas con Zod + guardrails estructurales
+- Progreso tipo pedido, coste/tokens estimados por Flow y explicaciones técnicas ultracondensadas
+- Skill `i-have-adhd` aplicado solo por Orchestrator y catálogo MCP gestionado (`codebase-memory`, CodeGraph, Context7, Engram, GitHub, Jira y `figma-live-mcp`)
 - Diagnóstico React `/trace`, propuestas técnicas `/propose` y generador `/prompt` con `pbcopy`
 - Sistema de juicio ciego con jueces A/B y bucle de corrección acotado
 - Gestión de ciclo de vida con backup, restore, plan de update y rollback automático
@@ -84,6 +86,8 @@ bun run build
 ```bash
 ./install.sh --workspace ~/Projects/my-workspace
 ```
+
+El asistente explica cada skill/MCP y permite instalar todos, elegir, continuar con una selección anterior, aplazar sin bloquear la instalación o cancelar. Reanuda en cualquier momento con `mr capabilities install`.
 
 ### 4. Diagnóstico del Entorno
 

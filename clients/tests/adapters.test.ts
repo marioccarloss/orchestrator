@@ -36,6 +36,8 @@ test("all adapters bind a workspace and delegate state to mr-orchestrator tools"
     } else if (artifact.path.includes("flow")) {
       expect(artifact.content).toContain("mr_flow_status");
       expect(artifact.content).toContain("mr_sdd_submit");
+      expect(artifact.content).toContain("developerNote");
+      expect(artifact.content).toContain("authoritative progress/spend display");
     } else {
       expect(artifact.content).toContain("mr_blueprint_save");
       expect(artifact.content).toContain("mr_blueprint_safety_gate");

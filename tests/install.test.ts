@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { install, loadManifest, planUninstall, uninstall } from "../src/core/install.js";
+import { defaultCapabilitySelection, saveCapabilitySelection } from "../src/core/capabilities.js";
 import { seedModels } from "../src/core/config.js";
 import { sha256 } from "../src/core/files.js";
 import { setModelRole } from "../src/core/models.js";
@@ -21,8 +22,8 @@ void test("install is idempotent and uninstall preserves modified owned files", 
 
   const first = await install(paths, sourceRoot, "0.1.0");
   const second = await install(paths, sourceRoot, "0.1.0");
-  // 3 launchers + 1 opencode loader plugin + 11 agent md + 7 command md
-  assert.equal(first.changedFiles.length, 22);
+  // 3 launchers + 1 loader + 1 MCP catalog + 11 agent md + 7 command md
+  assert.equal(first.changedFiles.length, 23);
   assert.equal(second.changedFiles.length, 0);
   assert.match(await readFile(join(paths.binRoot, "mrcode"), "utf8"), /bun' '.+cli\.js' launch "\$@"/u);
   const loader = await readFile(join(paths.opencodePluginsRoot, "mr-orchestrator-loader.ts"), "utf8");
@@ -33,6 +34,9 @@ void test("install is idempotent and uninstall preserves modified owned files", 
   assert.match(orchestratorMd, /variant: high/u);
   const flowMd = await readFile(join(paths.opencodeCommandsRoot, "flow.md"), "utf8");
   assert.match(flowMd, /agent: orchestrator/u);
+  const catalog = await readFile(join(paths.configRoot, "recommended-mcps.json"), "utf8");
+  assert.match(catalog, /figma-live/u);
+  assert.match(catalog, /codebase-memory/u);
 
   const launcher = join(paths.binRoot, "mr");
   await writeFile(launcher, `${await readFile(launcher, "utf8")}# local edit\n`);
@@ -75,4 +79,23 @@ void test("install refuses to overwrite a foreign launcher", async () => {
 
   await assert.rejects(install(paths, sourceRoot, "0.1.0"), /Refusing to overwrite/u);
   assert.equal(await readFile(join(paths.binRoot, "mr"), "utf8"), "foreign\n");
+});
+
+void test("install catalog follows the resumable capability selection", async () => {
+  const home = await mkdtemp(join(tmpdir(), "mr-install-capability-selection-"));
+  const paths = resolvePaths({ HOME: home });
+  await mkdir(join(paths.bunRoot, "bin"), { recursive: true });
+  await writeFile(paths.bunBinary, "bun fixture");
+  await chmod(paths.bunBinary, 0o755);
+  await seedModels(paths, sourceRoot);
+  await saveCapabilitySelection(paths, {
+    ...defaultCapabilitySelection(),
+    selected: ["context7"],
+  });
+
+  await install(paths, sourceRoot, "0.1.0");
+  const catalog = await readFile(join(paths.configRoot, "recommended-mcps.json"), "utf8");
+  assert.match(catalog, /context7/u);
+  assert.doesNotMatch(catalog, /codebase-memory/u);
+  assert.doesNotMatch(catalog, /figma-live/u);
 });

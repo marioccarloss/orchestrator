@@ -1,18 +1,25 @@
-import type { JudgeVerdict, MergedVerdict } from "./flow-schema.js";
+import type { JudgeFinding, JudgeVerdict, MergedVerdict } from "./flow-schema.js";
 import { runCommand } from "./process.js";
 
 // ─── Verdict Merger ──────────────────────────────────────────────────────────
 
 export function mergeVerdicts(verdictA: JudgeVerdict, verdictB: JudgeVerdict): MergedVerdict {
-  // Critical: union of both
-  const critical = [...new Set([...verdictA.critical, ...verdictB.critical])];
-  // Warnings: union of both
-  const warnings = [...new Set([...verdictA.warnings, ...verdictB.warnings])];
-  // Suggestions: union of both
-  const suggestions = [...new Set([...verdictA.suggestions, ...verdictB.suggestions])];
+  const findingKeys = new Set<string>();
+  const findings = [...verdictA.findings, ...verdictB.findings].filter((finding) => {
+    const key = `${finding.severity}:${finding.file}:${finding.side}:${String(finding.line)}:${finding.claim}`;
+    if (findingKeys.has(key)) return false;
+    findingKeys.add(key);
+    return true;
+  });
+  const claims = (severity: JudgeFinding["severity"]): string[] => [
+    ...new Set(findings.filter((finding) => finding.severity === severity).map((finding) => finding.claim)),
+  ];
+  const critical = claims("critical");
+  const warnings = claims("warning");
+  const suggestions = claims("suggestion");
 
   // Approved only if BOTH approve
-  const approved = verdictA.approved && verdictB.approved;
+  const approved = verdictA.approved && verdictB.approved && critical.length === 0;
 
   return {
     schemaVersion: 1,
@@ -20,10 +27,132 @@ export function mergeVerdicts(verdictA: JudgeVerdict, verdictB: JudgeVerdict): M
     critical,
     warnings,
     suggestions,
+    findings,
     judgeA: verdictA,
     judgeB: verdictB,
     mergedAt: new Date().toISOString(),
   };
+}
+
+export interface JudgeFindingValidationOptions {
+  readonly approved: boolean;
+  readonly requirementIds?: ReadonlySet<string>;
+}
+
+function normalizeEvidence(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+interface DiffLineMaps {
+  readonly new: Map<string, Map<number, string>>;
+  readonly old: Map<string, Map<number, string>>;
+}
+
+function addDiffLine(files: Map<string, Map<number, string>>, file: string | undefined, line: number, source: string): void {
+  if (file === undefined) return;
+  let lines = files.get(file);
+  if (lines === undefined) {
+    lines = new Map();
+    files.set(file, lines);
+  }
+  lines.set(line, source);
+}
+
+function parseDiffLines(diff: string): DiffLineMaps {
+  const files: DiffLineMaps = { new: new Map(), old: new Map() };
+  let oldFile: string | undefined;
+  let newFile: string | undefined;
+  let oldLine: number | undefined;
+  let newLine: number | undefined;
+
+  for (const rawLine of diff.split("\n")) {
+    if (rawLine.startsWith("--- ")) {
+      const headerPath = rawLine.slice(4).trim();
+      oldFile = headerPath === "/dev/null"
+        ? undefined
+        : headerPath.startsWith("a/") ? headerPath.slice(2) : headerPath;
+      continue;
+    }
+    if (rawLine.startsWith("+++ ")) {
+      const headerPath = rawLine.slice(4).trim();
+      newFile = headerPath === "/dev/null"
+        ? undefined
+        : headerPath.startsWith("b/") ? headerPath.slice(2) : headerPath;
+      continue;
+    }
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(rawLine);
+    if (hunk !== null) {
+      oldLine = Number.parseInt(hunk[1] ?? "0", 10);
+      newLine = Number.parseInt(hunk[2] ?? "0", 10);
+      continue;
+    }
+    if (oldLine === undefined || newLine === undefined) continue;
+    if (rawLine.startsWith("+")) {
+      addDiffLine(files.new, newFile, newLine, rawLine.slice(1));
+      newLine += 1;
+    } else if (rawLine.startsWith("-")) {
+      addDiffLine(files.old, oldFile, oldLine, rawLine.slice(1));
+      oldLine += 1;
+    } else if (rawLine.startsWith(" ")) {
+      addDiffLine(files.old, oldFile, oldLine, rawLine.slice(1));
+      addDiffLine(files.new, newFile, newLine, rawLine.slice(1));
+      oldLine += 1;
+      newLine += 1;
+    } else if (!rawLine.startsWith("\\")) {
+      oldLine = undefined;
+      newLine = undefined;
+    }
+  }
+  return files;
+}
+
+/** Maps visible lines from one side of a unified diff to their exact source text. */
+export function visibleDiffLines(
+  diff: string,
+  side: JudgeFinding["side"] = "new",
+): ReadonlyMap<string, ReadonlyMap<number, string>> {
+  return parseDiffLines(diff)[side];
+}
+
+/** Deterministically rejects findings that are not directly anchored to the supplied diff. */
+export function validateJudgeFindings(
+  diff: string,
+  findings: readonly JudgeFinding[],
+  options: JudgeFindingValidationOptions,
+): readonly string[] {
+  const issues: string[] = [];
+  const linesBySide = parseDiffLines(diff);
+  const seen = new Set<string>();
+
+  for (const [index, finding] of findings.entries()) {
+    const prefix = `finding ${String(index + 1)}`;
+    const key = `${finding.severity}:${finding.file}:${finding.side}:${String(finding.line)}:${finding.claim}`;
+    if (seen.has(key)) issues.push(`${prefix}: duplicate finding`);
+    seen.add(key);
+
+    const line = linesBySide[finding.side].get(finding.file)?.get(finding.line);
+    if (line === undefined) {
+      issues.push(`${prefix}: ${finding.file}:${String(finding.line)} is not a visible ${finding.side}-side diff line`);
+    } else {
+      const actual = normalizeEvidence(line);
+      const cited = normalizeEvidence(finding.evidence);
+      if (cited.length === 0 || !actual.includes(cited)) {
+        issues.push(`${prefix}: evidence is not an exact snippet of ${finding.file}:${String(finding.line)}`);
+      }
+    }
+
+    if (finding.requirementId !== undefined && !options.requirementIds?.has(finding.requirementId)) {
+      issues.push(`${prefix}: unknown requirement ${finding.requirementId}`);
+    }
+  }
+
+  const hasCritical = findings.some((finding) => finding.severity === "critical");
+  if (options.approved === hasCritical) {
+    issues.push(hasCritical
+      ? "approved must be false when critical findings exist"
+      : "approved must be true when no critical findings exist");
+  }
+  return issues;
 }
 
 import { sha256 } from "./files.js";
@@ -128,29 +257,44 @@ Diff:
 ${diff}
 \`\`\`
 
-Respond with a JSON object:
+Use only the supplied diff. Every finding must cite a visible line, identify side=new|old, and copy an exact snippet from that line.
+If evidence is missing, return the standardized insufficient-evidence object instead of guessing.
+Return only the strict verdict object to the orchestrator. You are not user-facing: do not explain the work, narrate progress, or add prose around the object.
+
+Supported example:
 {
+  "status": "SUPPORTED",
   "approved": boolean,
-  "critical": ["list of critical issues that MUST be fixed"],
-  "warnings": ["list of warnings that should be addressed"],
-  "suggestions": ["list of suggestions for improvement"]
+  "findings": [{
+    "severity": "critical" | "warning" | "suggestion",
+    "claim": "specific finding",
+    "file": "src/file.ts",
+    "line": 12,
+    "side": "new",
+    "source": "diff",
+    "evidence": "exact snippet from line 12",
+    "requirementId": "R1"
+  }]
 }
+
+Insufficient-evidence example:
+{"status":"INSUFFICIENT_EVIDENCE","missing":["specific missing evidence"],"nextAction":"inspect the required source"}
 
 Be thorough and adversarial. Do not approve if there are critical issues.`;
 }
 
 export function buildFixPrompt(verdict: MergedVerdict, originalDiff: string): string {
+  const validatedCritical = verdict.findings.filter((finding) => finding.severity === "critical");
   return `You are mr-fix. Apply ONLY the corrections indicated in the merged verdict.
 
-## Verdict
-- Critical: ${verdict.critical.join(", ") || "None"}
-- Warnings: ${verdict.warnings.join(", ") || "None"}
-- Suggestions: ${verdict.suggestions.join(", ") || "None"}
+## Validated critical findings
+${validatedCritical.length === 0 ? "None" : JSON.stringify(validatedCritical, null, 2)}
 
 ## Original Diff
 \`\`\`
 ${originalDiff}
 \`\`\`
 
-Apply the minimal fixes needed to address the critical issues. Do not refactor or make unrelated changes.`;
+Apply the minimal fixes needed to address the critical issues. Do not refactor or make unrelated changes.
+Return only a compact execution receipt to the orchestrator. You are not user-facing: do not add didactic explanations, progress narration, preambles, recaps, or next-step advice.`;
 }

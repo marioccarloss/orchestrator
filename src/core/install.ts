@@ -2,6 +2,7 @@ import { access, chmod, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { atomicWrite, canonicalJson, readJson, removeEmptyDirectory, sha256 } from "./files.js";
 import { buildGlobalDefinitionFiles, loadModels } from "./config.js";
+import { loadCapabilitySelection, recommendedMcpCatalog } from "./capabilities.js";
 import type { MrPaths } from "./paths.js";
 import { InstallManifestSchema, SCHEMA_VERSION, type InstallManifest } from "./schema.js";
 
@@ -95,6 +96,7 @@ export const MrOrchestratorLoader = async (ctx) => {
       config: async (input) => {
         input.command = { ...(mrConfig.command ?? {}), ...(input.command ?? {}) };
         input.agent = { ...(mrConfig.agent ?? {}), ...(input.agent ?? {}) };
+        input.mcp = { ...(mrConfig.mcp ?? {}), ...(input.mcp ?? {}) };
         if (mrConfig.default_agent !== undefined) input.default_agent = mrConfig.default_agent;
       },
     };
@@ -115,11 +117,13 @@ export async function install(paths: MrPaths, sourceRoot: string, version: strin
   const cli = join(source, "dist", "src", "cli.js");
   await access(cli);
   await access(paths.bunBinary);
+  const capabilities = await loadCapabilitySelection(paths);
   const files = new Map<string, string>([
     [join(paths.binRoot, "mr"), executable(paths.bunBinary, cli)],
     [join(paths.binRoot, "mrcode"), executable(paths.bunBinary, cli, "launch")],
     [join(paths.binRoot, "bun"), bunExecutable(paths.bunBinary)],
     [join(paths.opencodePluginsRoot, "mr-orchestrator-loader.ts"), loaderPlugin()],
+    [join(paths.configRoot, "recommended-mcps.json"), canonicalJson(recommendedMcpCatalog(paths, capabilities.selected))],
   ]);
   const models = await loadModels(paths);
   for (const [path, content] of buildGlobalDefinitionFiles(paths, models)) {

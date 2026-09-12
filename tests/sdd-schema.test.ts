@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import {
   ResearchCapsuleSchema,
   ResearchCapsulePayloadSchema,
+  PlanningAssessmentPayloadSchema,
+  PlanningBriefPayloadSchema,
+  PlanningBriefSchema,
   SpecCapsuleSchema,
   SpecCapsulePayloadSchema,
   TaskGraphSchema,
@@ -13,6 +16,7 @@ import {
   formatZodIssues,
   canonicalSddPayload,
   type ResearchCapsule,
+  type PlanningBrief,
   type SpecCapsule,
   type TaskGraph,
 } from "../src/core/sdd-schema.js";
@@ -30,6 +34,18 @@ function makeResearch(): ResearchCapsule {
     relevantNodes: ["transition"],
     constraints: ["Do not break FlowStateSchema v1"],
     unknowns: [],
+    createdAt: NOW,
+  };
+}
+
+function makePlanningBrief(): PlanningBrief {
+  return {
+    schemaVersion: 1,
+    ticketId: "GH-42",
+    status: "READY",
+    mode: "guided",
+    decisions: [{ questionId: "Q1", decision: "Preserve the v1 state schema", source: "user" }],
+    assumptions: [{ statement: "No UI changes are required", risk: "low" }],
     createdAt: NOW,
   };
 }
@@ -85,6 +101,7 @@ function makeTasks(): TaskGraph {
 
 test("schemas accept valid capsules and reject unknown keys", () => {
   assert.ok(ResearchCapsuleSchema.safeParse(makeResearch()).success);
+  assert.ok(PlanningBriefSchema.safeParse(makePlanningBrief()).success);
   assert.ok(SpecCapsuleSchema.safeParse(makeSpec()).success);
   assert.ok(TaskGraphSchema.safeParse(makeTasks()).success);
 
@@ -95,13 +112,16 @@ test("schemas accept valid capsules and reject unknown keys", () => {
 
 test("operational capsule schemas exclude volatile persistence timestamps", () => {
   const { createdAt: _researchCreatedAt, ...research } = makeResearch();
+  const { createdAt: _briefCreatedAt, ...brief } = makePlanningBrief();
   const { createdAt: _specCreatedAt, ...spec } = makeSpec();
   const { createdAt: _tasksCreatedAt, ...tasks } = makeTasks();
 
   assert.ok(ResearchCapsulePayloadSchema.safeParse(research).success);
+  assert.ok(PlanningBriefPayloadSchema.safeParse(brief).success);
   assert.ok(SpecCapsulePayloadSchema.safeParse(spec).success);
   assert.ok(TaskGraphPayloadSchema.safeParse(tasks).success);
   assert.equal(ResearchCapsulePayloadSchema.safeParse(makeResearch()).success, false);
+  assert.equal(PlanningBriefPayloadSchema.safeParse(makePlanningBrief()).success, false);
   assert.equal(SpecCapsulePayloadSchema.safeParse(makeSpec()).success, false);
   assert.equal(TaskGraphPayloadSchema.safeParse(makeTasks()).success, false);
 
@@ -125,6 +145,54 @@ test("operational capsule schemas exclude volatile persistence timestamps", () =
   const second = canonicalSddPayload(shuffled);
   assert.equal(first, second);
   assert.doesNotMatch(first, /createdAt/u);
+
+  const briefPayload = canonicalSddPayload(makePlanningBrief());
+  assert.equal(JSON.parse(briefPayload).status, "READY");
+  assert.doesNotMatch(briefPayload, /createdAt/u);
+});
+
+test("Blueprint-lite accepts at most three material questions and forbids high-risk assumptions", () => {
+  const needsInput = PlanningAssessmentPayloadSchema.safeParse({
+    schemaVersion: 1,
+    ticketId: "GH-42",
+    status: "NEEDS_INPUT",
+    questions: [
+      { id: "Q1", question: "Should this change preserve v1 clients?", reason: "It changes the public contract", risk: "high", options: ["yes", "no"] },
+    ],
+  });
+  assert.equal(needsInput.success, true);
+
+  const tooManyQuestions = PlanningAssessmentPayloadSchema.safeParse({
+    schemaVersion: 1,
+    ticketId: "GH-42",
+    status: "NEEDS_INPUT",
+    questions: Array.from({ length: 4 }, (_, index) => ({
+      id: `Q${index + 1}`,
+      question: `Question ${index + 1}`,
+      reason: "Material planning decision",
+      risk: "medium",
+      options: [],
+    })),
+  });
+  assert.equal(tooManyQuestions.success, false);
+
+  const wrongRiskOrder = PlanningAssessmentPayloadSchema.safeParse({
+    schemaVersion: 1,
+    ticketId: "GH-42",
+    status: "NEEDS_INPUT",
+    questions: [
+      { id: "Q1", question: "Medium question", reason: "Material decision", risk: "medium", options: [] },
+      { id: "Q2", question: "High question", reason: "Contract decision", risk: "high", options: [] },
+    ],
+  });
+  assert.equal(wrongRiskOrder.success, false);
+
+  const { createdAt: _createdAt, ...readyBrief } = makePlanningBrief();
+  const unsafeAssumption = PlanningBriefPayloadSchema.safeParse({
+    ...readyBrief,
+    assumptions: [{ statement: "Authentication is unnecessary", risk: "high" }],
+  });
+  assert.equal(unsafeAssumption.success, false);
 });
 
 test("schema rejects malformed requirement and task ids", () => {
@@ -170,6 +238,25 @@ test("validateSddArtifacts warns when modifying files without research evidence"
   assert.equal(warnings.length, 1);
   assert.ok(warnings[0]?.message.includes("src/core/flow-state.ts"));
   assert.equal(issues.filter((issue) => issue.severity === "error").length, 0);
+});
+
+test("validateSddArtifacts rejects research from another ticket", () => {
+  const research = { ...makeResearch(), ticketId: "GH-OTHER" };
+  const issues = validateSddArtifacts(makeSpec(), makeTasks(), research);
+  assert.ok(issues.some((issue) => issue.severity === "error" && issue.message.includes("Research ticket 'GH-OTHER'")));
+});
+
+test("validateSddArtifacts blocks unevidenced modified files in Full flows", () => {
+  const issues = validateSddArtifacts(makeSpec(), makeTasks(), makeResearch(), {
+    requireEvidenceForModifiedFiles: true,
+  });
+  const groundingError = issues.find((issue) => issue.message.includes("src/core/flow-state.ts"));
+  assert.equal(groundingError?.severity, "error");
+
+  const missingResearch = validateSddArtifacts(makeSpec(), makeTasks(), undefined, {
+    requireEvidenceForModifiedFiles: true,
+  });
+  assert.ok(missingResearch.some((issue) => issue.severity === "error" && issue.message.includes("Research capsule is required")));
 });
 
 test("nextPendingTask respects dependency order and markTaskStatus advances", () => {
