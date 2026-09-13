@@ -7,6 +7,7 @@ import {
   bindChildFlowSession,
   finalizeFlowMetrics,
   loadFlowMetrics,
+  recordContextHydration,
   recordFlowAssistantUsage,
   startFlowMetrics,
   summarizeFlowMetrics,
@@ -18,7 +19,7 @@ const STARTED_AT = "2026-09-12T10:00:00.000Z";
 test("Flow metrics deduplicate message updates and include child sessions", async () => {
   const home = await mkdtemp(join(tmpdir(), "mr-flow-metrics-"));
   const paths = resolvePaths({ HOME: home });
-  await startFlowMetrics(paths, "workspace-1", "GH-42", STARTED_AT, "parent");
+  await startFlowMetrics(paths, "workspace-1", "GH-42", STARTED_AT, "parent", "en");
   assert.equal(await bindChildFlowSession(paths, "workspace-1", "parent", "child"), true);
 
   const first = {
@@ -26,6 +27,8 @@ test("Flow metrics deduplicate message updates and include child sessions", asyn
     sessionID: "parent",
     providerID: "openai",
     modelID: "gpt-5.6-sol",
+    role: "orchestrator",
+    taskId: "T1",
     cost: 0.01,
     tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 50, write: 0 } },
   };
@@ -47,10 +50,21 @@ test("Flow metrics deduplicate message updates and include child sessions", asyn
     id: "outside",
     sessionID: "unbound",
   }), false);
+  assert.equal(await recordContextHydration(paths, "workspace-1", {
+    role: "implement",
+    lane: "fast",
+    requestedChars: 30_000,
+    usedChars: 12_500,
+    truncated: 2,
+    taskId: "T1",
+  }), true);
 
   const stored = await loadFlowMetrics(paths, "workspace-1");
   assert.ok(stored);
   const summary = summarizeFlowMetrics(stored);
+  assert.equal(stored.messages["message-1"]?.role, "orchestrator");
+  assert.equal(stored.userLanguage, "en");
+  assert.equal(stored.messages["message-1"]?.taskId, "T1");
   assert.equal(summary.cost, 0.032);
   assert.equal(summary.messages, 2);
   assert.equal(summary.sessions, 2);
@@ -60,6 +74,14 @@ test("Flow metrics deduplicate message updates and include child sessions", asyn
     reasoning: 5,
     cacheRead: 70,
     cacheWrite: 3,
+  });
+  assert.deepEqual(summary.context, {
+    role: "implement",
+    lane: "fast",
+    requestedChars: 30_000,
+    usedChars: 12_500,
+    truncated: 2,
+    hydrations: 1,
   });
 });
 

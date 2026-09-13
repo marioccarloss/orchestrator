@@ -6,6 +6,10 @@ import { loadManifest } from "./install.js";
 import type { MrPaths } from "./paths.js";
 import { runCommand } from "./process.js";
 import { loadRegistry } from "./workspace.js";
+import { AtlasIndexer, computeWorkspaceFileHashes, isGraphFresh, loadAtlasGraph } from "./atlas.js";
+import { discoverRepositories } from "./rules/discover.js";
+import { profileRepository } from "./rules/profiler.js";
+import { loadWorkspaceRules, staleRuleRepositories } from "./rules/store.js";
 
 export interface CheckResult {
   readonly name: string;
@@ -85,6 +89,28 @@ export async function runDoctor(paths: MrPaths, env: NodeJS.ProcessEnv = process
       checks.push({ name: workspace.name, ok: true, detail: workspace.root });
     } catch (error: unknown) {
       checks.push({ name: workspace.name, ok: false, detail: (error as Error).message });
+    }
+    const rules = await loadWorkspaceRules(workspace);
+    if (rules === undefined) continue;
+    const graph = await loadAtlasGraph(paths, workspace.id);
+    if (graph === undefined) {
+      checks.push({ name: `${workspace.name} Atlas rules`, ok: false, detail: "rules exist but the Atlas index is missing; run mr atlas rules" });
+      continue;
+    }
+    try {
+      const hashes = await computeWorkspaceFileHashes(workspace.root);
+      const freshness = isGraphFresh(graph, hashes);
+      const currentGraph = freshness.fresh ? graph : await new AtlasIndexer().indexWorkspace(workspace.root, { previous: graph });
+      const repositories = await discoverRepositories(workspace.root);
+      const profiles = await Promise.all(repositories.map((repository) => profileRepository(workspace.root, repository, currentGraph)));
+      const stale = staleRuleRepositories(rules, profiles);
+      checks.push({
+        name: `${workspace.name} Atlas rules`,
+        ok: stale.length === 0,
+        detail: stale.length === 0 ? "baseline matches the current stack" : `stale for: ${stale.join(", ")}; run mr atlas rules`,
+      });
+    } catch (error: unknown) {
+      checks.push({ name: `${workspace.name} Atlas rules`, ok: false, detail: `could not verify freshness: ${error instanceof Error ? error.message : String(error)}` });
     }
   }
   return checks;

@@ -69,8 +69,9 @@ test("clearFlowState removes the file", async () => {
 test("applyEvent creates and transitions state", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mr-flow-"));
   const paths = makePaths(dir);
-  const state = await applyEvent(paths, "test-ws", { type: "start", workspaceId: "test-ws" });
+  const state = await applyEvent(paths, "test-ws", { type: "start", workspaceId: "test-ws", userLanguage: "fr" });
   assert.equal(state.phase, "wizard");
+  assert.equal(state.userLanguage, "fr");
   await rm(dir, { recursive: true });
 });
 
@@ -131,6 +132,7 @@ test("Event Sourcing: appendFlowEvent, loadFlowEvents, and replayFromOrigin reco
     difficulty: 5,
     ticketId: "GH-123",
     hasFigma: false,
+    userLanguage: "en",
   });
   await applyEvent(paths, workspaceId, {
     type: "context_ready",
@@ -145,6 +147,7 @@ test("Event Sourcing: appendFlowEvent, loadFlowEvents, and replayFromOrigin reco
     },
     branch: "feature/gh-123",
     baseBranch: "main",
+    userLanguage: "en",
   });
 
   const snapshotState = await loadFlowState(paths, workspaceId);
@@ -160,6 +163,7 @@ test("Event Sourcing: appendFlowEvent, loadFlowEvents, and replayFromOrigin reco
   // Replay from origin (pure deterministic function)
   const replayedState = replayFromOrigin(records, workspaceId);
   assert.deepEqual(replayedState, snapshotState);
+  assert.equal(replayedState.userLanguage, "en");
 
   // Erase flow-state.json and reconstruct purely from events.jsonl
   const { unlink } = await import("node:fs/promises");

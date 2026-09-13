@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { writeFile, readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { canonicalJson } from "./files.js";
+import { atomicWrite, canonicalJson } from "./files.js";
 import type { MrPaths } from "./paths.js";
+import type { EvidenceStore, FreshnessResult } from "./evidence-store.js";
 
 // ─── SDD + RPI Capsules ──────────────────────────────────────────────────────
 //
@@ -18,7 +19,7 @@ import type { MrPaths } from "./paths.js";
 
 // ── Research (RPI) ────────────────────────────────────────────────────────────
 
-export const EvidenceSourceSchema = z.enum(["atlas", "grep", "read", "memory", "ticket", "user"]);
+export const EvidenceSourceSchema = z.enum(["atlas", "lsp", "grep", "read", "memory", "ticket", "user"]);
 
 export const EvidenceSchema = z.strictObject({
   claim: z.string().min(1).max(300),
@@ -29,7 +30,28 @@ export const EvidenceSchema = z.strictObject({
 
 export type Evidence = z.infer<typeof EvidenceSchema>;
 
-export const ResearchCapsulePayloadSchema = z.strictObject({
+export const ResearchCoverageSchema = z.strictObject({
+  fresh: z.boolean(),
+  unsupportedFiles: z.array(z.string()).default([]),
+  unresolvedImports: z.array(z.string()).default([]),
+});
+
+export const ContractRefSchema = z.strictObject({
+  name: z.string().min(1),
+  file: z.string().min(1),
+  kind: z.enum(["dto", "interface", "schema", "route", "event", "federation"]),
+});
+
+export const TestRefSchema = z.strictObject({
+  file: z.string().min(1),
+  covers: z.array(z.string()).default([]),
+});
+
+export type ResearchCoverage = z.infer<typeof ResearchCoverageSchema>;
+export type ContractRef = z.infer<typeof ContractRefSchema>;
+export type TestRef = z.infer<typeof TestRefSchema>;
+
+export const ResearchCapsulePayloadV1Schema = z.strictObject({
   schemaVersion: z.literal(1),
   ticketId: z.string().min(1),
   objective: z.string().min(1).max(300),
@@ -39,7 +61,48 @@ export const ResearchCapsulePayloadSchema = z.strictObject({
   unknowns: z.array(z.string().max(300)).default([]),
 });
 
-export type ResearchCapsulePayload = z.infer<typeof ResearchCapsulePayloadSchema>;
+export const ResearchCapsulePayloadV2Schema = z.strictObject({
+  schemaVersion: z.literal(2),
+  ticketId: z.string().min(1),
+  objective: z.string().min(1).max(300),
+  evidenceRefs: z.array(z.string().regex(/^ev-[a-f0-9]{8}$/u)).min(1),
+  coverage: ResearchCoverageSchema,
+  contracts: z.array(ContractRefSchema).default([]),
+  tests: z.array(TestRefSchema).default([]),
+  relevantNodes: z.array(z.string()).default([]),
+  constraints: z.array(z.string().max(300)).default([]),
+  unknowns: z.array(z.string().max(300)).default([]),
+});
+
+export const ResearchCapsulePayloadInputSchema = z.union([ResearchCapsulePayloadV1Schema, ResearchCapsulePayloadV2Schema]);
+export const ResearchCapsulePayloadSchema = ResearchCapsulePayloadV2Schema;
+
+export type ResearchCapsulePayloadV1 = z.infer<typeof ResearchCapsulePayloadV1Schema>;
+export type ResearchCapsulePayload = z.infer<typeof ResearchCapsulePayloadV2Schema>;
+
+export async function migrateResearchToV2(
+  input: z.infer<typeof ResearchCapsulePayloadInputSchema>,
+  createLegacyRef: (evidence: Evidence) => Promise<string>,
+  coverage?: ResearchCoverage,
+): Promise<ResearchCapsulePayload> {
+  if (input.schemaVersion === 2) {
+    return ResearchCapsulePayloadV2Schema.parse(coverage === undefined ? input : { ...input, coverage });
+  }
+  const evidenceRefs: string[] = [];
+  for (const evidence of input.evidence) evidenceRefs.push(await createLegacyRef(evidence));
+  return ResearchCapsulePayloadV2Schema.parse({
+    schemaVersion: 2,
+    ticketId: input.ticketId,
+    objective: input.objective,
+    evidenceRefs: [...new Set(evidenceRefs)],
+    coverage: coverage ?? { fresh: false, unsupportedFiles: [], unresolvedImports: [] },
+    contracts: [],
+    tests: [],
+    relevantNodes: input.relevantNodes,
+    constraints: input.constraints,
+    unknowns: input.unknowns,
+  });
+}
 
 export const ResearchCapsuleSchema = ResearchCapsulePayloadSchema.extend({
   createdAt: z.iso.datetime(),
@@ -148,14 +211,49 @@ export type SpecCapsule = z.infer<typeof SpecCapsuleSchema>;
 
 // ── Task Graph (SDD tasks + RPI plan) ────────────────────────────────────────
 
-export const TaskFileSchema = z.strictObject({
+export const TaskFileV1Schema = z.strictObject({
   path: z.string().min(1),
   action: z.enum(["create", "modify", "delete", "rename"]),
   reason: z.string().min(1).max(300),
   risk: z.enum(["low", "medium", "high"]).default("medium"),
 });
 
+export const TaskFileSchema = TaskFileV1Schema.extend({
+  evidenced: z.boolean(),
+}).superRefine((file, context) => {
+  if (!file.evidenced && file.reason.length < 40) {
+    context.addIssue({ code: "custom", path: ["reason"], message: "Unevidenced files require a reason of at least 40 characters" });
+  }
+});
+
 export const TaskStatusSchema = z.enum(["pending", "in_progress", "done", "blocked"]);
+
+export const SddTaskV1Schema = z.strictObject({
+  id: z.string().regex(/^T\d+$/u, "Task id must match T<number>, e.g. T1"),
+  title: z.string().min(1).max(200),
+  dependsOn: z.array(z.string().regex(/^T\d+$/u)).default([]),
+  requirements: z.array(z.string().regex(/^R\d+$/u)).min(1),
+  files: z.array(TaskFileV1Schema).min(1),
+  verify: z.array(z.string().max(200)).min(1),
+  doneWhen: z.array(z.string().max(300)).min(1),
+  status: TaskStatusSchema.default("pending"),
+});
+
+export const EditBoundariesSchema = z.strictObject({
+  allowedFiles: z.array(z.string().min(1)).min(1),
+  forbiddenGlobs: z.array(z.string()).default([]),
+});
+
+export const ExpectedDiffSchema = z.strictObject({
+  adds: z.array(z.string().max(200)).default([]),
+  removes: z.array(z.string().max(200)).default([]),
+  touchedTests: z.array(z.string()).default([]),
+});
+
+export const TaskVerificationSchema = z.strictObject({
+  commands: z.array(z.string().min(1).max(200)).min(1),
+  mustPass: z.boolean().default(true),
+});
 
 export const SddTaskSchema = z.strictObject({
   id: z.string().regex(/^T\d+$/u, "Task id must match T<number>, e.g. T1"),
@@ -163,18 +261,56 @@ export const SddTaskSchema = z.strictObject({
   dependsOn: z.array(z.string().regex(/^T\d+$/u)).default([]),
   requirements: z.array(z.string().regex(/^R\d+$/u)).min(1),
   files: z.array(TaskFileSchema).min(1),
-  verify: z.array(z.string().max(200)).min(1),
   doneWhen: z.array(z.string().max(300)).min(1),
   status: TaskStatusSchema.default("pending"),
+  targetSymbols: z.array(z.string().min(1)).default([]),
+  evidenceRefs: z.array(z.string().regex(/^ev-[a-f0-9]{8}$/u)).min(1),
+  changeIntent: z.string().min(1).max(300),
+  editBoundaries: EditBoundariesSchema,
+  invariants: z.array(z.string().max(300)).default([]),
+  expectedDiff: ExpectedDiffSchema.default({ adds: [], removes: [], touchedTests: [] }),
+  verification: TaskVerificationSchema,
+});
+
+const SddTaskV2InputSchema = z.strictObject({
+  id: z.string().regex(/^T\d+$/u, "Task id must match T<number>, e.g. T1"),
+  title: z.string().min(1).max(200),
+  dependsOn: z.array(z.string().regex(/^T\d+$/u)).default([]),
+  requirements: z.array(z.string().regex(/^R\d+$/u)).min(1),
+  files: z.array(TaskFileV1Schema.extend({ evidenced: z.boolean().optional() })).min(1),
+  doneWhen: z.array(z.string().max(300)).min(1),
+  status: TaskStatusSchema.default("pending"),
+  targetSymbols: z.array(z.string().min(1)).default([]),
+  evidenceRefs: z.array(z.string().regex(/^ev-[a-f0-9]{8}$/u)).min(1),
+  changeIntent: z.string().min(1).max(300),
+  editBoundaries: EditBoundariesSchema,
+  invariants: z.array(z.string().max(300)).default([]),
+  expectedDiff: ExpectedDiffSchema.default({ adds: [], removes: [], touchedTests: [] }),
+  verification: TaskVerificationSchema,
 });
 
 export type SddTask = z.infer<typeof SddTaskSchema>;
 
-export const TaskGraphPayloadSchema = z.strictObject({
+export const TaskGraphPayloadV1Schema = z.strictObject({
   schemaVersion: z.literal(1),
+  ticketId: z.string().min(1),
+  tasks: z.array(SddTaskV1Schema).min(1),
+});
+
+export const TaskGraphPayloadV2Schema = z.strictObject({
+  schemaVersion: z.literal(2),
   ticketId: z.string().min(1),
   tasks: z.array(SddTaskSchema).min(1),
 });
+
+export const TaskGraphPayloadV2InputSchema = z.strictObject({
+  schemaVersion: z.literal(2),
+  ticketId: z.string().min(1),
+  tasks: z.array(SddTaskV2InputSchema).min(1),
+});
+
+export const TaskGraphPayloadInputSchema = z.union([TaskGraphPayloadV1Schema, TaskGraphPayloadV2InputSchema]);
+export const TaskGraphPayloadSchema = TaskGraphPayloadV2Schema;
 
 export type TaskGraphPayload = z.infer<typeof TaskGraphPayloadSchema>;
 
@@ -183,6 +319,61 @@ export const TaskGraphSchema = TaskGraphPayloadSchema.extend({
 });
 
 export type TaskGraph = z.infer<typeof TaskGraphSchema>;
+
+export function migrateTaskGraphToV2(
+  input: z.infer<typeof TaskGraphPayloadInputSchema>,
+  research?: ResearchCapsulePayload,
+  store?: EvidenceStore,
+): TaskGraphPayload {
+  if (input.schemaVersion === 2) {
+    return TaskGraphPayloadV2Schema.parse({
+      ...input,
+      tasks: input.tasks.map((task) => ({
+        ...task,
+        files: task.files.map((file) => ({
+          ...file,
+          evidenced: store === undefined
+            ? (file.evidenced ?? false)
+            : store.refs.some((ref) => task.evidenceRefs.includes(ref.id) && ref.file === file.path),
+        })),
+      })),
+    });
+  }
+  const researchIds = new Set(research?.evidenceRefs ?? []);
+  const available = store?.refs.filter((ref) => researchIds.size === 0 || researchIds.has(ref.id)) ?? [];
+  if (available.length === 0) throw new Error("Cannot migrate TaskGraph v1 without stored research evidence");
+  return TaskGraphPayloadV2Schema.parse({
+    schemaVersion: 2,
+    ticketId: input.ticketId,
+    tasks: input.tasks.map((task) => {
+      const filePaths = new Set(task.files.map((file) => file.path));
+      const matching = available.filter((ref) => filePaths.has(ref.file));
+      const evidenceRefs = [...new Set((matching.length > 0 ? matching : available).map((ref) => ref.id))];
+      return {
+        id: task.id,
+        title: task.title,
+        dependsOn: task.dependsOn,
+        requirements: task.requirements,
+        files: task.files.map((file) => {
+          const evidenced = matching.some((ref) => ref.file === file.path);
+          const reason = !evidenced && file.reason.length < 40
+            ? `${file.reason}. No matching stored evidence was available during legacy migration.`
+            : file.reason;
+          return { ...file, reason, evidenced };
+        }),
+        doneWhen: task.doneWhen,
+        status: task.status,
+        targetSymbols: [],
+        evidenceRefs,
+        changeIntent: task.files.map((file) => file.reason).join("; ").slice(0, 300),
+        editBoundaries: { allowedFiles: task.files.map((file) => file.path), forbiddenGlobs: [] },
+        invariants: [],
+        expectedDiff: { adds: [], removes: [], touchedTests: task.files.filter((file) => /(?:\.test\.|\.spec\.|(?:^|\/)tests?\/)/u.test(file.path)).map((file) => file.path) },
+        verification: { commands: task.verify, mustPass: true },
+      };
+    }),
+  });
+}
 
 // ── Cross-Validation (determinism guardrails) ────────────────────────────────
 
@@ -193,6 +384,8 @@ export interface SddValidationIssue {
 
 export interface SddValidationOptions {
   readonly requireEvidenceForModifiedFiles?: boolean;
+  readonly evidenceStore?: EvidenceStore;
+  readonly freshness?: ReadonlyMap<string, FreshnessResult>;
 }
 
 /**
@@ -223,6 +416,20 @@ export function validateSddArtifacts(
 
   const coveredRequirements = new Set<string>();
   for (const task of tasks.tasks) {
+    for (const refId of task.evidenceRefs) {
+      const stored = options.evidenceStore?.refs.find((ref) => ref.id === refId);
+      if (options.evidenceStore !== undefined && stored === undefined) {
+        issues.push({ severity: "error", message: `Task ${task.id} references missing evidence ${refId}` });
+      }
+      if (options.freshness?.get(refId)?.status === "stale") {
+        issues.push({ severity: options.requireEvidenceForModifiedFiles === true ? "error" : "warning", message: `Task ${task.id} evidence ${refId} is stale` });
+      }
+    }
+    for (const file of task.files) {
+      if (!task.editBoundaries.allowedFiles.includes(file.path)) {
+        issues.push({ severity: "error", message: `Task ${task.id} file '${file.path}' is outside editBoundaries.allowedFiles` });
+      }
+    }
     for (const dep of task.dependsOn) {
       if (!taskIds.has(dep)) {
         issues.push({ severity: "error", message: `Task ${task.id} depends on unknown task ${dep}` });
@@ -271,10 +478,36 @@ export function validateSddArtifacts(
     if (research.ticketId !== spec.ticketId) {
       issues.push({ severity: "error", message: `Research ticket '${research.ticketId}' != spec ticket '${spec.ticketId}'` });
     }
-    const evidenceFiles = new Set(research.evidence.map((e) => e.file));
+    const storedRefs = new Map(options.evidenceStore?.refs.map((ref) => [ref.id, ref]) ?? []);
+    const evidenceFiles = new Set(research.evidenceRefs.map((id) => storedRefs.get(id)?.file).filter((file): file is string => file !== undefined));
+    for (const refId of research.evidenceRefs) {
+      if (!storedRefs.has(refId)) issues.push({ severity: "error", message: `Research references missing evidence ${refId}` });
+      if (options.freshness?.get(refId)?.status === "stale") {
+        issues.push({
+          severity: options.requireEvidenceForModifiedFiles === true ? "error" : "warning",
+          message: `Research evidence ${refId} is stale`,
+        });
+      }
+    }
+    for (const requirement of spec.requirements) {
+      const supported = options.evidenceStore?.refs.some((ref) => research.evidenceRefs.includes(ref.id) && ref.supports.includes(requirement.id)) ?? false;
+      if (research.evidenceRefs.length > 0 && !supported) {
+        issues.push({
+          severity: options.requireEvidenceForModifiedFiles === true ? "error" : "warning",
+          message: `Requirement ${requirement.id} has no supporting evidence reference`,
+        });
+      }
+    }
     for (const task of tasks.tasks) {
+      if (task.files.some((file) => file.action === "modify") && task.evidenceRefs.length === 0 && research.evidenceRefs.length > 0) {
+        issues.push({
+          severity: options.requireEvidenceForModifiedFiles === true ? "error" : "warning",
+          message: `Task ${task.id} modifies files without evidenceRefs`,
+        });
+      }
       for (const file of task.files) {
-        if (file.action === "modify" && !evidenceFiles.has(file.path)) {
+        const hasStoredEvidence = options.evidenceStore?.refs.some((ref) => task.evidenceRefs.includes(ref.id) && ref.file === file.path) ?? false;
+        if (file.action === "modify" && !evidenceFiles.has(file.path) && !hasStoredEvidence) {
           issues.push({
             severity: options.requireEvidenceForModifiedFiles === true ? "error" : "warning",
             message: `Task ${task.id} modifies '${file.path}' without research evidence — verify before editing`,
@@ -345,7 +578,7 @@ export async function saveSddArtifact(
       case "tasks": return TaskGraphSchema.parse({ ...artifact, createdAt });
     }
   })();
-  await writeFile(filePath, canonicalJson(persisted));
+  await atomicWrite(filePath, canonicalJson(persisted));
   return filePath;
 }
 

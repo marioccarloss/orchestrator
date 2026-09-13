@@ -340,3 +340,91 @@ feature-flags:
   assert.ok(jsonSkeleton.includes("scripts:"));
   assert.ok(jsonSkeleton.includes("deps: [3 items]"));
 });
+
+test("AtlasIndexer incrementally reuses unchanged files and reparses changed content", async () => {
+  const dir = await createTestProject();
+  try {
+    const indexer = new AtlasIndexer();
+    const first = await indexer.indexWorkspace(dir);
+    await writeFile(join(dir, "src", "utils.ts"), "export function changedName(): string { return 'changed'; }\n");
+    const second = await indexer.indexWorkspace(dir, { previous: first });
+    assert.ok(findNodeByName(second, "changedName"));
+    assert.equal(findNodeByName(second, "formatDate"), undefined);
+    const buttonBefore = findNodeByName(first, "Button");
+    const buttonAfter = findNodeByName(second, "Button");
+    assert.equal(buttonAfter?.signature, buttonBefore?.signature);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+test("AtlasIndexer indexes JavaScript require and PHP PSR-4 relationships", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mr-atlas-polyglot-"));
+  try {
+    await mkdir(join(dir, "src", "Domain"), { recursive: true });
+    await mkdir(join(dir, "src", "Service"), { recursive: true });
+    await writeFile(join(dir, "composer.json"), JSON.stringify({ autoload: { "psr-4": { "App\\": "src/" } } }));
+    await writeFile(join(dir, "src", "Domain", "BaseService.php"), "<?php\nnamespace App\\Domain;\nclass BaseService {}\n");
+    await writeFile(join(dir, "src", "Domain", "Contract.php"), "<?php\nnamespace App\\Domain;\ninterface Contract {}\n");
+    await writeFile(join(dir, "src", "Service", "OrderService.php"), `<?php
+namespace App\\Service;
+use App\\Domain\\BaseService;
+use App\\Domain\\Contract;
+#[Route('/orders')]
+class OrderService extends BaseService implements Contract {
+  /** @throws RuntimeException */
+  public function load(string $id): string { return helper($id); }
+}
+`);
+    await writeFile(join(dir, "src", "helper.js"), "export function helper(value) { return value; }\n");
+    await writeFile(join(dir, "src", "main.cjs"), "const helper = require('./helper'); module.exports = helper;\n");
+    const graph = await new AtlasIndexer().indexWorkspace(dir);
+    assert.ok(findNodeByName(graph, "OrderService"));
+    assert.ok(findNodeByName(graph, "load"));
+    assert.ok(graph.edges.some((edge) => edge.type === "extends"));
+    assert.ok(graph.edges.some((edge) => edge.type === "implements"));
+    assert.ok(graph.edges.some((edge) => edge.type === "import" && graph.nodes.find((node) => node.id === edge.from)?.filePath === "src/main.cjs"));
+    assert.equal(graph.coverage.unresolvedImports.some((row) => row.specifier === "App\\Domain\\BaseService"), false);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+test("partial SCSS and Astro extractors report coverage honestly and skeletons retain behavior", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mr-atlas-partial-"));
+  try {
+    await mkdir(join(dir, "src", "components"), { recursive: true });
+    await writeFile(join(dir, "src", "_tokens.scss"), "$brand-color: #123;\n@mixin focus-ring { outline: 1px solid; }\n");
+    await writeFile(join(dir, "src", "page.scss"), "@use 'tokens';\n.card__title { color: $brand-color; }\n@include focus-ring;\n");
+    await writeFile(join(dir, "src", "components", "Card.tsx"), "export function Card(){ return <div/> }\n");
+    await writeFile(join(dir, "src", "page.astro"), "---\nimport { Card } from './components/Card';\n---\n<Card />\n");
+    const graph = await new AtlasIndexer().indexWorkspace(dir);
+    assert.equal(graph.files.find((file) => file.path === "src/page.scss")?.parseStatus, "partial");
+    assert.equal(graph.files.find((file) => file.path === "src/page.astro")?.parseStatus, "partial");
+    assert.ok(findNodeByName(graph, "brand-color"));
+    const scss = await extractSkeleton("@use 'tokens';\n$color: red;\n@include focus-ring;", "x.scss", "signatures+calls");
+    assert.ok(scss.includes("$color"));
+    assert.ok(scss.includes("calls: focus-ring"));
+    const php = await extractSkeleton("<?php\n/** @throws RuntimeException */\n#[Route('/x')]\nfunction load() { helper(); }", "x.php", "signatures+calls");
+    assert.ok(php.includes("@throws RuntimeException"));
+    assert.ok(php.includes("#[Route('/x')]"));
+    assert.ok(php.includes("calls: helper"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+test("tsconfig path aliases resolve while external packages remain in coverage", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mr-atlas-alias-"));
+  try {
+    await mkdir(join(dir, "src", "domain"), { recursive: true });
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["src/*"] } } }));
+    await writeFile(join(dir, "src", "domain", "user.ts"), "export const user = 1;\n");
+    await writeFile(join(dir, "src", "main.ts"), "import { user } from '@/domain/user';\nimport React from 'react';\nexport const value = user;\n");
+    const graph = await new AtlasIndexer().indexWorkspace(dir);
+    assert.equal(graph.coverage.unresolvedImports.some((row) => row.specifier === "@/domain/user"), false);
+    assert.ok(graph.coverage.unresolvedImports.some((row) => row.specifier === "react"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});

@@ -8,6 +8,8 @@ import { createMrOrchestrator } from "../src/plugin.js";
 import { resolvePaths } from "../src/core/paths.js";
 import { addWorkspace } from "../src/core/workspace.js";
 import { loadModels, seedModels } from "../src/core/config.js";
+import { runCommand } from "../src/core/process.js";
+import { loadFlowState, saveFlowState } from "../src/core/flow-state.js";
 import type { PluginInput, ToolContext } from "@opencode-ai/plugin";
 
 const sourceRoot = process.cwd();
@@ -35,6 +37,10 @@ export function Widget() {
   return <div>{add(1, 2)}</div>;
 }
 `);
+  const initialized = runCommand("git", ["-C", workspaceRoot, "init"]);
+  const staged = runCommand("git", ["-C", workspaceRoot, "add", "."]);
+  const committed = runCommand("git", ["-C", workspaceRoot, "-c", "user.name=Mr Test", "-c", "user.email=mr-test@example.com", "commit", "-m", "fixture"]);
+  if (!initialized.ok || !staged.ok || !committed.ok) throw new Error("Could not initialize plugin test git fixture");
 
   const paths = resolvePaths({ HOME: home });
   await seedModels(paths, sourceRoot);
@@ -87,19 +93,32 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
       "mr_flow_abort",
       "mr_models",
       "mr_atlas_index",
+      "mr_atlas_profile",
       "mr_atlas_query",
       "mr_trace_component",
       "mr_propose_save",
       "mr_prompt_build",
       "mr_prompt_copy",
+      "mr_evidence_add",
+      "mr_evidence_list",
+      "mr_context_hydrate",
+      "mr_sdd_verify",
       "mr_memory_save",
       "mr_memory_query",
     ];
 
+    const spanishDescription = /[¿¡ñáéíóú]|\b(?:acción|alternativas|archivo|estado|plantilla|problema|riesgos|tarea|texto|título)\b/iu;
     for (const toolName of expectedTools) {
       const def = tools[toolName];
       assert.ok(def, `Tool ${toolName} must exist`);
       assert.ok(def.description, `Tool ${toolName} must have description`);
+      assert.doesNotMatch(def.description, spanishDescription, `Tool ${toolName} description must stay in English`);
+      for (const [argumentName, schema] of Object.entries(def.args)) {
+        const description = (schema as { description?: string }).description;
+        if (description !== undefined) {
+          assert.doesNotMatch(description, spanishDescription, `Tool ${toolName}.${argumentName} description must stay in English`);
+        }
+      }
       assert.ok(typeof def.execute === "function", `Tool ${toolName} must have execute function`);
     }
 
@@ -118,6 +137,83 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
     assert.doesNotMatch(candidatesRes.output, /^- github-copilot\/kimi-k3$/mu);
     assert.ok(Object.keys(tools["mr_propose_save"]!.args).length >= 5, "mr_propose_save must define arguments");
     assert.ok(Object.keys(tools["mr_prompt_build"]!.args).length >= 2, "mr_prompt_build must define arguments");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("mr_flow_start creates a synthetic local ticket when no external ticket exists", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    const started = await hooks.tool!["mr_flow_start"]!.execute({
+      difficulty: 1,
+      taskText: "Fix the broken login redirect",
+      hasFigma: false,
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(started.title, "Flow Started");
+    const state = await loadFlowState(ctx.paths, ctx.profile.id);
+    assert.equal(state?.phase, "explore");
+    if (state?.phase !== "explore") throw new Error("Expected explore state");
+    assert.match(state.ticket.ref.id, /^LOCAL-\d{8}-01$/u);
+    assert.equal(state.ticket.ref.platform, "local");
+    assert.equal(state.ticket.source, "user");
+    assert.equal(state.ticket.type, "bugfix");
+    assert.equal(state.ticket.description, "Fix the broken login redirect");
+    assert.equal(state.userLanguage, "en");
+    assert.match(started.output, /LOCAL-/u);
+    await hooks.tool!["mr_flow_plan"]!.execute({
+      summary: "Fix auth redirect",
+      files: [{ path: "src/Auth/Login.ts", action: "create", reason: "Implement the local task", risk: "high" }],
+      tests: [],
+    }, ctx.dummyToolContext);
+    const planned = await loadFlowState(ctx.paths, ctx.profile.id);
+    assert.equal(planned?.phase, "implement");
+    assert.equal(planned?.lane, "critical");
+    assert.ok(planned?.riskReasons?.some((reason) => reason.includes("auth")));
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("critical flows require explicit human review before finish", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    await saveFlowState(ctx.paths, ctx.profile.id, {
+      phase: "finish",
+      schemaVersion: 1,
+      workspaceId: ctx.profile.id,
+      startedAt: new Date().toISOString(),
+      difficulty: 1,
+      lane: "critical",
+      riskReasons: ["critical areas: auth"],
+      ticket: {
+        schemaVersion: 1,
+        ref: { schemaVersion: 1, platform: "local", id: "LOCAL-20260913-01" },
+        title: "Change auth",
+        description: "Change auth",
+        type: "feature",
+        attachments: [],
+        fetchedAt: new Date().toISOString(),
+        source: "user",
+      },
+      branch: "feature/local-20260913-01",
+      baseBranch: "develop",
+      plan: {
+        schemaVersion: 1,
+        ticket: { schemaVersion: 1, platform: "local", id: "LOCAL-20260913-01" },
+        summary: "Change auth",
+        files: [{ path: "src/Auth.ts", action: "modify", reason: "Change auth", risk: "high" }],
+        tests: [],
+        verification: { typecheck: true, lint: true, test: true, build: false },
+        createdAt: new Date().toISOString(),
+      },
+    });
+    const rejected = await hooks.tool!["mr_flow_finish"]!.execute({}, ctx.dummyToolContext) as { title: string };
+    assert.equal(rejected.title, "Human Review Required");
+    const completed = await hooks.tool!["mr_flow_finish"]!.execute({ humanApproved: true }, ctx.dummyToolContext) as { title: string };
+    assert.equal(completed.title, "Flow Complete");
   } finally {
     ctx.cleanup();
   }
@@ -151,7 +247,7 @@ void test("quota exhaustion promotes the role-specific alternative without repla
     } as never);
 
     const models = await loadModels(ctx.paths);
-    assert.equal(models.roles.orchestrator.model, "openai/gpt-5.6-sol");
+    assert.equal(models.roles.orchestrator.model, "opencode-go/deepseek-v4.1-flash");
     assert.equal(models.roles.orchestrator.variant, "high");
     assert.equal(models.roles.orchestrator.alternative.model, "github-copilot/gemini-3.8-flash");
     assert.equal(models.roles.orchestrator.alternative.variant, "high");
@@ -201,7 +297,7 @@ void test("Flow status tracks order-style progress and provider-reported usage a
     assert.match(status.output, /✓ Ticket {2}→ {2}● Research/u);
     assert.match(status.output, /\$0\.0320 USD/u);
     assert.match(status.output, /180\/35\/5/u);
-    assert.match(status.output, /2 sesiones/u);
+    assert.match(status.output, /2 sessions/u);
   } finally {
     ctx.cleanup();
   }
@@ -242,7 +338,7 @@ void test("SDD tools keep audit timestamps on disk and out of model-facing JSON"
       schemaVersion: 1,
       ticketId: "GH-CACHE",
       objective: "Stabilize SDD prompt prefixes",
-      evidence: [{ claim: "Capsules are persisted by the SDD tool", file: "src/plugin.ts", line: 909, source: "read" }],
+      evidence: [{ claim: "Helper is indexed by the SDD tool", file: "src/helper.ts", line: 1, source: "read" }],
       relevantNodes: ["saveSddArtifact"],
       constraints: ["Do not expose audit timestamps to the model"],
       unknowns: [],
@@ -264,7 +360,10 @@ void test("SDD tools keep audit timestamps on disk and out of model-facing JSON"
     };
     assert.equal(loaded.title, "SDD Research");
     const operational = JSON.parse(loaded.output) as Record<string, unknown>;
-    assert.deepEqual(operational, research);
+    assert.equal(operational["schemaVersion"], 2);
+    assert.equal(operational["ticketId"], research.ticketId);
+    assert.ok(Array.isArray(operational["evidenceRefs"]));
+    assert.equal((operational["evidenceRefs"] as unknown[]).length, 1);
     assert.equal("createdAt" in operational, false);
 
     const needsInput = await tools["mr_sdd_submit"]!.execute({
@@ -320,6 +419,7 @@ void test("SDD tools keep audit timestamps on disk and out of model-facing JSON"
 
 void test("active Flow planning requires a READY Blueprint-lite brief before the spec", async () => {
   const ctx = await createPluginContext();
+  const previousGateMode = process.env["MR_GATES_MODE"];
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
     assert.ok(hooks.tool);
@@ -330,6 +430,34 @@ void test("active Flow planning requires a READY Blueprint-lite brief before the
       description: "Exercise the adaptive planning gate",
       platform: "github",
     }, ctx.dummyToolContext);
+
+    const evidenceResult = await tools["mr_evidence_add"]!.execute({
+      file: "src/helper.ts",
+      startLine: 1,
+      endLine: 2,
+      kind: "behavior",
+      source: "read",
+      claim: "The helper is the bounded fixture used by this planning task",
+      supports: ["R1"],
+      symbol: "add",
+    }, ctx.dummyToolContext) as { output: string };
+    const evidenceId = (JSON.parse(evidenceResult.output) as { id: string }).id;
+    const researchResult = await tools["mr_sdd_submit"]!.execute({
+      kind: "research",
+      payload: JSON.stringify({
+        schemaVersion: 2,
+        ticketId: "GH-BRIEF",
+        objective: "Ground the planning task",
+        evidenceRefs: [evidenceId],
+        coverage: { fresh: true, unsupportedFiles: [], unresolvedImports: [] },
+        contracts: [],
+        tests: [],
+        relevantNodes: ["add"],
+        constraints: [],
+        unknowns: [],
+      }),
+    }, ctx.dummyToolContext) as { title: string };
+    assert.equal(researchResult.title, "SDD Research Saved");
 
     const spec = {
       schemaVersion: 1,
@@ -372,7 +500,7 @@ void test("active Flow planning requires a READY Blueprint-lite brief before the
           title: "Enforce planning gate",
           dependsOn: [],
           requirements: ["R1"],
-          files: [{ path: "src/plugin.ts", action: "modify", reason: "Reject specs without briefs", risk: "medium" }],
+          files: [{ path: "src/helper.ts", action: "modify", reason: "Reject specs without briefs", risk: "medium" }],
           verify: ["bun test tests/plugin.test.ts"],
           doneWhen: ["Specs require a READY brief"],
           status: "pending",
@@ -380,14 +508,58 @@ void test("active Flow planning requires a READY Blueprint-lite brief before the
       }),
     }, ctx.dummyToolContext);
     const nextTask = await tools["mr_sdd_get"]!.execute({ kind: "next-task" }, ctx.dummyToolContext) as { output: string };
-    const nextPayload = JSON.parse(nextTask.output) as { developerNote: { what: string; why: string; touch: string; prove: string } };
+    const nextPayload = JSON.parse(nextTask.output) as {
+      developerNote: { what: string; why: string; touch: string; prove: string };
+      bundle: string;
+      economy: { sessionMode: string; judges: boolean };
+    };
     assert.deepEqual(nextPayload.developerNote, {
       what: "Enforce planning gate",
       why: "Planning must be assessed before specification",
-      touch: "src/plugin.ts",
+      touch: "src/helper.ts",
       prove: "bun test tests/plugin.test.ts",
     });
+    const hydrated = JSON.parse(nextPayload.bundle) as { budget: { requestedChars: number; usedChars: number } };
+    assert.equal(hydrated.budget.requestedChars, 45_000);
+    assert.ok(hydrated.budget.usedChars > 0);
+    assert.equal(nextPayload.economy.sessionMode, "staged");
+    assert.equal(nextPayload.economy.judges, false);
+    const budgetStatus = await tools["mr_flow_status"]!.execute({}, ctx.dummyToolContext) as { output: string };
+    assert.match(budgetStatus.output, /Hydrated context \(implement\/standard\).*\/45000 chars/u);
+
+    const startedTask = await tools["mr_sdd_task_status"]!.execute({ taskId: "T1", status: "in_progress" }, ctx.dummyToolContext) as { title: string };
+    assert.equal(startedTask.title, "SDD Task Status");
+    const missingReceipt = await tools["mr_sdd_task_status"]!.execute({ taskId: "T1", status: "done" }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(missingReceipt.title, "SDD Task Status Rejected");
+    assert.match(missingReceipt.output, /VERIFICATION_RECEIPT_MISSING/u);
+
+    const originalWidget = await readFile(join(ctx.workspaceRoot, "src", "Widget.tsx"), "utf8");
+    await writeFile(join(ctx.workspaceRoot, "src", "Widget.tsx"), `${originalWidget}\n// unauthorized task edit\n`);
+    process.env["MR_GATES_MODE"] = "block";
+    const outsideBoundary = await tools["mr_sdd_verify"]!.execute({
+      taskId: "T1",
+      results: [{ command: "bun test tests/plugin.test.ts", exitCode: 0, durationMs: 10, outputTail: "pass" }],
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(outsideBoundary.title, "SDD Verification Rejected");
+    assert.match(outsideBoundary.output, /DIFF_OUTSIDE_BOUNDARY/u);
+    await writeFile(join(ctx.workspaceRoot, "src", "Widget.tsx"), originalWidget);
+
+    const verified = await tools["mr_sdd_verify"]!.execute({
+      taskId: "T1",
+      results: [{ command: "bun test tests/plugin.test.ts", exitCode: 0, durationMs: 10, outputTail: "pass" }],
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(verified.title, "SDD Verification Recorded", verified.output);
+    await writeFile(join(ctx.workspaceRoot, "src", "Widget.tsx"), `${originalWidget}\n// changed after receipt\n`);
+    const outsideDone = await tools["mr_sdd_task_status"]!.execute({ taskId: "T1", status: "done" }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(outsideDone.title, "SDD Task Status Rejected");
+    assert.match(outsideDone.output, /DIFF_OUTSIDE_BOUNDARY/u);
+    await writeFile(join(ctx.workspaceRoot, "src", "Widget.tsx"), originalWidget);
+    const completedTask = await tools["mr_sdd_task_status"]!.execute({ taskId: "T1", status: "done" }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(completedTask.title, "SDD Task Status");
+    assert.match(completedTask.output, /T1 → done/u);
   } finally {
+    if (previousGateMode === undefined) delete process.env["MR_GATES_MODE"];
+    else process.env["MR_GATES_MODE"] = previousGateMode;
     ctx.cleanup();
   }
 });
@@ -431,7 +603,7 @@ void test("MrOrchestrator flow tools execute state machine transitions", async (
       completedFiles: ["src/Widget.tsx"],
     }, dummyCtx) as { title: string; output: string };
     assert.equal(impRes.title, "Implementation Complete");
-    assert.ok(impRes.output.includes("Lite flow skips Judgment Day"));
+    assert.ok(impRes.output.includes("fast lane skips Judgment Day"));
 
     // Finish
     const finRes = await tools["mr_flow_finish"]!.execute({
@@ -578,18 +750,21 @@ void test("Pillar 7 Bounded Fix Loop: mr_flow_fix aborts after 3 attempts and es
 
     // Round 1
     await tools["mr_flow_implement"]!.execute({ completedFiles: ["src/Widget.tsx"] }, dummyCtx);
+    await tools["mr_atlas_index"]!.execute({}, dummyCtx);
     await tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: false, findings }, judgeACtx);
     await tools["mr_flow_judge"]!.execute({ judge: "b", status: "SUPPORTED", approved: false, findings }, judgeBCtx);
     await tools["mr_flow_fix"]!.execute({}, dummyCtx);
 
     // Round 2
     await tools["mr_flow_implement"]!.execute({ completedFiles: ["src/Widget.tsx"] }, dummyCtx);
+    await tools["mr_atlas_index"]!.execute({}, dummyCtx);
     await tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: false, findings }, judgeACtx);
     await tools["mr_flow_judge"]!.execute({ judge: "b", status: "SUPPORTED", approved: false, findings }, judgeBCtx);
     await tools["mr_flow_fix"]!.execute({}, dummyCtx);
 
     // Round 3 (Attempt 3 rejected by judgment)
     await tools["mr_flow_implement"]!.execute({ completedFiles: ["src/Widget.tsx"] }, dummyCtx);
+    await tools["mr_atlas_index"]!.execute({}, dummyCtx);
     await tools["mr_flow_judge"]!.execute({ judge: "a", status: "SUPPORTED", approved: false, findings }, judgeACtx);
     await tools["mr_flow_judge"]!.execute({ judge: "b", status: "SUPPORTED", approved: false, findings }, judgeBCtx);
 
@@ -642,6 +817,13 @@ void test("MrOrchestrator atlas and trace tools index and inspect codebase", asy
     // Query node
     const queryRes = await tools["mr_atlas_query"]!.execute({ nodeName: "Widget" }, dummyCtx) as { title: string; output: string };
     assert.ok(queryRes.output.includes("Widget"));
+
+    // Bounded Language Service lookup persists resolved caller edges.
+    const semanticRes = await tools["mr_atlas_query"]!.execute({ nodeName: "add", action: "semantic", depth: 1 }, dummyCtx) as { title: string; output: string };
+    assert.equal(semanticRes.title, "Semantic: add");
+    assert.ok(semanticRes.output.includes('"type": "calls"'));
+    const dependentsRes = await tools["mr_atlas_query"]!.execute({ nodeName: "add", action: "dependents" }, dummyCtx) as { output: string };
+    assert.ok(dependentsRes.output.includes("Widget"));
 
     // Trace component
     const traceRes = await tools["mr_trace_component"]!.execute({ componentName: "Widget" }, dummyCtx) as { title: string; output: string };

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-13T00:00:00.000Z",
+  "journeys": 0,
+  "acceptedDeliveries": 0,
+  "metrics": {
+    "oneShotRate": 0,
+    "insufficientEvidencePrecision": 1,
+    "staleContextIncidents": 0,
+    "tokensPerAcceptedDelivery": 0,
+    "rediscoveryRatio": 0,
+    "languageCompliance": 0
+  },
+  "tokensByRole": {},
+  "failuresByCause": {
+    "missing_context": 0,
+    "stale_context": 0,
+    "wrong_plan": 0,
+    "implementation": 0,
+    "verification": 0,
+    "judge_false_positive": 0,
+    "none": 0
+  }
+}

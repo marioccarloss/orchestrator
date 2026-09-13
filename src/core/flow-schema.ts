@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { RiskLaneSchema, type RiskLane } from "./risk.js";
+import { UserLanguageSchema, type UserLanguage } from "./language.js";
 
 // ─── Flow State Machine ──────────────────────────────────────────────────────
 
@@ -13,15 +15,15 @@ export const FlowDifficultySchema = z.union([
 
 export type FlowDifficulty = z.infer<typeof FlowDifficultySchema>;
 
-export function requiresJudgment(difficulty: number): boolean {
-  return difficulty >= 5;
+export function requiresJudgment(risk: number | RiskLane): boolean {
+  return typeof risk === "number" ? risk >= 5 : risk === "full" || risk === "critical";
 }
 
-export function implementationAgentForDifficulty(difficulty: number): "mr-general" | "mr-sdd-apply" {
-  return requiresJudgment(difficulty) ? "mr-sdd-apply" : "mr-general";
+export function implementationAgentForDifficulty(difficulty: number, lane?: RiskLane): "mr-general" | "mr-sdd-apply" {
+  return requiresJudgment(lane ?? difficulty) ? "mr-sdd-apply" : "mr-general";
 }
 
-export const TicketPlatformSchema = z.enum(["github", "jira", "gitlab"]);
+export const TicketPlatformSchema = z.enum(["github", "jira", "gitlab", "local"]);
 
 export type TicketPlatform = z.infer<typeof TicketPlatformSchema>;
 
@@ -42,6 +44,7 @@ export const TicketContentSchema = z.object({
   type: z.enum(["feature", "bugfix", "hotfix", "release", "chore"]).default("feature"),
   attachments: z.array(z.string()).default([]),
   fetchedAt: z.iso.datetime(),
+  source: z.enum(["remote", "user"]).optional(),
 });
 
 export type TicketContent = z.infer<typeof TicketContentSchema>;
@@ -73,12 +76,19 @@ export const PlanCapsuleSchema = z.object({
 
 export type PlanCapsule = z.infer<typeof PlanCapsuleSchema>;
 
+const RiskStateFields = {
+  userLanguage: UserLanguageSchema.optional(),
+  lane: RiskLaneSchema.optional(),
+  riskReasons: z.array(z.string()).optional(),
+};
+
 export const FlowStateSchema = z.discriminatedUnion("phase", [
   z.object({
     phase: z.literal("init"),
     schemaVersion: z.literal(1),
     workspaceId: z.string().min(1),
     startedAt: z.iso.datetime(),
+    ...RiskStateFields,
   }),
   z.object({
     phase: z.literal("wizard"),
@@ -88,6 +98,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     difficulty: FlowDifficultySchema,
     ticketId: z.string().min(1),
     hasFigma: z.boolean(),
+    ...RiskStateFields,
   }),
   z.object({
     phase: z.literal("context"),
@@ -98,6 +109,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     ticket: TicketContentSchema,
     branch: z.string().min(1),
     baseBranch: z.string().min(1),
+    ...RiskStateFields,
   }),
   z.object({
     phase: z.literal("explore"),
@@ -109,6 +121,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     branch: z.string().min(1),
     baseBranch: z.string().min(1),
     atlasCache: z.string().optional(),
+    ...RiskStateFields,
   }),
   z.object({
     phase: z.literal("plan"),
@@ -120,6 +133,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     branch: z.string().min(1),
     baseBranch: z.string().min(1),
     plan: PlanCapsuleSchema,
+    ...RiskStateFields,
   }),
   z.object({
     phase: z.literal("implement"),
@@ -133,6 +147,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     plan: PlanCapsuleSchema,
     fixAttempt: z.number().int().min(0).optional(),
     completedFiles: z.array(z.string()).default([]),
+    ...RiskStateFields,
   }),
   z.object({
     phase: z.literal("judgment"),
@@ -146,6 +161,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     plan: PlanCapsuleSchema,
     fixAttempt: z.number().int().min(0).optional(),
     diffHash: z.string().min(1),
+    ...RiskStateFields,
   }),
   z.object({
     phase: z.literal("fix"),
@@ -163,6 +179,7 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
       warnings: z.array(z.string()),
       suggestions: z.array(z.string()),
     }),
+    ...RiskStateFields,
   }),
   z.object({
     phase: z.literal("finish"),
@@ -177,24 +194,26 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     approvalDigest: z.string().min(1).optional(),
     commitHash: z.string().optional(),
     prUrl: z.string().url().optional(),
+    humanReviewApproved: z.boolean().optional(),
+    ...RiskStateFields,
   }),
 ]);
 
 export type FlowState = z.infer<typeof FlowStateSchema>;
 
 export const FlowEventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("start"), workspaceId: z.string().min(1) }),
-  z.object({ type: z.literal("wizard_complete"), difficulty: FlowDifficultySchema, ticketId: z.string().min(1), hasFigma: z.boolean() }),
-  z.object({ type: z.literal("context_ready"), ticket: TicketContentSchema, branch: z.string().min(1), baseBranch: z.string().min(1) }),
+  z.object({ type: z.literal("start"), workspaceId: z.string().min(1), userLanguage: UserLanguageSchema.optional() }),
+  z.object({ type: z.literal("wizard_complete"), difficulty: FlowDifficultySchema, ticketId: z.string().min(1), hasFigma: z.boolean(), userLanguage: UserLanguageSchema.optional() }),
+  z.object({ type: z.literal("context_ready"), ticket: TicketContentSchema, branch: z.string().min(1), baseBranch: z.string().min(1), userLanguage: UserLanguageSchema.optional() }),
   z.object({ type: z.literal("explore_done"), atlasCache: z.string().optional() }),
-  z.object({ type: z.literal("plan_approved"), plan: PlanCapsuleSchema }),
+  z.object({ type: z.literal("plan_approved"), plan: PlanCapsuleSchema, lane: RiskLaneSchema.optional(), riskReasons: z.array(z.string()).optional() }),
   z.object({ type: z.literal("plan_rejected") }),
   z.object({ type: z.literal("implement_done"), completedFiles: z.array(z.string()), diffHash: z.string().min(1).optional() }),
   z.object({ type: z.literal("judgment_needed"), diffHash: z.string().min(1) }),
   z.object({ type: z.literal("judgment_passed"), approvalDigest: z.string().min(1).optional() }),
   z.object({ type: z.literal("judgment_failed"), verdict: z.object({ critical: z.array(z.string()), warnings: z.array(z.string()), suggestions: z.array(z.string()) }) }),
   z.object({ type: z.literal("fix_done") }),
-  z.object({ type: z.literal("finish_confirmed"), commitHash: z.string().optional(), prUrl: z.string().url().optional() }),
+  z.object({ type: z.literal("finish_confirmed"), commitHash: z.string().optional(), prUrl: z.string().url().optional(), humanApproved: z.boolean().optional() }),
   z.object({ type: z.literal("finish_rejected") }),
   z.object({ type: z.literal("abort") }),
 ]);
@@ -221,6 +240,25 @@ export function canTransition(from: FlowState, to: FlowState["phase"]): boolean 
   return transitions[from.phase].includes(to);
 }
 
+function preservedRisk(state: FlowState): { userLanguage?: UserLanguage; lane?: RiskLane; riskReasons?: string[] } {
+  return {
+    ...(state.userLanguage === undefined ? {} : { userLanguage: state.userLanguage }),
+    ...(state.lane === undefined ? {} : { lane: state.lane }),
+    ...(state.riskReasons === undefined ? {} : { riskReasons: [...state.riskReasons] }),
+  };
+}
+
+function approvedRisk(
+  state: FlowState,
+  event: Extract<FlowEvent, { readonly type: "plan_approved" }>,
+): { userLanguage?: UserLanguage; lane?: RiskLane; riskReasons?: string[] } {
+  return {
+    ...preservedRisk(state),
+    ...(event.lane === undefined ? {} : { lane: event.lane }),
+    ...(event.riskReasons === undefined ? {} : { riskReasons: [...event.riskReasons] }),
+  };
+}
+
 export function transition(state: FlowState, event: FlowEvent): FlowState {
   switch (state.phase) {
     case "init":
@@ -233,6 +271,8 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           difficulty: 3,
           ticketId: "pending",
           hasFigma: false,
+          ...preservedRisk(state),
+          ...(event.userLanguage === undefined ? {} : { userLanguage: event.userLanguage }),
         };
       }
       break;
@@ -255,6 +295,8 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           },
           branch: `feature/${event.ticketId.toLowerCase().replace(/[^a-z0-9]+/gu, "-")}`,
           baseBranch: "develop",
+          ...preservedRisk(state),
+          ...(event.userLanguage === undefined ? {} : { userLanguage: event.userLanguage }),
         };
       }
       break;
@@ -269,6 +311,8 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           ticket: event.ticket,
           branch: event.branch,
           baseBranch: event.baseBranch,
+          ...preservedRisk(state),
+          ...(event.userLanguage === undefined ? {} : { userLanguage: event.userLanguage }),
         };
       }
       break;
@@ -285,6 +329,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           baseBranch: state.baseBranch,
           plan: event.plan,
           completedFiles: [],
+          ...approvedRisk(state, event),
         };
       }
       if (event.type === "explore_done") {
@@ -306,6 +351,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
             verification: { typecheck: true, lint: true, test: true, build: false },
             createdAt: new Date().toISOString(),
           },
+          ...preservedRisk(state),
         };
       }
       break;
@@ -322,6 +368,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           baseBranch: state.baseBranch,
           plan: event.plan,
           completedFiles: [],
+          ...approvedRisk(state, event),
         };
       }
       if (event.type === "plan_rejected") {
@@ -334,12 +381,13 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           ticket: state.ticket,
           branch: state.branch,
           baseBranch: state.baseBranch,
+          ...preservedRisk(state),
         };
       }
       break;
     case "implement":
       if (event.type === "implement_done") {
-        if (!requiresJudgment(state.difficulty)) {
+        if (!requiresJudgment(state.lane ?? state.difficulty)) {
           return {
             phase: "finish",
             schemaVersion: 1,
@@ -350,6 +398,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
             branch: state.branch,
             baseBranch: state.baseBranch,
             plan: state.plan,
+            ...preservedRisk(state),
           };
         }
         return {
@@ -364,6 +413,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           plan: state.plan,
           fixAttempt: state.fixAttempt ?? 0,
           diffHash: event.diffHash ?? "legacy-unbound",
+          ...preservedRisk(state),
         };
       }
       if (event.type === "judgment_needed") {
@@ -379,6 +429,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           plan: state.plan,
           fixAttempt: state.fixAttempt ?? 0,
           diffHash: event.diffHash,
+          ...preservedRisk(state),
         };
       }
       break;
@@ -395,6 +446,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           baseBranch: state.baseBranch,
           plan: state.plan,
           approvalDigest: event.approvalDigest,
+          ...preservedRisk(state),
         };
       }
       if (event.type === "judgment_failed") {
@@ -410,6 +462,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           plan: state.plan,
           fixAttempt: (state.fixAttempt ?? 0) + 1,
           verdict: event.verdict,
+          ...preservedRisk(state),
         };
       }
       break;
@@ -427,6 +480,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           plan: state.plan,
           fixAttempt: state.fixAttempt,
           completedFiles: [],
+          ...preservedRisk(state),
         };
       }
       break;
@@ -436,6 +490,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           ...state,
           commitHash: event.commitHash ?? state.commitHash,
           prUrl: event.prUrl ?? state.prUrl,
+          humanReviewApproved: event.humanApproved ?? state.humanReviewApproved,
         };
       }
       break;
@@ -467,6 +522,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
         verification: { typecheck: true, lint: true, test: true, build: false },
         createdAt: new Date().toISOString(),
       },
+      ...preservedRisk(state),
     };
   }
   throw new Error(`Invalid transition: ${state.phase} + ${event.type}`);

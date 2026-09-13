@@ -239,7 +239,7 @@ export function shouldEscalateToHuman(state: FixLoopState): boolean {
 
 // ─── Judge Prompts ───────────────────────────────────────────────────────────
 
-export function buildJudgePrompt(diff: string, judge: "a" | "b"): string {
+export function buildJudgePrompt(diff: string, judge: "a" | "b", contextBundle?: string): string {
   const judgeName = judge === "a" ? "Judge A" : "Judge B";
   return `You are ${judgeName}, an adversarial code reviewer. Your job is to find problems in the following diff.
 
@@ -256,6 +256,8 @@ Diff:
 \`\`\`
 ${diff}
 \`\`\`
+
+${contextBundle === undefined ? "" : `## Context bundle\n${contextBundle}\n`}
 
 Use only the supplied diff. Every finding must cite a visible line, identify side=new|old, and copy an exact snippet from that line.
 If evidence is missing, return the standardized insufficient-evidence object instead of guessing.
@@ -283,7 +285,7 @@ Insufficient-evidence example:
 Be thorough and adversarial. Do not approve if there are critical issues.`;
 }
 
-export function buildFixPrompt(verdict: MergedVerdict, originalDiff: string): string {
+export function buildFixPrompt(verdict: MergedVerdict, originalDiff: string, contextBundle?: string): string {
   const validatedCritical = verdict.findings.filter((finding) => finding.severity === "critical");
   return `You are mr-fix. Apply ONLY the corrections indicated in the merged verdict.
 
@@ -294,6 +296,8 @@ ${validatedCritical.length === 0 ? "None" : JSON.stringify(validatedCritical, nu
 \`\`\`
 ${originalDiff}
 \`\`\`
+
+${contextBundle === undefined ? "" : `## Context bundle\n${contextBundle}\n`}
 
 Apply the minimal fixes needed to address the critical issues. Do not refactor or make unrelated changes.
 Return only a compact execution receipt to the orchestrator. You are not user-facing: do not add didactic explanations, progress narration, preambles, recaps, or next-step advice.`;

@@ -171,12 +171,31 @@ void test("flow agent prompts are defined and invariant across model assignments
   assert.ok(agents["orchestrator"]?.prompt?.includes("OpenCode-estimated spend"));
   assert.ok(agents["orchestrator"]?.prompt?.includes("ONLY Flow role allowed to explain"));
   assert.ok(agents["orchestrator"]?.prompt?.includes("lead with the next action"));
+  assert.ok(commandDefinitions(models)["flow"]?.template.includes("exactly one `mr-general` session"));
+  assert.ok(agents["orchestrator"]?.prompt?.includes("A confirmed fast lane never launches judges or a second planning/implementation child session"));
+  assert.ok(agents["mr-general"]?.prompt?.includes("Fast-local combined mode"));
   for (const name of ["mr-general", "mr-sdd-apply", "mr-judge-a", "mr-judge-b", "mr-fix"]) {
     assert.ok(agents[name]?.prompt?.includes("not a user-facing narrator"), `${name} must stay internal`);
   }
   assert.ok(commandDefinitions(models)["flow"]?.template.includes("developerNote"));
   assert.ok(agents["mr-judge-a"]?.prompt?.includes("Controlled verdict examples"));
   assert.ok(agents["mr-judge-b"]?.prompt?.includes("Controlled verdict examples"));
+  assert.ok(agents["bp-extractor"]?.prompt?.includes("mr_atlas_profile"));
+});
+
+void test("internal command and agent prompts stay in English and delegate user-facing language", () => {
+  const spanishLiteral = /[¿¡ñáéíóú]|\b(?:aterrizar|analizar|preguntas|supuestos|guardar|copiar|tarea|flujo)\b/iu;
+  const commands = commandDefinitions(models);
+  for (const [name, command] of Object.entries(commands)) {
+    assert.doesNotMatch(command.template, spanishLiteral, `/${name} template must stay in English`);
+    assert.doesNotMatch(command.description, spanishLiteral, `/${name} description must stay in English`);
+  }
+  const agents = agentDefinitions(models);
+  for (const [name, agent] of Object.entries(agents)) {
+    if (agent.prompt !== undefined) assert.doesNotMatch(agent.prompt, spanishLiteral, `${name} prompt must stay in English`);
+  }
+  assert.match(agents["orchestrator"]?.prompt ?? "", /Explain to the user in FlowState\.userLanguage/u);
+  assert.match(agents["bp-architect"]?.prompt ?? "", /pass it as userLanguage/u);
 });
 
 void test("global agent definitions serialize deterministic sampling settings", () => {

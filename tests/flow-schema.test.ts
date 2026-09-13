@@ -5,6 +5,7 @@ import {
   FlowEventSchema,
   PlanCapsuleSchema,
   implementationAgentForDifficulty,
+  requiresJudgment,
   transition,
   canTransition,
   MigrationRegistry,
@@ -17,6 +18,7 @@ const baseInit: FlowState = {
   schemaVersion: 1,
   workspaceId: "test-ws",
   startedAt: new Date().toISOString(),
+  userLanguage: "en",
 };
 
 const baseWizard: FlowState = {
@@ -114,9 +116,10 @@ test("canTransition rejects invalid transitions", () => {
 });
 
 test("transition from init to wizard", () => {
-  const event: FlowEvent = { type: "start", workspaceId: "test-ws" };
+  const event: FlowEvent = { type: "start", workspaceId: "test-ws", userLanguage: "en" };
   const next = transition(baseInit, event);
   assert.equal(next.phase, "wizard");
+  assert.equal(next.userLanguage, "en");
 });
 
 test("transition from wizard to context", () => {
@@ -125,15 +128,18 @@ test("transition from wizard to context", () => {
     difficulty: 3,
     ticketId: "GH-123",
     hasFigma: false,
+    userLanguage: "ca",
   };
   const next = transition(baseWizard, event);
   assert.equal(next.phase, "context");
+  assert.equal(next.userLanguage, "ca");
 });
 
 test("transition from plan to implement on approval", () => {
   const event: FlowEvent = { type: "plan_approved", plan: basePlan.plan };
   const next = transition(basePlan, event);
   assert.equal(next.phase, "implement");
+  assert.equal(next.userLanguage, basePlan.userLanguage);
 });
 
 test("transition from plan back to explore on rejection", () => {
@@ -173,6 +179,27 @@ test("implementation agent follows the Fibonacci execution tier", () => {
   assert.equal(implementationAgentForDifficulty(3), "mr-general");
   assert.equal(implementationAgentForDifficulty(5), "mr-sdd-apply");
   assert.equal(implementationAgentForDifficulty(21), "mr-sdd-apply");
+  assert.equal(implementationAgentForDifficulty(1, "critical"), "mr-sdd-apply");
+});
+
+test("risk lanes control judgment while numeric difficulty remains compatible", () => {
+  assert.equal(requiresJudgment("fast"), false);
+  assert.equal(requiresJudgment("standard"), false);
+  assert.equal(requiresJudgment("full"), true);
+  assert.equal(requiresJudgment("critical"), true);
+  assert.equal(requiresJudgment(5), true);
+
+  const riskEscalated: FlowState = {
+    ...basePlan,
+    phase: "implement",
+    lane: "critical",
+    riskReasons: ["critical areas: auth"],
+    completedFiles: [],
+  };
+  const next = transition(riskEscalated, { type: "implement_done", completedFiles: [], diffHash: "a".repeat(64) });
+  assert.equal(next.phase, "judgment");
+  assert.equal(next.lane, "critical");
+  assert.deepEqual(next.riskReasons, ["critical areas: auth"]);
 });
 
 test("abort from any state goes to finish", () => {
