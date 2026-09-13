@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   ResearchCapsuleSchema,
   ResearchCapsulePayloadSchema,
+  ResearchCapsulePayloadInputSchema,
   PlanningAssessmentPayloadSchema,
   PlanningBriefPayloadSchema,
   PlanningBriefSchema,
@@ -15,26 +16,43 @@ import {
   markTaskStatus,
   formatZodIssues,
   canonicalSddPayload,
+  migrateResearchToV2,
+  migrateTaskGraphToV2,
+  TaskGraphPayloadInputSchema,
   type ResearchCapsule,
   type PlanningBrief,
   type SpecCapsule,
   type TaskGraph,
 } from "../src/core/sdd-schema.js";
+import type { EvidenceStore } from "../src/core/evidence-store.js";
 
 const NOW = new Date().toISOString();
 
 function makeResearch(): ResearchCapsule {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ticketId: "GH-42",
     objective: "Understand the flow state machine",
-    evidence: [
-      { claim: "Flow transitions live in flow-schema.ts", file: "src/core/flow-schema.ts", line: 196, source: "atlas" },
-    ],
+    evidenceRefs: ["ev-aaaaaaaa"],
+    coverage: { fresh: true, unsupportedFiles: [], unresolvedImports: [] },
+    contracts: [],
+    tests: [],
     relevantNodes: ["transition"],
     constraints: ["Do not break FlowStateSchema v1"],
     unknowns: [],
     createdAt: NOW,
+  };
+}
+
+function makeStore(): EvidenceStore {
+  return {
+    schemaVersion: 1,
+    ticketId: "GH-42",
+    refs: [{
+      id: "ev-aaaaaaaa", file: "src/core/flow-schema.ts", symbol: "transition", range: [196, 196],
+      fileHash: "a".repeat(64), sliceHash: "b".repeat(64), kind: "behavior", source: "atlas",
+      supports: ["R1"], claim: "Flow transitions are defined here", createdAt: NOW,
+    }],
   };
 }
 
@@ -71,7 +89,7 @@ function makeSpec(): SpecCapsule {
 
 function makeTasks(): TaskGraph {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ticketId: "GH-42",
     tasks: [
       {
@@ -79,20 +97,32 @@ function makeTasks(): TaskGraph {
         title: "Extend abort event",
         dependsOn: [],
         requirements: ["R1"],
-        files: [{ path: "src/core/flow-schema.ts", action: "modify", reason: "add reason field", risk: "medium" }],
-        verify: ["bun run typecheck", "bun test"],
+        files: [{ path: "src/core/flow-schema.ts", action: "modify", reason: "add reason field", risk: "medium", evidenced: true }],
         doneWhen: ["abort event carries reason"],
         status: "pending",
+        targetSymbols: [],
+        evidenceRefs: ["ev-aaaaaaaa"],
+        changeIntent: "Add the abort reason field",
+        editBoundaries: { allowedFiles: ["src/core/flow-schema.ts"], forbiddenGlobs: [] },
+        invariants: [],
+        expectedDiff: { adds: ["abort reason"], removes: [], touchedTests: [] },
+        verification: { commands: ["bun run typecheck", "bun test"], mustPass: true },
       },
       {
         id: "T2",
         title: "Persist reason",
         dependsOn: ["T1"],
         requirements: ["R1"],
-        files: [{ path: "src/core/flow-state.ts", action: "modify", reason: "persist reason", risk: "low" }],
-        verify: ["bun test"],
+        files: [{ path: "src/core/flow-state.ts", action: "modify", reason: "Persist the reason despite lacking direct file evidence", risk: "low", evidenced: false }],
         doneWhen: ["reason visible in status"],
         status: "pending",
+        targetSymbols: [],
+        evidenceRefs: ["ev-aaaaaaaa"],
+        changeIntent: "Persist the abort reason",
+        editBoundaries: { allowedFiles: ["src/core/flow-state.ts"], forbiddenGlobs: [] },
+        invariants: [],
+        expectedDiff: { adds: ["stored reason"], removes: [], touchedTests: [] },
+        verification: { commands: ["bun test"], mustPass: true },
       },
     ],
     createdAt: NOW,
@@ -131,12 +161,10 @@ test("operational capsule schemas exclude volatile persistence timestamps", () =
     unknowns: source.unknowns,
     constraints: source.constraints,
     relevantNodes: source.relevantNodes,
-    evidence: source.evidence.map((item) => ({
-      source: item.source,
-      ...(item.line === undefined ? {} : { line: item.line }),
-      file: item.file,
-      claim: item.claim,
-    })),
+    evidenceRefs: source.evidenceRefs,
+    coverage: source.coverage,
+    contracts: source.contracts,
+    tests: source.tests,
     objective: source.objective,
     ticketId: source.ticketId,
     schemaVersion: source.schemaVersion,
@@ -195,6 +223,61 @@ test("Blueprint-lite accepts at most three material questions and forbids high-r
   assert.equal(unsafeAssumption.success, false);
 });
 
+test("ResearchCapsule v1 migrates to v2 without losing claims", async () => {
+  const legacy = ResearchCapsulePayloadInputSchema.parse({
+    schemaVersion: 1,
+    ticketId: "GH-42",
+    objective: "Map legacy evidence",
+    evidence: [{ claim: "Legacy claim", file: "src/a.ts", line: 4, source: "read" }],
+    relevantNodes: ["a"], constraints: ["keep behavior"], unknowns: [],
+  });
+  const seen: string[] = [];
+  const migrated = await migrateResearchToV2(legacy, async (evidence) => {
+    seen.push(evidence.claim);
+    return "ev-aaaaaaaa";
+  }, { fresh: true, unsupportedFiles: [], unresolvedImports: [] });
+  assert.equal(migrated.schemaVersion, 2);
+  assert.deepEqual(migrated.evidenceRefs, ["ev-aaaaaaaa"]);
+  assert.deepEqual(seen, ["Legacy claim"]);
+  assert.deepEqual(migrated.constraints, ["keep behavior"]);
+});
+
+test("TaskGraph v1 migrates to v2 without relabeling the legacy schema", () => {
+  const legacy = TaskGraphPayloadInputSchema.parse({
+    schemaVersion: 1,
+    ticketId: "GH-42",
+    tasks: [{
+      id: "T1",
+      title: "Extend abort event",
+      dependsOn: [],
+      requirements: ["R1"],
+      files: [{ path: "src/core/flow-schema.ts", action: "modify", reason: "add reason field", risk: "medium" }],
+      verify: ["bun test"],
+      doneWhen: ["abort event carries reason"],
+      status: "pending",
+    }],
+  });
+  const migrated = migrateTaskGraphToV2(legacy, makeResearch(), makeStore());
+  assert.equal(legacy.schemaVersion, 1);
+  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.tasks[0]?.changeIntent, "add reason field");
+  assert.deepEqual(migrated.tasks[0]?.editBoundaries.allowedFiles, ["src/core/flow-schema.ts"]);
+  assert.deepEqual(migrated.tasks[0]?.verification.commands, ["bun test"]);
+  assert.equal(migrated.tasks[0]?.files[0]?.evidenced, true);
+  assert.deepEqual(migrated.tasks[0]?.evidenceRefs, ["ev-aaaaaaaa"]);
+});
+
+test("TaskGraph v2 rejects a short reason for an unevidenced file", () => {
+  const tasks = makeTasks();
+  const { createdAt: _createdAt, ...payload } = tasks;
+  const rejected = TaskGraphPayloadSchema.safeParse({
+    ...payload,
+    tasks: [{ ...tasks.tasks[0], files: [{ ...tasks.tasks[0]!.files[0], evidenced: false, reason: "too short" }] }],
+  });
+  assert.equal(rejected.success, false);
+  if (!rejected.success) assert.match(formatZodIssues(rejected.error), /at least 40 characters/u);
+});
+
 test("schema rejects malformed requirement and task ids", () => {
   const badSpec = makeSpec();
   const parsed = SpecCapsuleSchema.safeParse({
@@ -233,22 +316,23 @@ test("validateSddArtifacts detects unknown requirement, uncovered requirement an
 });
 
 test("validateSddArtifacts warns when modifying files without research evidence", () => {
-  const issues = validateSddArtifacts(makeSpec(), makeTasks(), makeResearch());
+  const issues = validateSddArtifacts(makeSpec(), makeTasks(), makeResearch(), { evidenceStore: makeStore() });
   const warnings = issues.filter((issue) => issue.severity === "warning");
   assert.equal(warnings.length, 1);
-  assert.ok(warnings[0]?.message.includes("src/core/flow-state.ts"));
+  assert.ok(warnings.some((warning) => warning.message.includes("src/core/flow-state.ts")));
   assert.equal(issues.filter((issue) => issue.severity === "error").length, 0);
 });
 
 test("validateSddArtifacts rejects research from another ticket", () => {
   const research = { ...makeResearch(), ticketId: "GH-OTHER" };
-  const issues = validateSddArtifacts(makeSpec(), makeTasks(), research);
+  const issues = validateSddArtifacts(makeSpec(), makeTasks(), research, { evidenceStore: makeStore() });
   assert.ok(issues.some((issue) => issue.severity === "error" && issue.message.includes("Research ticket 'GH-OTHER'")));
 });
 
 test("validateSddArtifacts blocks unevidenced modified files in Full flows", () => {
   const issues = validateSddArtifacts(makeSpec(), makeTasks(), makeResearch(), {
     requireEvidenceForModifiedFiles: true,
+    evidenceStore: makeStore(),
   });
   const groundingError = issues.find((issue) => issue.message.includes("src/core/flow-state.ts"));
   assert.equal(groundingError?.severity, "error");

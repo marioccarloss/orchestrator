@@ -27,17 +27,17 @@ void test("repository models.json keeps the governed role roster", async () => {
     roles: Record<string, { model: string; variant?: string; alternative: { model: string; variant?: string } }>;
   };
   assert.deepEqual(configured.roles, {
-    orchestrator: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
-    explore: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "low" } },
-    plan: { model: "openai/gpt-5.6-sol", variant: "max", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "max" } },
-    general: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "high" } },
-    sddApply: { model: "openai/gpt-5.6-sol", variant: "max", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "max" } },
-    judgeA: { model: "opencode-go/deepseek-v4-pro", variant: "max", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
-    judgeB: { model: "opencode-go/kimi-k2.7-code", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
-    fix: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "high" } },
+    orchestrator: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" } },
+    explore: { model: "opencode-go/deepseek-v4.1-flash", variant: "high", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "high" } },
+    plan: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "openai/gpt-6-astra", variant: "xhigh" } },
+    general: { model: "github-copilot/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
+    sddApply: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
+    judgeA: { model: "opencode-go/glm-5.3", variant: "max", alternative: { model: "github-copilot/grok-4.6", variant: "xhigh" } },
+    judgeB: { model: "opencode-go/qwen3.8-max", variant: "xhigh", alternative: { model: "github-copilot/grok-4.6", variant: "xhigh" } },
+    fix: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "max" } },
     bpExtractor: { model: "opencode-go/deepseek-v4.1-flash", variant: "low", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "low" } },
-    bpArchitect: { model: "openai/gpt-5.6-sol", variant: "max", alternative: { model: "opencode-go/deepseek-v4-pro", variant: "max" } },
-    bpTransactor: { model: "opencode-go/deepseek-v4.1-flash", variant: "low", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
+    bpArchitect: { model: "opencode/claude-fable-5-1", variant: "max", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
+    bpTransactor: { model: "opencode-go/deepseek-v4.1-flash", variant: "low", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "low" } },
   });
 });
 
@@ -209,17 +209,17 @@ void test("loadModels migrates legacy string roles and alternative promotion is 
   const migrated = await loadModels(paths);
   assert.equal(migrated.roles.general.model, "legacy/general");
   assert.equal(migrated.roles.general.variant, "max");
-  assert.equal(migrated.roles.general.alternative.model, "opencode-go/deepseek-v4-pro");
-  assert.equal(migrated.roles.general.alternative.variant, "high");
+  assert.equal(migrated.roles.general.alternative.model, "github-copilot/claude-opus-5");
+  assert.equal(migrated.roles.general.alternative.variant, "medium");
 
   const promotion = await promoteAlternativeModel(paths, "general", "legacy/general#high");
   assert.equal(promotion.promoted, true);
-  assert.equal(promotion.model, "opencode-go/deepseek-v4-pro#high");
+  assert.equal(promotion.model, "github-copilot/claude-opus-5#medium");
   assert.equal(promotion.alternative, "legacy/general#max");
 
   const persisted = await loadModels(paths);
-  assert.equal(persisted.roles.general.model, "opencode-go/deepseek-v4-pro");
-  assert.equal(persisted.roles.general.variant, "high");
+  assert.equal(persisted.roles.general.model, "github-copilot/claude-opus-5");
+  assert.equal(persisted.roles.general.variant, "medium");
   assert.equal(persisted.roles.general.alternative.model, "legacy/general");
   assert.equal(persisted.roles.general.alternative.variant, "max");
 });

@@ -64,6 +64,28 @@ Otras operaciones CLI directas para modelos:
 - `mr models set <rol> <modelo>`: Asigna un modelo a un rol específico (ej: `mr models set orchestrator github-copilot/gpt-5.6-sol`).
 - `mr models preset <nombre>`: Aplica un conjunto preconfigurado (`balanced`, `gpt-sol`, `claude-opus`).
 
+### `mr atlas index | init | rules`
+
+```bash
+mr atlas index
+mr atlas init --no-rules
+mr atlas init --guided --lang es
+mr atlas rules --diff --lang es
+mr atlas rules --write-repo-agents --lang es --yes
+```
+
+| Operación | Resultado |
+|---|---|
+| `index` | Actualiza el grafo incremental usando hashes de contenido. |
+| `init --no-rules` | Genera índice y perfiles sin crear una propuesta de reglas. |
+| `init --guided` | Permite revisar las inferencias en una TUI; requiere terminal interactiva. |
+| `rules --diff` | Regenera las reglas observadas y muestra el diff de su proyección. |
+| `--lang en\|es` | Elige el idioma de la proyección humana de reglas. |
+| `--write-repo-agents` | Propone un `AGENTS.md` en cada repo. Siempre enseña el diff antes de escribir. |
+| `--yes` | Confirma esas escrituras cuando no hay TTY. |
+
+`atlas init` perfila todos los repositorios del workspace registrado y persiste `profile.json`, `rules.json` y una proyección interna `AGENTS.md` en el almacenamiento aislado de `mr-orchestrator`. El profiler es *best effort*: un fallo se avisa, pero no inutiliza el índice. Las reglas conservan evidencia, confianza y ámbito `appliesTo`; describen convenciones observadas y no inventan preferencias.
+
 ---
 
 ## 3. Lanzamiento del Entorno (`mrcode`)
@@ -103,11 +125,13 @@ Ejecuta el ciclo de vida completo de un requerimiento o ticket de forma controla
 
 **Paso a paso del flujo:**
 1. **Wizard Inicial:**
-   - **Dificultad (Fibonacci: 1, 3, 5, 8, ...):**
-     - Si es **1 o 3 (Lite):** No se ejecuta la fase de juicio adversarial (`judge-a` vs `judge-b`) ni `mr-fix`, agilizando tareas pequeñas o de bajo riesgo.
-     - Si es **5 en adelante (Full):** Se activa el pipeline completo con juicio ciego paralelo y corrección iterativa.
-   - **Identificador de Ticket:** Pregunta la clave del ticket (ej: `123`, `GH-42`, `PROJ-105`). La primera vez pregunta el sistema de tickets (GitHub / Jira / GitLab) y lo recuerda permanentemente para ese workspace.
+   - **Dificultad (Fibonacci: 1, 3, 5, 8, ...):** propone un carril inicial. Tras aprobar el plan, Flow lo recalcula con archivos tocados, evidencia, impacto Atlas y áreas críticas.
+     - `fast` / `standard`: no ejecutan juicio adversarial ni `mr-fix`.
+     - `full`: activa implementación SDD, juicio ciego paralelo y corrección iterativa.
+     - `critical`: además exige aprobación explícita del riesgo.
+   - **Identificador de Ticket:** Pregunta la clave del ticket (ej: `123`, `GH-42`, `PROJ-105`). La primera vez pregunta el sistema de tickets (GitHub / Jira / GitLab) y lo recuerda para ese workspace. Si no hay ticket, crea una referencia local `LOCAL-YYYYMMDD-NN` y continúa sin una escritura remota.
    - **Diseño en Figma:** Pregunta si existe diseño. Si se indica afirmativamente, consulta vía MCP y guarda la respuesta en caché local para evitar re-consultas.
+   - **Idioma:** Detecta `es`, `en`, `pt`, `ca` o `fr` desde la petición y lo refina con el ticket. El idioma queda persistido durante todo el Flow.
 2. **Descarga y Sincronización:**
    - Realiza un `git pull` de la rama base más reciente (`develop` o la default branch).
    - Genera la rama correspondiente siguiendo la receta de convención del workspace (ej: `feature/GH-123-slug` o `bugfix/GH-123-slug`) con una **única confirmación** del usuario.
@@ -118,10 +142,10 @@ Ejecuta el ciclo de vida completo de un requerimiento o ticket de forma controla
     - Después genera `SpecCapsule` y `TaskGraph`; su Markdown visible se renderiza por script con cero tokens de autoría LLM.
     - Se muestra una explicación determinista de cinco líneas (`qué`, `por qué`, `cómo`, `prueba`) y se solicita aprobación. El agente no vuelve a parafrasearla.
 4. **Implementación Quirúrgica:**
-    - Dificultad 1-3: solo `mr-general` ejecuta cada tarea.
-    - Dificultad 5+: solo `mr-sdd-apply` ejecuta cada tarea con criterios SDD estrictos.
+    - Carriles `fast`/`standard`: `mr-general` ejecuta cada tarea. En `fast` sin ticket, la misma sesión mantiene el plan breve y la implementación para reutilizar contexto; no se abre una segunda sesión de implementación.
+    - Carriles `full`/`critical`: `mr-sdd-apply` ejecuta cada tarea con criterios SDD estrictos.
     - Cada `next-task` incorpora una nota ultracondensada `what/why/touch/prove` para que el developer entienda la intención, el alcance y cómo se demostrará sin añadir una explicación libre del modelo.
-5. **Día del Juicio (solo dificultad >= 5):**
+5. **Día del Juicio (solo carriles `full` y `critical`):**
     - `mr-judge-a` y `mr-judge-b` evalúan el diff en paralelo.
     - Cada hallazgo debe declarar severidad, archivo, línea, lado (`new`/`old`) y un fragmento textual exacto del diff. El plugin rechaza mecánicamente citas inexistentes o requisitos desconocidos.
     - Los dos veredictos quedan ligados al hash CAS del mismo diff; un cambio posterior invalida el juicio y los veredictos de rondas anteriores no se reutilizan.
@@ -152,10 +176,11 @@ Herramienta de ingeniería de prompts interactiva:
 
 #### `/atlas [index|query <nombre>]`
 Actúa como el cartógrafo y guardián del repositorio:
-- **Cartografía e Indexación:** Mapea componentes, dependencias y relaciones mediante un indexador estático determinista basado en **tree-sitter** (TypeScript/TSX, Java) y parsers YAML/JSON para configuración. No gasta tokens de LLM.
-- **Soporte multi-formato:** Indexa código fuente (`.ts`, `.tsx`, `.java`) y archivos de configuración (`.json`, `.yml`, `.yaml`) incluyendo perfiles Spring multi-documento (`---`) y JSONC con comentarios.
+- **Cartografía e Indexación:** Mapea componentes, dependencias, símbolos, llamadas, contratos y relaciones de framework con extracción estática determinista. Reutiliza archivos sin cambios por hash y no gasta tokens de LLM.
+- **Soporte multi-formato:** Cubre TypeScript/TSX, JavaScript/JSX, Java, PHP, Astro, CSS/SCSS y configuración JSON/YAML. Cada archivo declara `ok`, `partial`, `error` o `unsupported`; las salidas incluyen un recibo de cobertura en vez de fingir completitud.
+- **Resolución de repositorios:** Entiende aliases de `tsconfig`, workspaces pnpm, PSR-4 y contratos entre repositorios. El Language Service de TypeScript y PHPStan/Psalm son enriquecimientos acotados y opcionales.
 - **Fronteras y Gobernanza:** Establece las rutas prohibidas, anti-patrones y reglas operativas en `~/.cache/mr-orchestrator/<workspaceId>/governance.json`.
-- **Caché Contextual:** El grafo indexado se persiste en `~/.cache/mr-orchestrator/<workspaceId>/atlas-graph.json` y se reutiliza automáticamente (lazy-index si no existe).
+- **Persistencia Contextual:** El grafo se guarda bajo el directorio generado aislado del workspace y se actualiza automáticamente cuando la consulta detecta cambios.
 - **Consultas disponibles:**
   - `/atlas query <nombre>` — Información de un nodo (tipo, ubicación, imports, exports).
   - `/atlas query <nombre> deps` — Dependencias directas del nodo.
@@ -209,6 +234,9 @@ Pipeline determinista de especificación y ejecución de tareas:
 | `mr_sdd_submit` | Sube una cápsula tipada (`research`, `brief`, `spec`, `tasks`) como JSON compacto. `brief=NEEDS_INPUT` devuelve 1-3 preguntas sin persistir; `brief=READY` persiste solo JSON. Las demás cápsulas renderizan Markdown por script sin coste de tokens. |
 | `mr_sdd_get` | Lee cápsulas SDD como JSON compacto. `kind=brief` lee el Blueprint-lite aprobado; `kind=next-task` devuelve la siguiente tarea accionable, criterios de aceptación y `developerNote` ultracondensada. |
 | `mr_sdd_task_status` | Marca el estado de una tarea (`pending`, `in_progress`, `done`, `blocked`). Solo marca `done` tras pasar los comandos de verificación. |
+| `mr_sdd_verify` | Registra los resultados exigidos y guarda un recibo ligado al hash actual del diff. |
+| `mr_evidence_add` / `mr_evidence_list` | Guarda slices direccionados por contenido y comparte sus referencias sin duplicar el archivo en cada prompt. |
+| `mr_context_hydrate` | Construye el bundle mínimo para rol, tarea y carril; informa presupuesto, uso y truncamiento. |
 
 **Flujo SDD/RPI típico:**
 1. `mr_sdd_submit kind=research` — Cápsula de evidencia del explore (archivos, líneas, constraints).
@@ -221,16 +249,52 @@ Pipeline determinista de especificación y ejecución de tareas:
 
 - Todos los comandos y agentes reciben un contrato común: solo pueden usar tickets, cápsulas, resultados de tools, especificaciones y código/diffs inspeccionados.
 - Cuando falta evidencia esencial deben detenerse con `{"status":"INSUFFICIENT_EVIDENCE","missing":[...],"nextAction":"..."}`. `mr_sdd_submit` y `mr_flow_judge` reconocen este resultado sin persistir datos inventados ni avanzar la FSM.
-- En dificultad 5+, una tarea que modifica un archivo sin evidencia previa en ResearchCapsule es un error bloqueante. En Lite permanece como advertencia.
+- En carriles `full`/`critical`, una tarea que modifica un archivo sin evidencia previa en ResearchCapsule es un error bloqueante. En `fast`/`standard` permanece como advertencia.
 - Los agentes generados usan `temperature: 0` y `top_p: 1`. Esto reduce variabilidad, pero no promete repetibilidad absoluta entre proveedores.
+
+### Presupuestos por carril
+
+Los bundles de contexto usan límites en caracteres por rol y carril. `mr_flow_status` muestra la última hidratación como `usado/presupuesto`, junto con rol, carril y truncamiento.
+
+| Carril | Plan | Implement | Cada juez | Fix |
+|---|---:|---:|---:|---:|
+| `fast` | 25k | 30k | 20k | 15k |
+| `standard` | 37.5k | 45k | 30k | 22.5k |
+| `full` | 50k | 60k | 40k | 30k |
+| `critical` | 62.5k | 75k | 50k | 37.5k |
+
+Un override positivo explícito sigue siendo válido y también queda reflejado en el recibo. El filtrado prioriza evidencia fresca de la tarea y reglas cuyo `appliesTo` coincide con sus archivos permitidos.
+
+### Idioma y separación de artefactos
+
+- La salida humana de Flow y Blueprint se renderiza en el `userLanguage` persistido: `es`, `en`, `pt`, `ca` o `fr`.
+- Ante texto corto o ambiguo se conserva el idioma anterior; sin señal suficiente, el fallback es español.
+- Prompts, contratos tipados, recibos y comunicación entre agentes permanecen en inglés.
+- Status, planes, veredictos, cobertura y Markdown presentado a la persona se generan mediante plantillas deterministas, no mediante traducción libre del modelo.
+
+### Gates deterministas
+
+El modo por defecto es fail-closed:
+
+```bash
+export MR_GATES_MODE=block
+```
+
+En `block`, Flow rechaza planes sin evidencia exigida, cambios fuera de límites, incumplimientos mecánicos de reglas, recibos ausentes u obsoletos y juicios ejecutados antes de reindexar el delta Atlas. Un valor desconocido también equivale a `block`.
+
+Usa `warn` únicamente como escape temporal para diagnóstico o migración:
+
+```bash
+export MR_GATES_MODE=warn
+```
 
 ### Herramientas Atlas (`mr_atlas_*`)
 
 | Tool | Propósito |
 |---|---|
-| `mr_atlas_index` | Indexa código fuente (TS/TSX/Java) y configuración (JSON/YML/YAML) en el grafo Atlas. Persiste en caché XDG. |
-| `mr_atlas_query` | Consulta el grafo: info de nodos, deps, dependents, impact, governance. Soporta filtros por tipo de nodo. |
-| `mr_atlas_skeleton` | **Nuevo.** Genera skeleton determinista de un archivo: imports + firmas, cuerpos elididos (~85-90% menos tokens). Ideal para leer `application.yml`, OpenAPI specs o clases Java grandes. |
+| `mr_atlas_index` | Actualiza el grafo incremental y devuelve estadísticas más un recibo honesto de cobertura. |
+| `mr_atlas_query` | Consulta nodos, deps, dependents, impacto ponderado y governance; cada resultado declara cobertura. |
+| `mr_atlas_skeleton` | Genera skeletons deterministas con profundidad configurable: imports, firmas, llamadas y metadatos relevantes con cuerpos elididos. |
 
 ### Otras Herramientas
 
@@ -305,17 +369,12 @@ mrcode
 
 ### El grafo Atlas parece desactualizado
 
-**Causa:** El caché de Atlas en `~/.cache/mr-orchestrator/<workspaceId>/atlas-graph.json` fue generado antes de tus últimos cambios.
+**Causa:** El grafo Atlas aislado del workspace fue generado antes de tus últimos cambios.
 
 **Solución:**
 ```bash
-# Desde dentro del workspace en OpenCode:
-/atlas index
-```
-
-O borra el caché para forzar re-indexado en la próxima consulta:
-```bash
-rm ~/.cache/mr-orchestrator/<workspaceId>/atlas-graph.json
+# Desde dentro del workspace:
+mr atlas index
 ```
 
 ### `/flow` no aparece o no encuentra sus tools
@@ -341,10 +400,27 @@ No. `build` es el agente predeterminado y `/flow` especifica `agent: orchestrato
 `mr-orchestrator` compila la convención en memoria cacheada por hash. Cuando ejecutas `mr sync` o inicias un nuevo `/flow`, se recalculan las convenciones sin mutar tu repositorio git.
 
 **¿Atlas indexa código Java de microservicios Spring Boot?**
-Sí. Atlas usa tree-sitter con gramáticas para TypeScript/TSX y Java. Además indexa archivos de configuración JSON/YAML (incluyendo perfiles Spring multi-documento separados por `---`).
+Sí. Atlas cubre Java y configuración JSON/YAML, incluidos perfiles Spring multi-documento. También cubre TypeScript/TSX, JavaScript/JSX, PHP, Astro y CSS/SCSS, declarando cobertura parcial o no soportada cuando corresponde.
 
 **¿Cómo ahorro tokens al consultar código?**
 Usa `/atlas query` para consultas puntuales en lugar de leer archivos completos. Usa `mr_atlas_skeleton` para obtener la estructura de un archivo (imports + firmas) con ~85-90% menos tokens que el contenido completo.
 
 **¿Dónde se guardan los artefactos SDD?**
 Los JSON tipados se guardan en `~/.local/share/mr-orchestrator/<workspaceId>/sdd/`. El Markdown renderizado para el usuario se genera en `.aicontext/deliverables/mr/sdd/` dentro del workspace (si existe `.aicontext`) o en el directorio de datos global.
+
+---
+
+## 10. Medición del corpus de fiabilidad
+
+`bench/corpus.json` contiene 15 journeys anonimizados. Una ejecución solo cuenta cuando existen métricas y eventos reales capturados por Flow:
+
+```bash
+bun scripts/bench-report.ts \
+  --journey J01 \
+  --metrics /ruta/flow-metrics.json \
+  --events /ruta/events.jsonl \
+  --one-shot \
+  --language-compliant true
+```
+
+Consulta `bench/README.md` antes de guardar un resultado. Los tests, fixtures sintéticos y reportes con cero journeys validan la instrumentación, pero no demuestran ejecución dirigida por un modelo. Un reporte posterior debe compararse con una baseline observacional real y documentar cualquier objetivo que no se alcance.

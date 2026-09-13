@@ -2,7 +2,7 @@
 
 Orquestador determinista, tipado y global para OpenCode, diseñado para el desarrollo y entrega quirúrgica de software en plataformas complejas con **máxima eficiencia y ahorro de tokens**.
 
-`mr-orchestrator` se instala de forma global y aislada en el sistema, conectándose a OpenCode mediante configuraciones generadas bajo el estándar XDG. **Nunca contamina el árbol git ni escribe archivos dentro de los repositorios de tu proyecto.**
+`mr-orchestrator` se instala de forma global y aislada en el sistema, conectándose a OpenCode mediante configuraciones generadas bajo el estándar XDG. No modifica código de producto por iniciativa propia; solo escribe entregables solicitados y, de forma opt-in con diff y confirmación, reglas `AGENTS.md` dentro de un repositorio.
 
 ---
 
@@ -32,20 +32,18 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
    - Configuración de modelos de IA por rol.
    - Troubleshooting y preguntas frecuentes.
 
-4. 💻 **[Guía de Transferencia a MacBook Air (`docs/TRANSFER_MACBOOK_AIR.md`)](docs/TRANSFER_MACBOOK_AIR.md):**
-   - Cómo empaquetar y replicar el proyecto en la MacBook Air de Mario Carlos Roca Peñafiel (o cualquier máquina) **sin subir a repositorios remotos**.
-   - Métodos de transferencia (AirDrop, red local, USB).
-   - Puesta en marcha desde cero en el equipo destino.
-
 ---
 
 ## ⚡ Estado del Proyecto
 
-**Fases F0 a F8 completadas al 100%.**
+**Runtime principal y programa de fiabilidad F0–F6 implementados; la aceptación cuantitativa depende de journeys reales capturados.**
 - Suite automatizada de pruebas unitarias y de integración en Bun
 - Plugin nativo de OpenCode con despacho por agente y herramientas FSM fail-closed
-- Indexador Atlas con **tree-sitter** (TypeScript/TSX + Java) y soporte para configs JSON/YAML
-- Pipeline SDD/RPI determinista: cápsulas JSON tipadas validadas con Zod + guardrails estructurales
+- Atlas v2 incremental y honesto sobre cobertura para TypeScript/TSX, JavaScript/JSX, Java, PHP, Astro, CSS/SCSS y JSON/YAML
+- EvidenceStore compartido, bundles mínimos por rol, reglas observadas y resolución de contratos entre repositorios
+- Pipeline SDD/RPI determinista: cápsulas JSON tipadas, límites quirúrgicos, recibos de verificación y gates bloqueantes por defecto
+- Carriles `fast`, `standard`, `full` y `critical` con presupuesto de contexto por rol; `fast` local reutiliza una sola sesión
+- Salida determinista en español, inglés, portugués, catalán o francés, manteniendo inglés para contratos internos y prompts
 - Progreso tipo pedido, coste/tokens estimados por Flow y explicaciones técnicas ultracondensadas
 - Skill `i-have-adhd` aplicado solo por Orchestrator y catálogo MCP gestionado (`codebase-memory`, CodeGraph, Context7, Engram, GitHub, Jira y `figma-live-mcp`)
 - Diagnóstico React `/trace`, propuestas técnicas `/propose` y generador `/prompt` con `pbcopy`
@@ -95,7 +93,16 @@ El asistente explica cada skill/MCP y permite instalar todos, elegir, continuar 
 mr doctor
 ```
 
-### 5. Lanzar OpenCode con el Orquestador
+### 5. Inicializar Atlas y reglas observadas
+
+```bash
+cd ~/Projects/my-workspace
+mr atlas init --guided --lang es
+```
+
+Usa `--no-rules` si solo quieres índice y perfiles. La escritura de `AGENTS.md` en cada repositorio requiere `--write-repo-agents` y confirmación explícita.
+
+### 6. Lanzar OpenCode con el Orquestador
 
 Navega a cualquier subcarpeta o repositorio del workspace y ejecuta:
 

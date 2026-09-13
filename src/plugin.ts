@@ -2,18 +2,16 @@ import { tool, type Plugin, type PluginInput } from "@opencode-ai/plugin";
 import { loadFlowState, clearFlowState, applyEvent } from "./core/flow-state.js";
 import { loadRegistry, detectWorkspace } from "./core/workspace.js";
 import { resolvePaths } from "./core/paths.js";
-import { buildTaskDeveloperNote, renderFlowStatus, renderFlowUsage, renderPlanExplanation, renderVerdict } from "./core/render.js";
+import { buildTaskDeveloperNote, messagesFor, renderCoverageReceipt, renderFlowStatus, renderFlowUsage, renderPlanExplanation, renderVerdict, renderWorkspaceMap } from "./core/render.js";
 import { loadModels } from "./core/config.js";
 import { buildModelCandidates, discoverAvailableModels, formatModelTarget, promoteAlternativeModel, ROLES, setModelRole, type ModelRole } from "./core/models.js";
 import { writeFile, readFile, mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { implementationAgentForDifficulty, JudgeFindingsSchema, JudgeVerdictSchema, requiresJudgment, type FlowState, type FlowEvent, type PlanCapsule } from "./core/flow-schema.js";
 import { getDiffHash, getFullDiff, mergeVerdicts, validateJudgeFindings } from "./core/judgment.js";
 import { canonicalJson, sha256 } from "./core/files.js";
-import { runCommand } from "./core/process.js";
 import {
   AtlasIndexer,
-  loadAtlasGraph,
   saveAtlasGraph,
   findNodeByName,
   findNodesByKind,
@@ -22,16 +20,29 @@ import {
   getImpactAnalysis,
   loadGovernanceConfig,
   checkGovernance,
-  computeGitStamp,
   extractSkeleton,
+  extractNodeSlice,
+  findTestsFor,
   validateAstSyntax,
+  withAtlasEdges,
   type AtlasGraph,
 } from "./core/atlas.js";
+import { getOrIndexAtlas } from "./core/atlas-service.js";
+import { addEvidence, checkEvidenceFreshness, listEvidence, loadEvidenceStore, readEvidenceSlice, EvidenceKindSchema, StoredEvidenceSourceSchema, type EvidenceStore, type FreshnessResult } from "./core/evidence-store.js";
+import { gateAfterImplement, gateBeforeImplement, gateBeforeJudgment, gatePlan, gateRepositoryRules, gatesMode, renderGateResult, shouldBlockGate, type GateResult } from "./core/gates.js";
+import { getGitDiffFiles, getGitDiffNames, loadVerificationReceipt, saveVerificationReceipt, VerificationReceiptSchema } from "./core/verification.js";
+import { hydrateContext, serializeBundle, type HydrationRole } from "./core/context-hydrator.js";
+import { loadRepositoryProfiles, loadWorkspaceRules } from "./core/rules/store.js";
+import { ruleInvariants, rulesDigest } from "./core/rules/generator.js";
+import { assessRiskLane, type RiskLane } from "./core/risk.js";
+import { createTicketAdapter, nextLocalTicketId } from "./core/ticket.js";
+import { createProjectService, resolveTypeScriptCallEdges } from "./core/semantic/typescript.js";
+import { applyPhpSemanticResult, inspectPhpSemantics } from "./core/semantic/php.js";
 import {
-  ResearchCapsulePayloadSchema,
+  ResearchCapsulePayloadInputSchema,
   PlanningAssessmentPayloadSchema,
   SpecCapsulePayloadSchema,
-  TaskGraphPayloadSchema,
+  TaskGraphPayloadInputSchema,
   validateSddArtifacts,
   nextPendingTask,
   markTaskStatus,
@@ -42,6 +53,9 @@ import {
   loadTasks,
   formatZodIssues,
   canonicalSddPayload,
+  migrateResearchToV2,
+  migrateTaskGraphToV2,
+  type SddTask,
   type SddKind,
 } from "./core/sdd-schema.js";
 import {
@@ -73,10 +87,32 @@ import {
   bindFlowSession,
   finalizeFlowMetrics,
   loadFlowMetrics,
+  recordContextHydration,
   recordFlowAssistantUsage,
   startFlowMetrics,
   summarizeFlowMetrics,
 } from "./core/flow-metrics.js";
+import { detectLanguage, normalizeUserLanguage, type UserLanguage } from "./core/language.js";
+import { flowEconomyPolicy } from "./core/budgets.js";
+
+interface PluginMessages {
+  readonly noActiveFlow: string;
+  readonly lastFlow: string;
+  readonly startRejected: string;
+  readonly implementationJudgment: string;
+  readonly implementationFast: string;
+  readonly verdictRecorded: string;
+  readonly humanReviewRequired: string;
+  readonly flowAborted: string;
+}
+
+const PLUGIN_MESSAGES = {
+  es: { noActiveFlow: "No hay un flujo activo. Ejecuta `/flow` para comenzar.", lastFlow: "Último flujo", startRejected: "Proporciona ticketId o un taskText no vacío.", implementationJudgment: "Implementación completa. Se inició la fase de juicio adversarial determinista.", implementationFast: "Implementación completa. El carril rápido omite el Día del Juicio.", verdictRecorded: "Veredicto registrado. Esperando al otro juez sobre el mismo diff.", humanReviewRequired: "El carril de riesgo crítico requiere aprobación humana explícita antes de finalizar. Repite con humanApproved=true después de la revisión.", flowAborted: "El flujo fue abortado y su estado se eliminó." },
+  en: { noActiveFlow: "No active flow. Run `/flow` to start.", lastFlow: "Last flow", startRejected: "Provide ticketId or non-empty taskText.", implementationJudgment: "Implementation complete. The deterministic adversarial judgment phase has started.", implementationFast: "Implementation complete. The fast lane skips Judgment Day.", verdictRecorded: "Verdict recorded. Waiting for the other judge on the same diff.", humanReviewRequired: "The critical risk lane requires explicit human approval before finish. Re-run with humanApproved=true after review.", flowAborted: "The flow was aborted and its state was cleared." },
+  pt: { noActiveFlow: "Não há fluxo ativo. Execute `/flow` para começar.", lastFlow: "Último fluxo", startRejected: "Forneça ticketId ou um taskText não vazio.", implementationJudgment: "Implementação concluída. A fase de julgamento adversarial determinístico foi iniciada.", implementationFast: "Implementação concluída. A faixa rápida ignora o Dia do Julgamento.", verdictRecorded: "Veredito registrado. Aguardando o outro juiz no mesmo diff.", humanReviewRequired: "A faixa de risco crítico exige aprovação humana explícita antes da conclusão. Execute novamente com humanApproved=true após a revisão.", flowAborted: "O fluxo foi abortado e seu estado foi removido." },
+  ca: { noActiveFlow: "No hi ha cap flux actiu. Executa `/flow` per començar.", lastFlow: "Últim flux", startRejected: "Proporciona ticketId o un taskText no buit.", implementationJudgment: "Implementació completada. S'ha iniciat la fase de judici adversarial determinista.", implementationFast: "Implementació completada. El carril ràpid omet el Dia del Judici.", verdictRecorded: "Veredicte registrat. Esperant l'altre jutge sobre el mateix diff.", humanReviewRequired: "El carril de risc crític requereix aprovació humana explícita abans de finalitzar. Torna-ho a executar amb humanApproved=true després de la revisió.", flowAborted: "El flux s'ha avortat i se n'ha eliminat l'estat." },
+  fr: { noActiveFlow: "Aucun flux actif. Exécutez `/flow` pour commencer.", lastFlow: "Dernier flux", startRejected: "Fournissez ticketId ou un taskText non vide.", implementationJudgment: "Implémentation terminée. La phase de jugement contradictoire déterministe a commencé.", implementationFast: "Implémentation terminée. Le parcours rapide omet le Jour du Jugement.", verdictRecorded: "Verdict enregistré. En attente de l'autre juge sur le même diff.", humanReviewRequired: "Le niveau de risque critique exige une approbation humaine explicite avant la fin. Relancez avec humanApproved=true après la revue.", flowAborted: "Le flux a été interrompu et son état a été effacé." },
+} satisfies Record<UserLanguage, PluginMessages>;
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
@@ -88,7 +124,10 @@ export async function createMrOrchestrator(
   const workspace = detectWorkspace(registry, ctx.directory);
   const workspaceId = workspace?.id ?? "unknown";
   const workspaceRoot = workspace?.root ?? ctx.directory;
+  const persistedFlow = await loadFlowState(paths, workspaceId);
+  let outputLanguage = normalizeUserLanguage(persistedFlow?.userLanguage);
   const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string }>();
+  const atlasFreshness = new WeakMap<AtlasGraph, boolean>();
   let judgmentWriteQueue: Promise<void> = Promise.resolve();
   let usageWriteQueue: Promise<void> = Promise.resolve();
 
@@ -122,6 +161,13 @@ export async function createMrOrchestrator(
     return "pending";
   }
 
+  function effectiveLane(state: FlowState | undefined): RiskLane {
+    if (state?.lane !== undefined) return state.lane;
+    if (state === undefined || !("difficulty" in state)) return "full";
+    if (state.difficulty >= 5) return "full";
+    return "ticket" in state && state.ticket.ref.platform === "local" ? "fast" : "standard";
+  }
+
   function toolSessionID(context: { readonly sessionID: string } | undefined): string {
     return context?.sessionID ?? "external-client";
   }
@@ -130,17 +176,18 @@ export async function createMrOrchestrator(
     await withUsageWriteLock(async () => {
       const current = await loadFlowMetrics(paths, workspaceId);
       if (current === undefined || current.flowStartedAt !== state.startedAt) {
-        await startFlowMetrics(paths, workspaceId, flowTicketId(state), state.startedAt, sessionID);
+        await startFlowMetrics(paths, workspaceId, flowTicketId(state), state.startedAt, sessionID, state.userLanguage);
         return;
       }
-      await bindFlowSession(paths, workspaceId, sessionID);
+      await bindFlowSession(paths, workspaceId, sessionID, state.userLanguage);
     });
   }
 
   async function renderStatus(state: FlowState, sessionID: string, completed = false): Promise<string> {
+    outputLanguage = normalizeUserLanguage(state.userLanguage, outputLanguage);
     await ensureFlowUsage(state, sessionID);
     const metrics = await loadFlowMetrics(paths, workspaceId);
-    return renderFlowStatus(state, metrics === undefined ? undefined : summarizeFlowMetrics(metrics), { completed });
+    return renderFlowStatus(state, metrics === undefined ? undefined : summarizeFlowMetrics(metrics), { completed, language: outputLanguage });
   }
 
   async function ensureFlowState(): Promise<FlowState> {
@@ -148,23 +195,109 @@ export async function createMrOrchestrator(
     if (state === undefined) {
       throw new Error("No active flow. Run `/flow` to start.");
     }
+    outputLanguage = normalizeUserLanguage(state.userLanguage, outputLanguage);
     return state;
   }
 
   async function getOrIndexGraph(): Promise<AtlasGraph> {
-    const stamp = computeGitStamp(workspaceRoot);
-    const cached = await loadAtlasGraph(paths, workspaceId);
-    if (cached !== undefined && stamp !== undefined && cached.gitStamp === stamp) {
-      return cached;
+    const result = await getOrIndexAtlas(paths, workspaceId, workspaceRoot);
+    atlasFreshness.set(result.graph, result.fresh);
+    return result.graph;
+  }
+
+  async function getTaskEvidenceFreshness(
+    task: SddTask,
+    store: EvidenceStore,
+    graph: AtlasGraph,
+  ): Promise<ReadonlyMap<string, FreshnessResult>> {
+    return new Map(await Promise.all(task.evidenceRefs.map(async (refId) => {
+      const ref = store.refs.find((candidate) => candidate.id === refId);
+      const freshness: FreshnessResult = ref === undefined
+        ? { status: "stale", reason: "file-missing" }
+        : await checkEvidenceFreshness(workspaceRoot, ref, graph);
+      return [refId, freshness] as const;
+    })));
+  }
+
+  function withCoverage(graph: AtlasGraph, output: string, files?: readonly string[]): string {
+    return `${output}\n\n${renderCoverageReceipt(graph, atlasFreshness.get(graph) ?? false, files === undefined ? {} : { files }, outputLanguage)}`;
+  }
+
+  async function hydrateFor(role: HydrationRole, taskId?: string, budgetChars?: number, sessionID?: string): Promise<string> {
+    const research = await loadResearch(paths, workspaceId);
+    if (research === undefined) throw new Error("No research capsule found.");
+    const store = await loadEvidenceStore(paths, workspaceId, research.ticketId);
+    if (store === undefined) throw new Error("No EvidenceStore found for the active research capsule.");
+    const [graph, spec, tasks, flow] = await Promise.all([getOrIndexGraph(), loadSpec(paths, workspaceId), loadTasks(paths, workspaceId), loadFlowState(paths, workspaceId)]);
+    if (flow !== undefined) {
+      outputLanguage = normalizeUserLanguage(flow.userLanguage, outputLanguage);
+      await ensureFlowUsage(flow, sessionID ?? "external-client");
     }
-    if (cached !== undefined && stamp === undefined) {
-      // No git context: keep cache (legacy behavior)
-      return cached;
+    const lane = effectiveLane(flow);
+    const workspaceRules = workspace === undefined ? undefined : await loadWorkspaceRules(workspace);
+    const task = taskId === undefined ? undefined : tasks?.tasks.find((candidate) => candidate.id === taskId);
+    const firstPath = task?.files[0]?.path;
+    const repo = firstPath?.startsWith("repos/") === true ? firstPath.split("/")[1] : workspace?.name;
+    let findings;
+    if (role === "fix") {
+      const verdictDir = join(paths.generatedRoot, workspaceId);
+      const [verdictA, verdictB] = await Promise.all([
+        readFile(join(verdictDir, "verdict-a.json"), "utf8").then((content) => JudgeVerdictSchema.parse(JSON.parse(content) as unknown)).catch(() => undefined),
+        readFile(join(verdictDir, "verdict-b.json"), "utf8").then((content) => JudgeVerdictSchema.parse(JSON.parse(content) as unknown)).catch(() => undefined),
+      ]);
+      if (verdictA !== undefined && verdictB !== undefined) findings = mergeVerdicts(verdictA, verdictB).findings;
     }
-    const indexer = new AtlasIndexer();
-    const graph = await indexer.indexWorkspace(workspaceRoot);
-    await saveAtlasGraph(paths, workspaceId, graph);
-    return graph;
+    const bundle = await hydrateContext({
+      role, lane, ticketId: research.ticketId, research, store, graph,
+      readSlice: (ref) => readEvidenceSlice(paths, workspaceId, research.ticketId, ref),
+      checkFreshness: (ref) => checkEvidenceFreshness(workspaceRoot, ref, graph),
+      ...(spec === undefined ? {} : { spec }),
+      ...(tasks === undefined ? {} : { tasks }),
+      ...(taskId === undefined ? {} : { taskId }),
+      ...(budgetChars === undefined ? {} : { budgetChars }),
+      ...(workspaceRules === undefined ? {} : { rules: rulesDigest(workspaceRules, repo, task?.files.map((file) => file.path) ?? []) }),
+      ...(findings === undefined ? {} : { findings }),
+      ...(role !== "fix" ? {} : {
+        readLiveRange: async (file: string, startLine: number, endLine: number) => {
+          try {
+            const content = await readFile(join(workspaceRoot, file), "utf8");
+            return content.split(/\r?\n/u).slice(startLine - 1, endLine).join("\n");
+          } catch {
+            return undefined;
+          }
+        },
+      }),
+    });
+    if (flow !== undefined && flow.phase !== "finish") {
+      await withUsageWriteLock(async () => recordContextHydration(paths, workspaceId, {
+        role,
+        lane,
+        requestedChars: bundle.budget.requestedChars,
+        usedChars: bundle.budget.usedChars,
+        truncated: bundle.budget.truncated.length,
+        ...(taskId === undefined ? {} : { taskId }),
+      }));
+    }
+    return serializeBundle(bundle);
+  }
+
+  async function rulesGateForCurrentDiff(): Promise<GateResult> {
+    if (workspace === undefined) return { ok: true, violations: [] };
+    const rules = await loadWorkspaceRules(workspace);
+    if (rules === undefined) return { ok: true, violations: [] };
+    const changed = await Promise.all(getGitDiffFiles(workspaceRoot).map(async (file) => {
+      if (file.action === "delete") return file;
+      const content = await readFile(join(workspaceRoot, file.path), "utf8").catch(() => undefined);
+      return content === undefined ? file : { ...file, content };
+    }));
+    const violations = rules.repositories.flatMap((repository) => {
+      const scoped = changed.filter((file) => {
+        const nested = /^(?:repos|apps|packages)\/([^/]+)\//u.exec(file.path)?.[1];
+        return nested === undefined ? repository.repo === workspace.name : nested === repository.repo;
+      });
+      return gateRepositoryRules(repository.rules, scoped).violations;
+    });
+    return { ok: !violations.some((violation) => violation.severity === "block"), violations };
   }
 
   async function writeSddMarkdown(kind: Exclude<SddKind, "brief">, ticketId: string, markdown: string): Promise<string> {
@@ -190,6 +323,7 @@ export async function createMrOrchestrator(
       if (event.type === "message.updated") {
         const info = event.properties.info;
         if (info.role === "assistant") {
+          const assignment = sessionModels.get(info.sessionID);
           await withUsageWriteLock(async () => recordFlowAssistantUsage(paths, workspaceId, {
             id: info.id,
             sessionID: info.sessionID,
@@ -197,6 +331,7 @@ export async function createMrOrchestrator(
             modelID: info.modelID,
             cost: info.cost,
             tokens: info.tokens,
+            ...(assignment === undefined ? {} : { role: assignment.role }),
           }));
         }
         return;
@@ -247,19 +382,22 @@ export async function createMrOrchestrator(
           const state = await loadFlowState(paths, workspaceId);
           if (state === undefined) {
             const metrics = await loadFlowMetrics(paths, workspaceId);
-            const lastUsage = metrics === undefined ? "" : `\n\nÚltimo flujo (${metrics.ticketId}, ${metrics.status}):\n${renderFlowUsage(summarizeFlowMetrics(metrics))}`;
-            return { title: "Flow Status", output: `No active flow. Run \`/flow\` to start.${lastUsage}` };
+            outputLanguage = normalizeUserLanguage(metrics?.userLanguage, outputLanguage);
+            const m = PLUGIN_MESSAGES[outputLanguage];
+            const lastUsage = metrics === undefined ? "" : `\n\n${m.lastFlow} (${metrics.ticketId}, ${metrics.status}):\n${renderFlowUsage(summarizeFlowMetrics(metrics), outputLanguage)}`;
+            return { title: "Flow Status", output: `${m.noActiveFlow}${lastUsage}` };
           }
           return { title: "Flow Status", output: await renderStatus(state, toolSessionID(context)) };
         },
       }),
 
       mr_flow_start: tool({
-        description: "Start a new mr-orchestrator flow",
+        description: "Start a new mr-orchestrator flow. Without ticketId, taskText creates a synthetic LOCAL-* ticket and advances directly to exploration.",
         args: {
-          difficulty: tool.schema.number().describe("Dificultad de la tarea (Fibonacci: 1, 3, 5, 8, 13, 21). 1-3 = Lite, >=5 = Full."),
-          ticketId: tool.schema.string().describe("Identificador del ticket (ej: GH-42, 123)"),
-          hasFigma: tool.schema.boolean().optional().describe("Indica si existe diseño en Figma para la tarea"),
+          difficulty: tool.schema.number().describe("Task difficulty (Fibonacci: 1, 3, 5, 8, 13, 21). This is an initial signal; plan risk can promote the lane."),
+          ticketId: tool.schema.string().optional().describe("Ticket identifier (for example GH-42 or 123). Omit for a local task."),
+          taskText: tool.schema.string().optional().describe("Original task text when no external ticket exists"),
+          hasFigma: tool.schema.boolean().optional().describe("Whether a Figma design exists for the task"),
         },
         execute: async (args, context) => {
           const rawDifficulty = args.difficulty;
@@ -267,17 +405,34 @@ export async function createMrOrchestrator(
           const difficulty = validDifficulties.includes(rawDifficulty as 1 | 3 | 5 | 8 | 13 | 21)
             ? (rawDifficulty as 1 | 3 | 5 | 8 | 13 | 21)
             : 3;
-          const ticketId = args.ticketId;
+          if (args.ticketId === undefined && (args.taskText === undefined || args.taskText.trim() === "")) {
+            return { title: "Flow Start Rejected", output: PLUGIN_MESSAGES[outputLanguage].startRejected };
+          }
+          const ticketId = args.ticketId ?? await nextLocalTicketId(paths, workspaceId);
           const hasFigma = args.hasFigma ?? false;
+          const userLanguage = detectLanguage(args.taskText ?? "");
+          outputLanguage = userLanguage;
           const event: FlowEvent = {
             type: "wizard_complete",
             difficulty,
             ticketId,
             hasFigma,
+            userLanguage,
           };
-          const state = await applyEvent(paths, workspaceId, event);
+          let state = await applyEvent(paths, workspaceId, event);
+          if (args.ticketId === undefined) {
+            const ticket = await createTicketAdapter("local", args.taskText).fetch({ schemaVersion: 1, platform: "local", id: ticketId });
+            const branchKind = ticket.type === "bugfix" || ticket.type === "hotfix" ? ticket.type : "feature";
+            state = await applyEvent(paths, workspaceId, {
+              type: "context_ready",
+              ticket,
+              branch: `${branchKind}/${ticketId.toLowerCase()}`,
+              baseBranch: "develop",
+              userLanguage,
+            });
+          }
           const sessionID = toolSessionID(context);
-          await withUsageWriteLock(async () => startFlowMetrics(paths, workspaceId, ticketId, state.startedAt, sessionID));
+          await withUsageWriteLock(async () => startFlowMetrics(paths, workspaceId, ticketId, state.startedAt, sessionID, state.userLanguage));
           return { title: "Flow Started", output: await renderStatus(state, sessionID) };
         },
       }),
@@ -285,12 +440,12 @@ export async function createMrOrchestrator(
       mr_flow_ticket: tool({
         description: "Load ticket content into the flow",
         args: {
-          title: tool.schema.string().describe("Título del ticket"),
-          description: tool.schema.string().describe("Descripción del ticket"),
-          type: tool.schema.enum(["feature", "bugfix", "hotfix", "release", "chore"]).optional().describe("Tipo de ticket"),
-          platform: tool.schema.enum(["github", "jira", "gitlab"]).optional().describe("Plataforma de tickets"),
-          branch: tool.schema.string().optional().describe("Rama git calculada"),
-          baseBranch: tool.schema.string().optional().describe("Rama base (develop o main)"),
+          title: tool.schema.string().describe("Ticket title"),
+          description: tool.schema.string().describe("Ticket description"),
+          type: tool.schema.enum(["feature", "bugfix", "hotfix", "release", "chore"]).optional().describe("Ticket type"),
+          platform: tool.schema.enum(["github", "jira", "gitlab", "local"]).optional().describe("Ticket platform"),
+          branch: tool.schema.string().optional().describe("Calculated git branch"),
+          baseBranch: tool.schema.string().optional().describe("Base branch (develop or main)"),
         },
         execute: async (args, context) => {
           const state = await ensureFlowState();
@@ -314,9 +469,11 @@ export async function createMrOrchestrator(
               type,
               attachments: [],
               fetchedAt: new Date().toISOString(),
+              source: platform === "local" ? "user" : "remote",
             },
             branch,
             baseBranch,
+            userLanguage: detectLanguage(`${title}\n${description}`, state.userLanguage),
           };
           const next = await applyEvent(paths, workspaceId, event);
           return { title: "Ticket Loaded", output: await renderStatus(next, toolSessionID(context)) };
@@ -326,23 +483,23 @@ export async function createMrOrchestrator(
       mr_flow_plan: tool({
         description: "Submit an implementation plan for approval",
         args: {
-          summary: tool.schema.string().describe("Resumen ejecutivo del plan de implementación"),
-          rootCause: tool.schema.string().optional().describe("Causa raíz identificada (para bugs)"),
+          summary: tool.schema.string().describe("Executive summary of the implementation plan"),
+          rootCause: tool.schema.string().optional().describe("Identified root cause for a bug"),
           files: tool.schema.array(
             tool.schema.object({
-              path: tool.schema.string().describe("Ruta del archivo"),
-              action: tool.schema.enum(["create", "modify", "delete", "rename"]).describe("Acción a realizar"),
-              reason: tool.schema.string().describe("Motivo del cambio"),
-              risk: tool.schema.enum(["low", "medium", "high"]).optional().describe("Nivel de riesgo"),
+              path: tool.schema.string().describe("File path"),
+              action: tool.schema.enum(["create", "modify", "delete", "rename"]).describe("Action to perform"),
+              reason: tool.schema.string().describe("Reason for the change"),
+              risk: tool.schema.enum(["low", "medium", "high"]).optional().describe("Risk level"),
             }),
-          ).describe("Archivos afectados por el plan"),
+          ).describe("Files affected by the plan"),
           tests: tool.schema.array(
             tool.schema.object({
-              path: tool.schema.string().describe("Ruta del test"),
-              type: tool.schema.enum(["unit", "integration", "e2e"]).describe("Tipo de test"),
-              description: tool.schema.string().describe("Descripción del test"),
+              path: tool.schema.string().describe("Test path"),
+              type: tool.schema.enum(["unit", "integration", "e2e"]).describe("Test type"),
+              description: tool.schema.string().describe("Test description"),
             }),
-          ).optional().describe("Tests planificados"),
+          ).optional().describe("Planned tests"),
         },
         execute: async (args, context) => {
           const state = await ensureFlowState();
@@ -359,17 +516,39 @@ export async function createMrOrchestrator(
             verification: { typecheck: true, lint: true, test: true, build: false },
             createdAt: new Date().toISOString(),
           };
-          const event: FlowEvent = { type: "plan_approved", plan };
+          const [research, graph, workspaceRules] = await Promise.all([
+            loadResearch(paths, workspaceId),
+            getOrIndexGraph(),
+            workspace === undefined ? Promise.resolve(undefined) : loadWorkspaceRules(workspace),
+          ]);
+          const evidenceStore = research === undefined ? undefined : await loadEvidenceStore(paths, workspaceId, research.ticketId);
+          const relevantRefs = evidenceStore?.refs.filter((ref) => research?.evidenceRefs.includes(ref.id)) ?? [];
+          const evidenceFreshness = await Promise.all(relevantRefs.map(async (ref) => checkEvidenceFreshness(workspaceRoot, ref, graph)));
+          const plannedPaths = plan.files.map((file) => file.path);
+          const targetNodes = graph.nodes.filter((node) => plannedPaths.includes(node.filePath));
+          const impacted = new Set(targetNodes.flatMap((node) => getImpactAnalysis(graph, node.id, 2).map((candidate) => candidate.id)));
+          const criticalAreas = workspaceRules?.repositories.flatMap((repository) => repository.rules
+            .filter((rule) => rule.id === "risk.critical-area")
+            .map((rule) => rule.value));
+          const risk = assessRiskLane({
+            difficulty: state.difficulty,
+            evidence: { count: relevantRefs.length, fresh: evidenceFreshness.every((freshness) => freshness.status === "fresh") },
+            atlasImpact: impacted.size,
+            touchedAreas: plannedPaths,
+            touchedFiles: plannedPaths,
+            ...(criticalAreas === undefined ? {} : { rules: { criticalAreas } }),
+          });
+          const event: FlowEvent = { type: "plan_approved", plan, lane: risk.lane, riskReasons: [...risk.reasons] };
           const next = await applyEvent(paths, workspaceId, event);
           const tasks = await loadTasks(paths, workspaceId);
-          return { title: "Plan Approved", output: `${renderPlanExplanation(plan, tasks?.tasks.length)}\n\n${await renderStatus(next, toolSessionID(context))}` };
+          return { title: "Plan Approved", output: `${renderPlanExplanation(plan, tasks?.tasks.length, normalizeUserLanguage(next.userLanguage))}\n\n${await renderStatus(next, toolSessionID(context))}` };
         },
       }),
 
       mr_flow_implement: tool({
         description: "Mark implementation as complete",
         args: {
-          completedFiles: tool.schema.array(tool.schema.string()).describe("Lista de rutas de archivos modificados o creados"),
+          completedFiles: tool.schema.array(tool.schema.string()).describe("Paths of modified or created files"),
         },
         execute: async (args, context) => {
           const state = await ensureFlowState();
@@ -377,13 +556,15 @@ export async function createMrOrchestrator(
             throw new Error(`Fail-Closed Error: Cannot complete implementation in phase ${state.phase}. Expected 'implement'.`);
           }
 
-          // Scope Boundary Enforcement:
-          // Stage untracked files with intent-to-add so new files appear in git diff
-          runCommand("git", ["-C", workspaceRoot, "add", "-N", "."]);
-          const gitFilesRes = runCommand("git", ["-C", workspaceRoot, "diff", "--name-only", "HEAD"]);
-          const actualModified = gitFilesRes.ok && gitFilesRes.stdout.trim().length > 0
-            ? gitFilesRes.stdout.trim().split("\n").map((f) => f.trim()).filter(Boolean)
-            : [];
+          // Scope Boundary Enforcement. Generated SDD renderings are excluded by
+          // getGitDiffNames because they are receipts, not implementation changes.
+          const actualModified = getGitDiffNames(workspaceRoot);
+
+          const taskGraph = await loadTasks(paths, workspaceId);
+          const unresolvedTasks = taskGraph?.tasks.filter((task) => task.status !== "done") ?? [];
+          if (unresolvedTasks.length > 0) {
+            throw new Error(`SDD Gate Violation: Complete and verify tasks before implementation handoff: ${unresolvedTasks.map((task) => task.id).join(", ")}`);
+          }
 
           const allowedFiles = new Set((state.plan.files ?? []).map((f) => f.path.trim()));
           for (const actualFile of actualModified) {
@@ -392,6 +573,19 @@ export async function createMrOrchestrator(
                 `Scope Boundary Violation: File '${actualFile}' was modified but is NOT declared in plan.files. Unauthorized mutations are blocked.`
               );
             }
+          }
+
+          const atlasResult = await getOrIndexAtlas(paths, workspaceId, workspaceRoot);
+          atlasFreshness.set(atlasResult.graph, atlasResult.fresh);
+          const judgmentGate = gateBeforeJudgment({
+            changed: actualModified.some((file) => atlasResult.graph.files.some((record) => record.path === file)),
+            // A fresh cached graph already contains the current delta. `reindexed`
+            // records whether this call rebuilt it, not whether the delta is indexed.
+            reindexed: atlasResult.reindexed || atlasResult.fresh,
+            coverageFresh: true,
+          });
+          if (shouldBlockGate(judgmentGate)) {
+            throw new Error(`Judgment Gate Violation:\n${renderGateResult(judgmentGate)}`);
           }
 
           // Structural AST Analysis (Pillar 6): Validate syntax of all modified source files via Tree-sitter
@@ -413,7 +607,7 @@ export async function createMrOrchestrator(
           }
 
           const completedFiles = args.completedFiles ?? [];
-          const diffHash = requiresJudgment(state.difficulty) ? await getDiffHash(workspaceRoot) : undefined;
+          const diffHash = requiresJudgment(state.lane ?? state.difficulty) ? await getDiffHash(workspaceRoot) : undefined;
           if (diffHash !== undefined) {
             const verdictDir = join(paths.generatedRoot, workspaceId);
             await Promise.all([
@@ -427,19 +621,20 @@ export async function createMrOrchestrator(
             ...(diffHash === undefined ? {} : { diffHash }),
           };
           const next = await applyEvent(paths, workspaceId, event);
+          const gateWarnings = judgmentGate.violations.length === 0 ? "" : `\n\nAtlas gate (${gatesMode()}):\n${renderGateResult(judgmentGate)}`;
           if (next.phase === "judgment") {
-            return { title: "Judgment Required", output: `Implementation complete. Deterministic adversarial judgment phase initiated.\n\n${await renderStatus(next, toolSessionID(context))}` };
+            return { title: "Judgment Required", output: `${PLUGIN_MESSAGES[outputLanguage].implementationJudgment}${gateWarnings}\n\n${await renderStatus(next, toolSessionID(context))}` };
           }
-          return { title: "Implementation Complete", output: `Implementation complete. Lite flow skips Judgment Day.\n\n${await renderStatus(next, toolSessionID(context))}` };
+          return { title: "Implementation Complete", output: `${PLUGIN_MESSAGES[outputLanguage].implementationFast}\n\n${await renderStatus(next, toolSessionID(context))}` };
         },
       }),
 
       mr_flow_judge: tool({
         description: "Submit an evidence-backed judge verdict for the current diff. Findings are rejected unless their file, diff side, line, and exact snippet are mechanically verified.",
         args: {
-          judge: tool.schema.enum(["a", "b"]).describe("Identificador del juez revisor ('a' o 'b')"),
-          status: tool.schema.enum(["SUPPORTED", "INSUFFICIENT_EVIDENCE"]).describe("SUPPORTED para un veredicto respaldado; INSUFFICIENT_EVIDENCE para detenerse sin adivinar"),
-          approved: tool.schema.boolean().describe("Si el juez aprueba los cambios sin objeciones críticas"),
+          judge: tool.schema.enum(["a", "b"]).describe("Review judge identifier ('a' or 'b')"),
+          status: tool.schema.enum(["SUPPORTED", "INSUFFICIENT_EVIDENCE"]).describe("SUPPORTED for an evidence-backed verdict; INSUFFICIENT_EVIDENCE to stop rather than guess"),
+          approved: tool.schema.boolean().describe("Whether the judge approves the changes without critical objections"),
           findings: tool.schema.array(tool.schema.object({
             severity: tool.schema.enum(["critical", "warning", "suggestion"]),
             claim: tool.schema.string(),
@@ -449,9 +644,9 @@ export async function createMrOrchestrator(
             source: tool.schema.literal("diff"),
             evidence: tool.schema.string(),
             requirementId: tool.schema.string().optional(),
-          })).describe("Hallazgos estructurados; cada uno debe citar una línea visible del lado new u old del diff"),
-          missing: tool.schema.array(tool.schema.string()).optional().describe("Evidencia específica ausente cuando status=INSUFFICIENT_EVIDENCE"),
-          nextAction: tool.schema.string().optional().describe("Acción mínima para obtener la evidencia ausente"),
+          })).describe("Structured findings; each must cite a visible new- or old-side diff line"),
+          missing: tool.schema.array(tool.schema.string()).optional().describe("Specific missing evidence when status=INSUFFICIENT_EVIDENCE"),
+          nextAction: tool.schema.string().optional().describe("Minimum action needed to obtain the missing evidence"),
         },
         execute: async (args, _context) => {
           const state = await ensureFlowState();
@@ -545,7 +740,7 @@ export async function createMrOrchestrator(
             ]);
 
             if (verdictA === null || verdictB === null || verdictA.diffHash !== state.diffHash || verdictB.diffHash !== state.diffHash) {
-              return { title: "Verdict Recorded", output: `Judge ${args.judge} verdict recorded for ${state.diffHash}. Waiting for the other judge on the same diff.` };
+              return { title: "Verdict Recorded", output: `${PLUGIN_MESSAGES[outputLanguage].verdictRecorded} (${args.judge}; ${state.diffHash})` };
             }
 
             const merged = mergeVerdicts(verdictA, verdictB);
@@ -554,7 +749,7 @@ export async function createMrOrchestrator(
               : { type: "judgment_failed", verdict: { critical: merged.critical, warnings: merged.warnings, suggestions: merged.suggestions } };
             const next = await applyEvent(paths, workspaceId, event);
 
-            return { title: "Judgment Complete", output: `${renderVerdict(merged)}\n\n${await renderStatus(next, toolSessionID(_context))}` };
+            return { title: "Judgment Complete", output: `${renderVerdict(merged, normalizeUserLanguage(next.userLanguage))}\n\n${await renderStatus(next, toolSessionID(_context))}` };
           });
         },
       }),
@@ -585,13 +780,17 @@ export async function createMrOrchestrator(
       mr_flow_finish: tool({
         description: "Finish the flow with commit and optional PR",
         args: {
-          commitHash: tool.schema.string().optional().describe("Hash del commit generado"),
-          prUrl: tool.schema.string().optional().describe("URL de la Pull Request creada"),
+          commitHash: tool.schema.string().optional().describe("Generated commit hash"),
+          prUrl: tool.schema.string().optional().describe("Created pull request URL"),
+          humanApproved: tool.schema.boolean().optional().describe("Mandatory human confirmation for the critical lane"),
         },
         execute: async (args, context) => {
           const state = await ensureFlowState();
           if (state.phase !== "finish") {
             return { title: "Error", output: `Cannot finish in phase ${state.phase}. Expected 'finish'.` };
+          }
+          if (state.lane === "critical" && args.humanApproved !== true) {
+            return { title: "Human Review Required", output: PLUGIN_MESSAGES[outputLanguage].humanReviewRequired };
           }
 
           // Fail-closed CAS verification:
@@ -606,7 +805,7 @@ export async function createMrOrchestrator(
 
           const commitHash = args.commitHash;
           const prUrl = args.prUrl;
-          const event: FlowEvent = { type: "finish_confirmed", commitHash, prUrl };
+          const event: FlowEvent = { type: "finish_confirmed", commitHash, prUrl, humanApproved: args.humanApproved };
           const next = await applyEvent(paths, workspaceId, event);
           await withUsageWriteLock(async () => finalizeFlowMetrics(paths, workspaceId, "completed"));
           const output = await renderStatus(next, toolSessionID(context), true);
@@ -625,8 +824,8 @@ export async function createMrOrchestrator(
           await ensureFlowUsage(_next, toolSessionID(context));
           const metrics = await withUsageWriteLock(async () => finalizeFlowMetrics(paths, workspaceId, "aborted"));
           await clearFlowState(paths, workspaceId);
-          const usage = metrics === undefined ? "" : `\n${renderFlowUsage(summarizeFlowMetrics(metrics))}`;
-          return { title: "Flow Aborted", output: `Flow has been aborted and state cleared.${usage}` };
+          const usage = metrics === undefined ? "" : `\n${renderFlowUsage(summarizeFlowMetrics(metrics), outputLanguage)}`;
+          return { title: "Flow Aborted", output: `${PLUGIN_MESSAGES[outputLanguage].flowAborted}${usage}` };
         },
       }),
 
@@ -636,7 +835,7 @@ export async function createMrOrchestrator(
           action: tool.schema.enum(["status", "providers", "models", "candidates", "set"]).optional()
             .describe("status=current roster, providers=available providers, models=models for provider, candidates=alternatives for a role, set=save role/model"),
           category: tool.schema.enum(["flow", "blueprint"]).optional()
-            .describe("Filtrar por categoría de proceso: flow (8 steps) o blueprint (3 steps)"),
+            .describe("Filter by process category: flow (8 steps) or blueprint (3 steps)"),
           role: tool.schema.enum([
             "orchestrator",
             "explore",
@@ -739,41 +938,45 @@ export async function createMrOrchestrator(
       mr_blueprint_save: tool({
         description: "Validate and save a Blueprint SDD + RPI specification to .blueprint/specs/ in the active workspace and generate executive summary",
         args: {
-          slug: tool.schema.string().describe("Identificador kebab-case de la especificación (ej: user-feed, auth-flow)"),
-          title: tool.schema.string().describe("Título descriptivo de la especificación"),
-          mode: tool.schema.enum(["idea", "ticket"]).describe("Modo del blueprint: idea o ticket"),
-          overview: tool.schema.string().describe("Resumen ejecutivo de la propuesta"),
-          requestIntent: tool.schema.string().describe("Intención y objetivos centrales del requerimiento"),
-          transversalImpact: tool.schema.array(tool.schema.string()).optional().describe("Puntos de impacto transversal"),
-          assumedInferences: tool.schema.array(tool.schema.string()).optional().describe("Supuestos e inferencias asumidas no respondidas"),
+          slug: tool.schema.string().describe("Kebab-case specification identifier (for example user-feed or auth-flow)"),
+          title: tool.schema.string().describe("Descriptive specification title"),
+          mode: tool.schema.enum(["idea", "ticket"]).describe("Blueprint mode: idea or ticket"),
+          userLanguage: tool.schema.enum(["es", "en", "pt", "ca", "fr"]).optional().describe("Language of the user's initial request"),
+          overview: tool.schema.string().describe("Executive proposal summary"),
+          requestIntent: tool.schema.string().describe("Core request intent and objectives"),
+          transversalImpact: tool.schema.array(tool.schema.string()).optional().describe("Cross-cutting impact points"),
+          assumedInferences: tool.schema.array(tool.schema.string()).optional().describe("Accepted assumptions and unanswered inferences"),
           entities: tool.schema.array(tool.schema.object({
             name: tool.schema.string(),
             description: tool.schema.string(),
             fields: tool.schema.record(tool.schema.string(), tool.schema.string()).optional(),
-          })).optional().describe("Entidades core del SDD"),
-          invariants: tool.schema.array(tool.schema.string()).optional().describe("Invariantes y reglas de negocio no negociables"),
+          })).optional().describe("Core SDD entities"),
+          invariants: tool.schema.array(tool.schema.string()).optional().describe("Non-negotiable invariants and business rules"),
           contracts: tool.schema.array(tool.schema.object({
             endpointOrFunction: tool.schema.string(),
             input: tool.schema.string(),
             output: tool.schema.string(),
             errorCases: tool.schema.array(tool.schema.string()).optional(),
-          })).optional().describe("Contratos de datos o interfaces"),
-          testConditions: tool.schema.array(tool.schema.string()).optional().describe("Criterios de verificación y condiciones de test"),
+          })).optional().describe("Data or interface contracts"),
+          testConditions: tool.schema.array(tool.schema.string()).optional().describe("Verification criteria and test conditions"),
           tasks: tool.schema.array(tool.schema.object({
             id: tool.schema.string(),
             title: tool.schema.string(),
             description: tool.schema.string(),
             labels: tool.schema.array(tool.schema.string()).optional(),
             priority: tool.schema.enum(["high", "medium", "low"]).optional(),
-          })).optional().describe("Tareas atómicas para ejecución"),
+          })).optional().describe("Atomic execution tasks"),
         },
         execute: async (args, _context) => {
           const now = new Date().toISOString();
+          const userLanguage = args.userLanguage ?? detectLanguage(`${args.title}\n${args.overview}\n${args.requestIntent}`, outputLanguage);
+          outputLanguage = userLanguage;
           const parsed = BlueprintSpecSchema.parse({
             schemaVersion: 1,
             slug: args.slug,
             title: args.title,
             mode: args.mode,
+            userLanguage,
             overview: args.overview,
             sdd: {
               entities: args.entities ?? [],
@@ -791,10 +994,11 @@ export async function createMrOrchestrator(
           });
 
           const saved = await saveBlueprintSpec(workspaceRoot, parsed);
-          const summary = renderBlueprintExecutiveSummary(parsed);
+          const summary = renderBlueprintExecutiveSummary(parsed, userLanguage);
+          const blueprintMessages = messagesFor(userLanguage).blueprint;
           return {
             title: "Blueprint Saved",
-            output: `${summary}\n\nArtefactos guardados:\n- ${saved.markdownPath}\n- ${saved.jsonPath}`,
+            output: `${summary}\n\n${blueprintMessages.artifactsSaved}:\n- ${saved.markdownPath}\n- ${saved.jsonPath}`,
           };
         },
       }),
@@ -802,11 +1006,12 @@ export async function createMrOrchestrator(
       mr_blueprint_safety_gate: tool({
         description: "Format a structured Safety Gate confirmation diff before any GitHub mutation and generate authorization ticket",
         args: {
-          action: tool.schema.enum(["create", "update", "delete"]).describe("Acción de mutación prevista"),
-          repo: tool.schema.string().describe("Repositorio de destino (owner/name)"),
-          title: tool.schema.string().describe("Título del issue o ticket a mutar"),
-          id: tool.schema.string().optional().describe("ID o número de issue si existe"),
-          fields: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Campos o cambios proyectados"),
+          action: tool.schema.enum(["create", "update", "delete"]).describe("Intended mutation action"),
+          repo: tool.schema.string().describe("Target repository (owner/name)"),
+          title: tool.schema.string().describe("Issue or ticket title to mutate"),
+          id: tool.schema.string().optional().describe("Existing issue ID or number"),
+          fields: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Projected fields or changes"),
+          userLanguage: tool.schema.enum(["es", "en", "pt", "ca", "fr"]).optional().describe("Language for the user-facing safety preview"),
         },
         execute: async (args, _context) => {
           const mutation = BlueprintMutationSchema.parse({
@@ -818,10 +1023,12 @@ export async function createMrOrchestrator(
               fields: args.fields ?? {},
             },
           });
+          const userLanguage = args.userLanguage ?? detectLanguage(args.title, outputLanguage);
+          outputLanguage = userLanguage;
           const safetyTicket = sha256(JSON.stringify(mutation));
           return {
             title: "Safety Gate",
-            output: `${renderSafetyGateDiff(mutation)}\n\nSafety Gate Ticket (required for mutation): ${safetyTicket}`,
+            output: `${renderSafetyGateDiff(mutation, userLanguage)}\n\n${messagesFor(userLanguage).blueprint.safetyTicket}: ${safetyTicket}`,
           };
         },
       }),
@@ -829,9 +1036,9 @@ export async function createMrOrchestrator(
       mr_blueprint_graphql: tool({
         description: "Execute a GitHub GraphQL query or mutation using GITHUB_PERSONAL_ACCESS_TOKEN",
         args: {
-          query: tool.schema.string().describe("Consulta o mutación GraphQL"),
-          variables: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Variables para la consulta"),
-          safetyGateTicket: tool.schema.string().optional().describe("Ticket de autorización emitido por mr_blueprint_safety_gate (obligatorio para mutaciones)"),
+          query: tool.schema.string().describe("GraphQL query or mutation"),
+          variables: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Query variables"),
+          safetyGateTicket: tool.schema.string().optional().describe("Authorization ticket emitted by mr_blueprint_safety_gate; required for mutations"),
         },
         execute: async (args, _context) => {
           const token = process.env["GITHUB_PERSONAL_ACCESS_TOKEN"] ?? "";
@@ -874,9 +1081,9 @@ export async function createMrOrchestrator(
       // ─── Atlas Tools ───────────────────────────────────────────────────────
 
       mr_atlas_index: tool({
-        description: "Index workspace source (TS/TSX/Java) and configuration (JSON/YML/YAML) into the Atlas graph",
+        description: "Index workspace source (TS/TSX/JS/PHP/Java/CSS/SCSS/Astro) and configuration (JSON/YML/YAML) into the Atlas graph",
         args: {
-          includePatterns: tool.schema.array(tool.schema.string()).optional().describe("Patrones glob a incluir (por defecto código y configs en src/** y repos/**)"),
+          includePatterns: tool.schema.array(tool.schema.string()).optional().describe("Glob patterns to include; defaults cover source and configuration under src/** and repos/**"),
         },
         execute: async (args, _context) => {
           const indexer = new AtlasIndexer();
@@ -902,37 +1109,60 @@ export async function createMrOrchestrator(
             `- Types/Interfaces: ${graph.nodes.filter((n) => n.kind === "type" || n.kind === "interface").length}`,
             `- Modules: ${graph.nodes.filter((n) => n.kind === "module").length}`,
           ].join("\n");
-          return { title: "Atlas Index", output: summary };
+          return { title: "Atlas Index", output: withCoverage(graph, summary) };
+        },
+      }),
+
+      mr_atlas_profile: tool({
+        description: "Read generated repository profiles and applicable baseline rules for flow or blueprint context",
+        args: {
+          repo: tool.schema.string().optional().describe("Repository name; omit for all repositories"),
+          files: tool.schema.array(tool.schema.string()).optional().describe("Target files used to filter appliesTo rules"),
+        },
+        execute: async (args, _context) => {
+          if (workspace === undefined) return { title: "Atlas Profile", output: "No registered workspace profile is available." };
+          const [profiles, rules] = await Promise.all([loadRepositoryProfiles(workspace), loadWorkspaceRules(workspace)]);
+          if (profiles === undefined) return { title: "Atlas Profile", output: "No Atlas repository profile found. Run `mr atlas init`." };
+          const selected = args.repo === undefined ? profiles : profiles.filter((profile) => profile.repo === args.repo);
+          const digest = rules === undefined ? [] : rulesDigest(rules, args.repo, args.files ?? []);
+          return { title: "Atlas Profile", output: canonicalJson({ profiles: selected, rules: digest }).trimEnd() };
         },
       }),
 
       mr_atlas_query: tool({
         description: "Query Atlas graph for node details, dependencies, dependents, impact analysis, or governance checks",
         args: {
-          nodeName: tool.schema.string().optional().describe("Nombre del componente, hook, función o módulo a buscar"),
-          kind: tool.schema.enum(["component", "hook", "util", "service", "type", "constant", "function", "class", "interface", "module"]).optional().describe("Filtrar por tipo de nodo"),
-          action: tool.schema.enum(["info", "deps", "dependents", "impact", "governance"]).optional().describe("Acción de consulta: 'info', 'deps', 'dependents', 'impact', 'governance'"),
-          depth: tool.schema.number().optional().describe("Profundidad para análisis de impacto (por defecto 2)"),
-          filePath: tool.schema.string().optional().describe("Ruta de archivo para verificación de gobernanza"),
+          nodeName: tool.schema.string().optional().describe("Component, hook, function, or module name to find"),
+          kind: tool.schema.enum(["component", "hook", "util", "service", "type", "constant", "function", "class", "interface", "module", "route", "entity", "contract", "federation-contract", "query-key", "slice", "server-action", "token"]).optional().describe("Node kind filter"),
+          action: tool.schema.enum(["map", "info", "deps", "dependents", "impact", "slice", "tests", "semantic", "governance"]).optional().describe("Context level or query action"),
+          depth: tool.schema.number().optional().describe("Impact-analysis depth (default 2)"),
+          context: tool.schema.number().int().min(0).max(50).optional().describe("Context lines around a slice (default 0)"),
+          filePath: tool.schema.string().optional().describe("File path for governance verification"),
+          supports: tool.schema.array(tool.schema.string()).optional().describe("Requirement ids supported by semantic evidence"),
+          symfonyConsoleIntrospection: tool.schema.boolean().optional().describe("Allow bounded Symfony console route/container introspection"),
         },
         execute: async (args, _context) => {
           const graph = await getOrIndexGraph();
 
+          if (args.action === "map") {
+            return { title: "Atlas Workspace Map", output: withCoverage(graph, renderWorkspaceMap(graph, outputLanguage)) };
+          }
+
           if (args.action === "governance" || args.filePath !== undefined) {
             const govConfig = await loadGovernanceConfig(paths, workspaceId);
             if (govConfig === undefined) {
-              return { title: "Atlas Governance", output: "No governance configuration found for this workspace." };
+              return { title: "Atlas Governance", output: withCoverage(graph, "No governance configuration found for this workspace.", [args.filePath ?? ""]) };
             }
             const targetPath = args.filePath ?? "";
             const violations = checkGovernance(graph, govConfig, targetPath);
             if (violations.length === 0) {
-              return { title: "Atlas Governance", output: `✅ No governance violations found for \`${targetPath}\`.` };
+              return { title: "Atlas Governance", output: withCoverage(graph, `✅ No governance violations found for \`${targetPath}\`.`, [targetPath]) };
             }
             const lines = [`# Governance Violations for \`${targetPath}\`:`, ""];
             for (const v of violations) {
               lines.push(`- **${v.id}** (${v.action}): ${v.reason}`);
             }
-            return { title: "Atlas Governance", output: lines.join("\n") };
+            return { title: "Atlas Governance", output: withCoverage(graph, lines.join("\n"), [targetPath]) };
           }
 
           if (args.nodeName !== undefined) {
@@ -943,9 +1173,20 @@ export async function createMrOrchestrator(
                 .slice(0, 10);
               if (similar.length > 0) {
                 const list = similar.map((n) => `- **${n.name}** (\`${n.kind}\` in \`${n.filePath}\`)`).join("\n");
-                return { title: "Node Not Found", output: `Node '${args.nodeName}' not found. Did you mean:\n${list}` };
+                return { title: "Node Not Found", output: withCoverage(graph, `Node '${args.nodeName}' not found. Did you mean:\n${list}`) };
               }
-              return { title: "Node Not Found", output: `Node '${args.nodeName}' not found in Atlas graph.` };
+              return { title: "Node Not Found", output: withCoverage(graph, `Node '${args.nodeName}' not found in Atlas graph.`) };
+            }
+
+            if (args.action === "slice") {
+              const slice = await extractNodeSlice(workspaceRoot, node, args.context ?? 0);
+              return { title: `Slice: ${node.name}`, output: withCoverage(graph, canonicalJson({ symbol: node.name, ...slice }).trimEnd(), [node.filePath]) };
+            }
+
+            if (args.action === "tests") {
+              const tests = findTestsFor(graph, node.id);
+              const output = tests.length === 0 ? "No related tests detected." : tests.map((test) => `${test.filePath}:${test.line}`).join("\n");
+              return { title: `Tests: ${node.name}`, output: withCoverage(graph, output, [node.filePath, ...tests.map((test) => test.filePath)]) };
             }
 
             if (args.action === "deps") {
@@ -953,7 +1194,7 @@ export async function createMrOrchestrator(
               const lines = [`# Dependencies of ${node.name} (${node.kind}):`, ""];
               if (deps.length === 0) lines.push("No dependencies detected.");
               else deps.forEach((d) => { lines.push(`- **${d.name}** (\`${d.kind}\` in \`${d.filePath}:${d.line}\`)`); });
-              return { title: `Dependencies of ${node.name}`, output: lines.join("\n") };
+              return { title: `Dependencies of ${node.name}`, output: withCoverage(graph, lines.join("\n"), [node.filePath, ...deps.map((item) => item.filePath)]) };
             }
 
             if (args.action === "dependents") {
@@ -961,7 +1202,7 @@ export async function createMrOrchestrator(
               const lines = [`# Dependents of ${node.name} (${node.kind}):`, ""];
               if (dependents.length === 0) lines.push("No dependents detected.");
               else dependents.forEach((d) => { lines.push(`- **${d.name}** (\`${d.kind}\` in \`${d.filePath}:${d.line}\`)`); });
-              return { title: `Dependents of ${node.name}`, output: lines.join("\n") };
+              return { title: `Dependents of ${node.name}`, output: withCoverage(graph, lines.join("\n"), [node.filePath, ...dependents.map((item) => item.filePath)]) };
             }
 
             if (args.action === "impact") {
@@ -969,7 +1210,57 @@ export async function createMrOrchestrator(
               const impact = getImpactAnalysis(graph, node.id, depth);
               const lines = [`# Impact Analysis for ${node.name} (depth: ${depth}):`, "", `Total affected nodes: ${impact.length}`, ""];
               impact.forEach((n) => { lines.push(`- **${n.name}** (\`${n.kind}\` in \`${n.filePath}\`)`); });
-              return { title: `Impact Analysis: ${node.name}`, output: lines.join("\n") };
+              return { title: `Impact Analysis: ${node.name}`, output: withCoverage(graph, lines.join("\n"), impact.map((item) => item.filePath)) };
+            }
+
+            if (args.action === "semantic") {
+              if (/\.[jt]sx?$/u.test(node.filePath)) {
+                const configs = graph.files
+                  .filter((file) => /(?:^|\/)tsconfig[^/]*\.json$/u.test(file.path))
+                  .filter((file) => node.filePath.startsWith(dirname(file.path) === "." ? "" : `${dirname(file.path)}/`))
+                  .sort((left, right) => dirname(right.path).length - dirname(left.path).length);
+                const tsconfig = configs[0]?.path;
+                if (tsconfig === undefined) return { title: `Semantic: ${node.name}`, output: withCoverage(graph, "No tsconfig was found for this symbol.", [node.filePath]) };
+                const service = createProjectService(join(workspaceRoot, tsconfig));
+                try {
+                  const references = service.findReferences(join(workspaceRoot, node.filePath), node.name);
+                  const callers = service.getCallers(join(workspaceRoot, node.filePath), node.name, Math.min(2, args.depth ?? 2));
+                  const type = service.getTypeAtSymbol(join(workspaceRoot, node.filePath), node.name);
+                  const configRoot = dirname(tsconfig);
+                  const workspacePath = (projectPath: string): string => configRoot === "." ? projectPath : join(configRoot, projectPath).replaceAll("\\", "/");
+                  const callEdges = resolveTypeScriptCallEdges(graph, node, callers, configRoot);
+                  const enriched = withAtlasEdges(graph, callEdges);
+                  await saveAtlasGraph(paths, workspaceId, enriched);
+                  let evidenceRef: string | undefined;
+                  const flow = await loadFlowState(paths, workspaceId);
+                  if (flow !== undefined && flowTicketId(flow) !== "pending") {
+                    const evidence = await addEvidence(paths, workspaceId, workspaceRoot, flowTicketId(flow), {
+                      file: node.filePath,
+                      startLine: Math.max(1, node.line),
+                      endLine: Math.max(1, node.endLine ?? node.line),
+                      kind: "type",
+                      source: "lsp",
+                      claim: type.display,
+                      supports: args.supports ?? [],
+                      symbol: node.name,
+                    });
+                    evidenceRef = evidence.id;
+                  }
+                  return {
+                    title: `Semantic: ${node.name}`,
+                    output: withCoverage(enriched, canonicalJson({ type, references, callers, callEdges, ...(evidenceRef === undefined ? {} : { evidenceRef }) }).trimEnd(), [node.filePath, ...references.map((reference) => workspacePath(reference.file))]),
+                  };
+                } catch (error: unknown) {
+                  return { title: `Semantic: ${node.name}`, output: withCoverage(graph, `Semantic analysis unavailable: ${error instanceof Error ? error.message : String(error)}`, [node.filePath]) };
+                }
+              }
+              if (node.filePath.endsWith(".php")) {
+                const semantic = inspectPhpSemantics(workspaceRoot, [node.filePath], { symfonyConsoleIntrospection: args.symfonyConsoleIntrospection ?? false });
+                const enriched = applyPhpSemanticResult(graph, semantic, node.filePath);
+                await saveAtlasGraph(paths, workspaceId, enriched);
+                return { title: `Semantic: ${node.name}`, output: withCoverage(enriched, canonicalJson(semantic).trimEnd(), [node.filePath]) };
+              }
+              return { title: `Semantic: ${node.name}`, output: withCoverage(graph, "Semantic analysis is not available for this file type.", [node.filePath]) };
             }
 
             // Default: Node info
@@ -985,7 +1276,7 @@ export async function createMrOrchestrator(
               `- **Dependencies count**: ${deps.length}`,
               `- **Dependents count**: ${dependents.length}`,
             ];
-            return { title: `Node: ${node.name}`, output: infoLines.join("\n") };
+            return { title: `Node: ${node.name}`, output: withCoverage(graph, infoLines.join("\n"), [node.filePath]) };
           }
 
           if (args.kind !== undefined) {
@@ -993,7 +1284,7 @@ export async function createMrOrchestrator(
             const lines = [`# Nodes of kind '${args.kind}' (${nodes.length}):`, ""];
             nodes.slice(0, 30).forEach((n) => { lines.push(`- **${n.name}** (\`${n.filePath}:${n.line}\`)`); });
             if (nodes.length > 30) lines.push(`... and ${nodes.length - 30} more`);
-            return { title: `Nodes: ${args.kind}`, output: lines.join("\n") };
+            return { title: `Nodes: ${args.kind}`, output: withCoverage(graph, lines.join("\n"), nodes.map((node) => node.filePath)) };
           }
 
           // Summary
@@ -1006,7 +1297,7 @@ export async function createMrOrchestrator(
             `- **Nodes**: ${graph.stats.totalNodes}`,
             `- **Edges**: ${graph.stats.totalEdges}`,
           ].join("\n");
-          return { title: "Atlas Summary", output: summary };
+          return { title: "Atlas Summary", output: withCoverage(graph, summary) };
         },
       }),
 
@@ -1015,7 +1306,7 @@ export async function createMrOrchestrator(
       mr_trace_component: tool({
         description: "Perform React forensic analysis and dependency tracing for a component",
         args: {
-          componentName: tool.schema.string().describe("Nombre del componente React a diagnosticar"),
+          componentName: tool.schema.string().describe("React component name to diagnose"),
         },
         execute: async (args, _context) => {
           const graph = await getOrIndexGraph();
@@ -1029,13 +1320,13 @@ export async function createMrOrchestrator(
       mr_propose_save: tool({
         description: "Save a finalized technical proposal into .aicontext/deliverables/mr/proposals/ (invoke ONLY after explicit user confirmation)",
         args: {
-          title: tool.schema.string().describe("Título de la propuesta técnica"),
-          context: tool.schema.string().describe("Contexto del sistema o requerimiento"),
-          problem: tool.schema.string().describe("Problema a resolver"),
-          solution: tool.schema.string().describe("Solución técnica propuesta"),
-          alternatives: tool.schema.array(tool.schema.string()).describe("Alternativas evaluadas"),
-          risks: tool.schema.array(tool.schema.string()).describe("Riesgos identificados y mitigaciones"),
-          estimatedEffort: tool.schema.enum(["XS", "S", "M", "L", "XL"]).describe("Estimación de esfuerzo (XS, S, M, L, XL)"),
+          title: tool.schema.string().describe("Technical proposal title"),
+          context: tool.schema.string().describe("System or request context"),
+          problem: tool.schema.string().describe("Problem to solve"),
+          solution: tool.schema.string().describe("Proposed technical solution"),
+          alternatives: tool.schema.array(tool.schema.string()).describe("Alternatives considered"),
+          risks: tool.schema.array(tool.schema.string()).describe("Identified risks and mitigations"),
+          estimatedEffort: tool.schema.enum(["XS", "S", "M", "L", "XL"]).describe("Effort estimate (XS, S, M, L, XL)"),
         },
         execute: async (args, _context) => {
           const input: ProposalInput = {
@@ -1060,8 +1351,8 @@ export async function createMrOrchestrator(
       mr_prompt_build: tool({
         description: "Build an engineered prompt from a template (bugfix, feature, refactor, review) and variables",
         args: {
-          template: tool.schema.enum(["bugfix", "feature", "refactor", "review"]).describe("Plantilla a utilizar"),
-          variables: tool.schema.record(tool.schema.string(), tool.schema.string()).describe("Variables clave-valor para la plantilla"),
+          template: tool.schema.enum(["bugfix", "feature", "refactor", "review"]).describe("Template to use"),
+          variables: tool.schema.record(tool.schema.string(), tool.schema.string()).describe("Key-value template variables"),
         },
         execute: async (args, _context) => {
           const prompt = buildPrompt(args.template, args.variables);
@@ -1072,7 +1363,7 @@ export async function createMrOrchestrator(
       mr_prompt_copy: tool({
         description: "Copy text to the OS clipboard via pbcopy or xclip (invoke ONLY after explicit user confirmation)",
         args: {
-          text: tool.schema.string().describe("Texto del prompt a copiar al portapapeles"),
+          text: tool.schema.string().describe("Prompt text to copy to the clipboard"),
         },
         execute: async (args, _context) => {
           await copyToClipboard(args.text);
@@ -1085,11 +1376,69 @@ export async function createMrOrchestrator(
 
       // ─── SDD + RPI Tools (grafos tipados; markdown por script) ─────────────
 
+      mr_evidence_add: tool({
+        description: "Persist an exact, content-hashed source slice as reusable evidence for the active ticket",
+        args: {
+          file: tool.schema.string(),
+          startLine: tool.schema.number().int().positive(),
+          endLine: tool.schema.number().int().positive(),
+          kind: tool.schema.enum(EvidenceKindSchema.options),
+          source: tool.schema.enum(StoredEvidenceSourceSchema.options).optional(),
+          claim: tool.schema.string(),
+          supports: tool.schema.array(tool.schema.string()).optional(),
+          symbol: tool.schema.string().optional(),
+        },
+        execute: async (args, _context) => {
+          const state = await ensureFlowState();
+          const ticketId = flowTicketId(state);
+          const ref = await addEvidence(paths, workspaceId, workspaceRoot, ticketId, {
+            file: args.file, startLine: args.startLine, endLine: args.endLine, kind: args.kind,
+            source: args.source ?? "atlas", claim: args.claim,
+            ...(args.supports === undefined ? {} : { supports: args.supports }),
+            ...(args.symbol === undefined ? {} : { symbol: args.symbol }),
+          });
+          return { title: `Evidence: ${ref.id}`, output: canonicalJson({ id: ref.id, file: ref.file, range: ref.range, kind: ref.kind, supports: ref.supports }).trimEnd() };
+        },
+      }),
+
+      mr_evidence_list: tool({
+        description: "List reusable evidence references for the active ticket without loading slice bodies",
+        args: {
+          kind: tool.schema.enum(EvidenceKindSchema.options).optional(),
+          supports: tool.schema.string().optional(),
+          file: tool.schema.string().optional(),
+        },
+        execute: async (args, _context) => {
+          const state = await ensureFlowState();
+          const filter = {
+            ...(args.kind === undefined ? {} : { kind: args.kind }),
+            ...(args.supports === undefined ? {} : { supports: args.supports }),
+            ...(args.file === undefined ? {} : { file: args.file }),
+          };
+          const refs = await listEvidence(paths, workspaceId, flowTicketId(state), filter);
+          const output = refs.length === 0 ? "No evidence found." : refs.map((ref) => `${ref.id} · ${ref.kind} · ${ref.file}:${ref.range[0]}-${ref.range[1]} · ${ref.supports.join(",")} · ${ref.claim}`).join("\n");
+          return { title: "Evidence", output };
+        },
+      }),
+
+      mr_context_hydrate: tool({
+        description: "Hydrate a deterministic, budgeted context bundle from stored evidence for a role and optional task",
+        args: {
+          role: tool.schema.enum(["plan", "implement", "judge-a", "judge-b", "fix"]),
+          taskId: tool.schema.string().optional(),
+          budgetChars: tool.schema.number().int().positive().optional(),
+        },
+        execute: async (args, context) => ({
+          title: `Context: ${args.role}`,
+          output: await hydrateFor(args.role, args.taskId, args.budgetChars, toolSessionID(context)),
+        }),
+      }),
+
       mr_sdd_submit: tool({
         description: "Submit a typed SDD/RPI capsule as compact JSON (kind: research|brief|spec|tasks). brief is the Blueprint-lite planning assessment: NEEDS_INPUT returns up to 3 risk-prioritized questions without persistence; READY persists JSON only. Other kinds render user-facing markdown BY SCRIPT. Validation failures return exact issues.",
         args: {
-          kind: tool.schema.enum(["research", "brief", "spec", "tasks"]).describe("Tipo de cápsula: research (evidencias), brief (Blueprint-lite), spec (requisitos+criterios), tasks (grafo de tareas)"),
-          payload: tool.schema.string().describe("JSON conforme al schema operativo de la cápsula, sin prosa ni timestamps de auditoría como createdAt"),
+          kind: tool.schema.enum(["research", "brief", "spec", "tasks"]).describe("Capsule kind: research (evidence), brief (Blueprint-lite), spec (requirements and criteria), or tasks (task graph)"),
+          payload: tool.schema.string().describe("JSON matching the capsule's operational schema, without prose or audit timestamps such as createdAt"),
         },
         execute: async (args, _context) => {
           let raw: unknown;
@@ -1109,15 +1458,44 @@ export async function createMrOrchestrator(
           }
 
           if (kind === "research") {
-            const parsed = ResearchCapsulePayloadSchema.safeParse(raw);
+            const parsed = ResearchCapsulePayloadInputSchema.safeParse(raw);
             if (!parsed.success) {
               return { title: "SDD Research Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
             }
-            const savedPath = await saveSddArtifact(paths, workspaceId, kind, parsed.data);
-            const renderedPath = await writeSddMarkdown(kind, parsed.data.ticketId, renderResearchCapsule(parsed.data));
+            const graph = await getOrIndexGraph();
+            const coverage = {
+              fresh: atlasFreshness.get(graph) ?? false,
+              unsupportedFiles: [...graph.coverage.unsupportedFiles],
+              unresolvedImports: graph.coverage.unresolvedImports.map((row) => `${row.from} → ${row.specifier}`),
+            };
+            let migrated;
+            try {
+              migrated = await migrateResearchToV2(parsed.data, async (evidence) => {
+                const line = evidence.line ?? 1;
+                const ref = await addEvidence(paths, workspaceId, workspaceRoot, parsed.data.ticketId, {
+                  file: evidence.file,
+                  startLine: line,
+                  endLine: line,
+                  kind: "behavior",
+                  source: evidence.source,
+                  claim: evidence.claim,
+                });
+                return ref.id;
+              }, coverage);
+            } catch (error: unknown) {
+              return { title: "SDD Research Rejected", output: `❌ migration: ${error instanceof Error ? error.message : String(error)}` };
+            }
+            const store = await loadEvidenceStore(paths, workspaceId, migrated.ticketId);
+            const knownRefs = new Set(store?.refs.map((ref) => ref.id) ?? []);
+            const missingRefs = migrated.evidenceRefs.filter((id) => !knownRefs.has(id));
+            if (missingRefs.length > 0) {
+              return { title: "SDD Research Rejected", output: `❌ evidence refs not found: ${missingRefs.join(", ")}` };
+            }
+            const savedPath = await saveSddArtifact(paths, workspaceId, kind, migrated);
+          const renderedPath = await writeSddMarkdown(kind, migrated.ticketId, renderResearchCapsule(migrated, outputLanguage));
             return {
               title: "SDD Research Saved",
-              output: `✅ research: ${parsed.data.evidence.length} evidencias, ${parsed.data.unknowns.length} incógnitas\njson: ${savedPath}\nmd: ${renderedPath}`,
+              output: `✅ research: ${migrated.evidenceRefs.length} evidence refs, ${migrated.unknowns.length} unknowns\njson: ${savedPath}\nmd: ${renderedPath}`,
             };
           }
 
@@ -1158,14 +1536,14 @@ export async function createMrOrchestrator(
               return { title: "SDD Spec Rejected", output: `❌ Planning brief ticket '${brief.ticketId}' != spec ticket '${parsed.data.ticketId}'` };
             }
             const savedPath = await saveSddArtifact(paths, workspaceId, kind, parsed.data);
-            const renderedPath = await writeSddMarkdown(kind, parsed.data.ticketId, renderSpecCapsule(parsed.data));
+            const renderedPath = await writeSddMarkdown(kind, parsed.data.ticketId, renderSpecCapsule(parsed.data, outputLanguage));
             return {
               title: "SDD Spec Saved",
-              output: `✅ spec: ${parsed.data.requirements.length} requisitos\njson: ${savedPath}\nmd: ${renderedPath}`,
+              output: `✅ spec: ${parsed.data.requirements.length} requirements\njson: ${savedPath}\nmd: ${renderedPath}`,
             };
           }
 
-          const parsed = TaskGraphPayloadSchema.safeParse(raw);
+          const parsed = TaskGraphPayloadInputSchema.safeParse(raw);
           if (!parsed.success) {
             return { title: "SDD Tasks Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
           }
@@ -1175,20 +1553,50 @@ export async function createMrOrchestrator(
           }
           const research = await loadResearch(paths, workspaceId);
           const flow = await loadFlowState(paths, workspaceId);
-          const issues = validateSddArtifacts(spec, parsed.data, research, {
-            requireEvidenceForModifiedFiles: flow !== undefined && "difficulty" in flow && requiresJudgment(flow.difficulty),
+          const evidenceStore = research === undefined ? undefined : await loadEvidenceStore(paths, workspaceId, research.ticketId);
+          const graph = evidenceStore === undefined ? undefined : await getOrIndexGraph();
+          const freshness = evidenceStore === undefined || graph === undefined ? undefined : new Map(await Promise.all(evidenceStore.refs.map(async (ref) => [ref.id, await checkEvidenceFreshness(workspaceRoot, ref, graph)] as const)));
+          let migrated;
+          try {
+            migrated = migrateTaskGraphToV2(parsed.data, research, evidenceStore);
+          } catch (error: unknown) {
+            return { title: "SDD Tasks Rejected", output: `❌ migration: ${error instanceof Error ? error.message : String(error)}` };
+          }
+          const workspaceRules = workspace === undefined ? undefined : await loadWorkspaceRules(workspace);
+          const planned = workspaceRules === undefined ? migrated : {
+            ...migrated,
+            tasks: migrated.tasks.map((task) => {
+              const firstPath = task.files[0]?.path;
+              const repo = /^(?:repos|apps|packages)\/([^/]+)\//u.exec(firstPath ?? "")?.[1] ?? workspace?.name ?? ".";
+              const invariants = ruleInvariants(workspaceRules, repo, task.files.map((file) => file.path));
+              return { ...task, invariants: [...new Set([...task.invariants, ...invariants])] };
+            }),
+          };
+          const issues = validateSddArtifacts(spec, planned, research, {
+            requireEvidenceForModifiedFiles: gatesMode() === "block" && flow !== undefined && "difficulty" in flow && requiresJudgment(flow.lane ?? flow.difficulty),
+            ...(evidenceStore === undefined ? {} : { evidenceStore }),
+            ...(freshness === undefined ? {} : { freshness }),
           });
           const errors = issues.filter((issue) => issue.severity === "error");
           if (errors.length > 0) {
-            return { title: "SDD Tasks Rejected", output: `❌ guardrails:\n${renderSddIssues(errors)}` };
+            return { title: "SDD Tasks Rejected", output: `❌ guardrails:\n${renderSddIssues(errors, outputLanguage)}` };
           }
-          const savedPath = await saveSddArtifact(paths, workspaceId, kind, parsed.data);
-          const renderedPath = await writeSddMarkdown(kind, parsed.data.ticketId, renderTaskGraph(parsed.data));
+          const planGate = gatePlan(spec, planned, research, evidenceStore, {
+            full: flow !== undefined && "difficulty" in flow && requiresJudgment(flow.lane ?? flow.difficulty),
+          });
+          if (shouldBlockGate(planGate)) {
+            return { title: "SDD Tasks Rejected", output: `❌ deterministic gates:\n${renderGateResult(planGate)}` };
+          }
+          const savedPath = await saveSddArtifact(paths, workspaceId, kind, planned);
+          const renderedPath = await writeSddMarkdown(kind, planned.ticketId, renderTaskGraph(planned, outputLanguage));
           const warnings = issues.filter((issue) => issue.severity === "warning");
-          const warningText = warnings.length > 0 ? `\n${renderSddIssues(warnings)}` : "";
+          const warningText = [
+            warnings.length > 0 ? renderSddIssues(warnings, outputLanguage) : "",
+            planGate.violations.length > 0 ? `Gates (${gatesMode()}):\n${renderGateResult(planGate)}` : "",
+          ].filter(Boolean).map((message) => `\n${message}`).join("");
           return {
             title: "SDD Tasks Saved",
-            output: `✅ tasks: ${parsed.data.tasks.length} tareas validadas contra spec\njson: ${savedPath}\nmd: ${renderedPath}${warningText}`,
+            output: `✅ tasks: ${planned.tasks.length} tasks validated against spec\njson: ${savedPath}\nmd: ${renderedPath}${warningText}`,
           };
         },
       }),
@@ -1196,7 +1604,7 @@ export async function createMrOrchestrator(
       mr_sdd_get: tool({
         description: "Read SDD/RPI capsules as compact JSON (token-cheap). kind=brief returns the persisted READY Blueprint-lite assessment. kind=next-task returns the next actionable task with acceptance criteria pre-joined.",
         args: {
-          kind: tool.schema.enum(["research", "brief", "spec", "tasks", "next-task"]).describe("Cápsula a leer, o next-task para la siguiente tarea accionable"),
+          kind: tool.schema.enum(["research", "brief", "spec", "tasks", "next-task"]).describe("Capsule to read, or next-task for the next actionable task"),
         },
         execute: async (args, _context) => {
           if (args.kind === "research") {
@@ -1230,29 +1638,121 @@ export async function createMrOrchestrator(
           const acceptance = spec?.requirements.filter((r) => next.requirements.includes(r.id)) ?? [];
           const flow = await loadFlowState(paths, workspaceId);
           const implementer = flow !== undefined && "difficulty" in flow
-            ? implementationAgentForDifficulty(flow.difficulty)
+            ? implementationAgentForDifficulty(flow.difficulty, flow.lane)
             : undefined;
+          const economy = flow === undefined || !("ticket" in flow)
+            ? undefined
+            : flowEconomyPolicy(effectiveLane(flow), flow.ticket.ref.platform !== "local");
+          const bundle = await hydrateFor("implement", next.id, undefined, toolSessionID(_context)).catch(() => undefined);
+          const store = await loadEvidenceStore(paths, workspaceId, tasks.ticketId);
+          if (store === undefined) return { title: "SDD Task Blocked", output: "No EvidenceStore found for the task graph." };
+          const graph = await getOrIndexGraph();
+          const freshness = await getTaskEvidenceFreshness(next, store, graph);
+          const implementGate = gateBeforeImplement(next, store, graph, freshness);
+          if (shouldBlockGate(implementGate)) {
+            return { title: "SDD Task Blocked", output: renderGateResult(implementGate) };
+          }
           return {
             title: `SDD Next Task: ${next.id}`,
             output: canonicalJson({
               implementer,
-              developerNote: buildTaskDeveloperNote(next, acceptance),
+              ...(economy === undefined ? {} : { economy }),
+              developerNote: buildTaskDeveloperNote(next, acceptance, outputLanguage),
               task: next,
               acceptance,
+              ...(bundle === undefined ? {} : { bundle }),
+              ...(implementGate.violations.length === 0 ? {} : { gateWarnings: implementGate.violations }),
             }).trimEnd(),
           };
         },
       }),
 
-      mr_sdd_task_status: tool({
-        description: "Mark an SDD task status (deterministic progression). Marks done ONLY after its verify commands pass.",
+      mr_sdd_verify: tool({
+        description: "Persist command results for an SDD task, bound to the current diff. Commands must exactly match task.verification.commands.",
         args: {
-          taskId: tool.schema.string().describe("Id de la tarea (ej: T1)"),
-          status: tool.schema.enum(["pending", "in_progress", "done", "blocked"]).describe("Nuevo estado"),
+          taskId: tool.schema.string().describe("Task id (for example T1)"),
+          results: tool.schema.array(tool.schema.object({
+            command: tool.schema.string(),
+            exitCode: tool.schema.number().int(),
+            durationMs: tool.schema.number().int().nonnegative(),
+            outputTail: tool.schema.string().optional(),
+          })).min(1),
+        },
+        execute: async (args, _context) => {
+          const tasks = await loadTasks(paths, workspaceId);
+          const task = tasks?.tasks.find((candidate) => candidate.id === args.taskId);
+          if (task === undefined) return { title: "SDD Verification Rejected", output: `Unknown task ${args.taskId}` };
+          if (task.status !== "in_progress") {
+            return { title: "SDD Verification Rejected", output: `${task.id} must be in_progress before verification; current status is ${task.status}.` };
+          }
+          const changedFiles = getGitDiffNames(workspaceRoot);
+          const diffHash = await getDiffHash(workspaceRoot);
+          const parsed = VerificationReceiptSchema.safeParse({
+            schemaVersion: 1,
+            taskId: args.taskId,
+            results: args.results.map((entry) => ({ ...entry, outputTail: entry.outputTail ?? "" })),
+            changedFiles,
+            diffHash,
+            recordedAt: new Date().toISOString(),
+          });
+          if (!parsed.success) {
+            return { title: "SDD Verification Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
+          }
+          const baseGate = gateAfterImplement(task, changedFiles, parsed.data, diffHash);
+          const rulesGate = await rulesGateForCurrentDiff();
+          const gate: GateResult = { ok: baseGate.ok && rulesGate.ok, violations: [...baseGate.violations, ...rulesGate.violations] };
+          if (shouldBlockGate(gate)) {
+            return { title: "SDD Verification Rejected", output: renderGateResult(gate) };
+          }
+          const receiptPath = await saveVerificationReceipt(paths, workspaceId, parsed.data);
+          return {
+            title: "SDD Verification Recorded",
+            output: `✅ ${task.id}: ${parsed.data.results.length} command result(s) bound to ${diffHash}\nreceipt: ${receiptPath}${gate.violations.length === 0 ? "" : `\nGates (${gatesMode()}):\n${renderGateResult(gate)}`}`,
+          };
+        },
+      }),
+
+      mr_sdd_task_status: tool({
+        description: "Mark an SDD task status. done requires a current mr_sdd_verify receipt and a passing post-implementation gate.",
+        args: {
+          taskId: tool.schema.string().describe("Task ID (for example T1)"),
+          status: tool.schema.enum(["pending", "in_progress", "done", "blocked"]).describe("New status"),
         },
         execute: async (args, _context) => {
           const tasks = await loadTasks(paths, workspaceId);
           if (tasks === undefined) return { title: "SDD Task Status", output: "No task graph found." };
+          const task = tasks.tasks.find((candidate) => candidate.id === args.taskId);
+          if (task === undefined) return { title: "SDD Task Status", output: `❌ Unknown task ${args.taskId}` };
+          if (args.status === "in_progress") {
+            const next = nextPendingTask(tasks);
+            if (next?.id !== task.id) {
+              return { title: "SDD Task Status Rejected", output: `${task.id} is not the next actionable task.` };
+            }
+            const store = await loadEvidenceStore(paths, workspaceId, tasks.ticketId);
+            if (store === undefined) return { title: "SDD Task Status Rejected", output: "No EvidenceStore found for the task graph." };
+            const graph = await getOrIndexGraph();
+            const freshness = await getTaskEvidenceFreshness(task, store, graph);
+            const implementGate = gateBeforeImplement(task, store, graph, freshness);
+            if (shouldBlockGate(implementGate)) {
+              return { title: "SDD Task Status Rejected", output: renderGateResult(implementGate) };
+            }
+          }
+          if (args.status === "done") {
+            if (task.status !== "in_progress") {
+              return { title: "SDD Task Status Rejected", output: `${task.id} must be in_progress before it can be marked done.` };
+            }
+            const receipt = await loadVerificationReceipt(paths, workspaceId, task.id);
+            if (receipt === undefined) {
+              return { title: "SDD Task Status Rejected", output: `VERIFICATION_RECEIPT_MISSING: Run mr_sdd_verify for ${task.id} before marking it done.` };
+            }
+            const diffHash = await getDiffHash(workspaceRoot);
+            const baseGate = gateAfterImplement(task, getGitDiffNames(workspaceRoot), receipt, diffHash);
+            const rulesGate = await rulesGateForCurrentDiff();
+            const afterGate: GateResult = { ok: baseGate.ok && rulesGate.ok, violations: [...baseGate.violations, ...rulesGate.violations] };
+            if (shouldBlockGate(afterGate)) {
+              return { title: "SDD Task Status Rejected", output: renderGateResult(afterGate) };
+            }
+          }
           let updated;
           try {
             updated = markTaskStatus(tasks, args.taskId, args.status);
@@ -1260,7 +1760,7 @@ export async function createMrOrchestrator(
             return { title: "SDD Task Status", output: `❌ ${(error as Error).message}` };
           }
           await saveSddArtifact(paths, workspaceId, "tasks", updated);
-          await writeSddMarkdown("tasks", updated.ticketId, renderTaskGraph(updated));
+          await writeSddMarkdown("tasks", updated.ticketId, renderTaskGraph(updated, outputLanguage));
           const doneCount = updated.tasks.filter((t) => t.status === "done").length;
           const next = nextPendingTask(updated);
           const nextHint = next !== undefined ? ` next: ${next.id}` : " all tasks resolved";
@@ -1272,9 +1772,10 @@ export async function createMrOrchestrator(
       }),
 
       mr_atlas_skeleton: tool({
-        description: "Get the deterministic skeleton of a source or config file: code (.ts/.tsx/.java) → imports + signatures, bodies elided; config (.json/.yml/.yaml) → key structure with truncated values (great for application.yml / OpenAPI specs). ~85-90% fewer tokens than reading the file. Read full bodies only for the code being edited.",
+        description: "Get a deterministic source/config skeleton with imports, docs, attributes and signatures; bodies are elided. Use signatures+calls for a cheap behavioral outline.",
         args: {
-          filePath: tool.schema.string().describe("Ruta del archivo relativa a la raíz del workspace (.ts, .tsx, .java, .json, .yml, .yaml)"),
+          filePath: tool.schema.string().describe("Workspace-relative source or configuration path"),
+          depth: tool.schema.enum(["signatures", "signatures+calls"]).optional().describe("Skeleton detail level (default signatures)"),
         },
         execute: async (args, _context) => {
           let source: string;
@@ -1283,14 +1784,15 @@ export async function createMrOrchestrator(
           } catch {
             return { title: "Skeleton", output: `❌ Cannot read ${args.filePath}` };
           }
-          const skeleton = await extractSkeleton(source, args.filePath);
+          const skeleton = await extractSkeleton(source, args.filePath, args.depth ?? "signatures");
           if (skeleton === "") {
             return { title: "Skeleton", output: `❌ Unsupported or unparseable file: ${args.filePath}` };
           }
           const ratio = Math.round((skeleton.length / Math.max(1, source.length)) * 100);
+          const graph = await getOrIndexGraph();
           return {
             title: `Skeleton: ${args.filePath}`,
-            output: `\`\`\`\n${skeleton}\n\`\`\`\n(${ratio}% del tamaño original)`,
+            output: withCoverage(graph, `\`\`\`\n${skeleton}\n\`\`\`\n(${ratio}% of original size)`, [args.filePath]),
           };
         },
       }),
