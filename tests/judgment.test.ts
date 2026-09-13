@@ -80,7 +80,7 @@ test("shouldEscalateToHuman on repeated critical issues", () => {
 });
 
 test("buildJudgePrompt includes diff and judge name", () => {
-  const prompt = buildJudgePrompt("diff content", "a");
+  const prompt = buildJudgePrompt("diff content", "a", "{\"role\":\"judge-a\"}");
   assert.ok(prompt.includes("Judge A"));
   assert.ok(prompt.includes("Return only the strict verdict object to the orchestrator"));
   assert.ok(prompt.includes("diff content"));
@@ -88,16 +88,18 @@ test("buildJudgePrompt includes diff and judge name", () => {
   assert.ok(prompt.includes("critical"));
   assert.ok(prompt.includes("INSUFFICIENT_EVIDENCE"));
   assert.ok(prompt.includes("exact snippet"));
+  assert.ok(prompt.includes("## Context bundle"));
 });
 
 test("buildFixPrompt includes verdict and diff", () => {
   const merged = mergeVerdicts(verdictA, verdictB);
-  const prompt = buildFixPrompt(merged, "original diff");
+  const prompt = buildFixPrompt(merged, "original diff", "{\"role\":\"fix\"}");
   assert.ok(prompt.includes("Missing null check"));
   assert.ok(prompt.includes("original diff"));
   assert.ok(prompt.includes("Return only a compact execution receipt to the orchestrator"));
   assert.ok(prompt.includes("mr-fix"));
   assert.ok(prompt.includes("src/a.ts"));
+  assert.ok(prompt.includes("## Context bundle"));
 });
 
 test("visibleDiffLines maps context and additions to new-side line numbers", () => {

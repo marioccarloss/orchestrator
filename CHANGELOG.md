@@ -4,7 +4,23 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-09-14
+
+### Added
+
+- **F0 — Measurable journeys:** added the typed 15-journey reliability corpus, per-role/task Flow usage capture, and deterministic benchmark aggregation from real metrics and event logs.
+- **F1 — Trustworthy Atlas:** upgraded Atlas to content-hashed incremental indexing with explicit coverage, polyglot skeletons, monorepo-aware resolution, and no silent claims over unsupported or partially parsed files.
+- **F2 — Shared evidence:** added a content-addressed EvidenceStore, versioned ResearchCapsules, freshness/relocation checks, and task/role-specific context hydration.
+- **F3 — Deterministic delivery gates:** added TaskGraph v2 surgical boundaries, invariants, verification receipts, local tickets, risk lanes, critical approval, and fail-closed planning/implementation/judgment gates.
+- **F4 — Semantic and framework intelligence:** added bounded TypeScript and optional PHP semantic enrichment, weighted impact, framework extractors, and cross-repository contract edges.
+- **F5 — Observed repository rules:** added evidence-backed convention detectors, confidence decisions, persisted rule projections, Atlas onboarding CLI/TUI, scoped hydration, and deterministic rule enforcement.
+- **F6 — Language and token economy:** added persisted `es`/`en`/`pt`/`ca`/`fr` output selection, deterministic localized projections, role-by-lane context budgets, visible hydration usage, and single-session routing for ticketless fast work.
+- Simplified command reference (`docs/USAGE-simple.md`) with at-a-glance parameters for `/flow`, `/blueprint`, `/prompt` and `/atlas`.
+
+### Changed
+
+- Deterministic gates now default to `MR_GATES_MODE=block`; set `warn` explicitly only for temporary diagnosis or migration.
+- Removed the MacBook Air transfer guide from the README docs index.
 
 ## [0.8.0] - 2026-09-12
 

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const mockGraph: AtlasGraph = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   generatedAt: "2026-08-31T12:00:00.000Z",
   workspaceRoot: "/test",
   nodes: [
@@ -42,6 +42,11 @@ const mockGraph: AtlasGraph = {
   edges: [
     { from: "node1", to: "node2", type: "import" },
   ],
+  files: [
+    { path: "src/Button.tsx", contentHash: "a".repeat(64), language: "tsx", parseStatus: "ok", nodeIds: ["node1"] },
+    { path: "src/useCounter.ts", contentHash: "b".repeat(64), language: "typescript", parseStatus: "ok", nodeIds: ["node2"] },
+  ],
+  coverage: { indexerVersion: "2.0.0", supportedLanguages: ["typescript", "tsx"], unsupportedFiles: [], parseErrors: [], unresolvedImports: [] },
   stats: { totalFiles: 2, totalNodes: 2, totalEdges: 1, indexDurationMs: 100 },
 };
 

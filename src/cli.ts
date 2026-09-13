@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,8 +15,15 @@ import { spawnInteractive } from "./core/process.js";
 import { approve, failure, heading, info, success, warning } from "./tui/index.js";
 import { formatCapabilityGuide, interactiveCapabilitySelector } from "./tui/capabilities.js";
 import { formatModelMatrix, interactiveModelSelector } from "./tui/models.js";
+import { buildAtlasBaseline, indexAtlasWorkspace } from "./core/atlas-init.js";
+import type { WorkspaceRules } from "./core/rules/generator.js";
+import { saveRepositoryProfiles, saveWorkspaceRules } from "./core/rules/store.js";
+import { renderRepositoryAgentsMarkdown, renderRulesDiff, type AgentsLanguage } from "./core/rules/render.js";
+import { runAtlasOnboarding } from "./tui/atlas.js";
+import { atomicWrite } from "./core/files.js";
 
-const sourceRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const sourceDirectory = dirname(fileURLToPath(import.meta.url));
+const sourceRoot = existsSync(join(sourceDirectory, "..", "package.json")) ? join(sourceDirectory, "..") : join(sourceDirectory, "..", "..");
 const paths = resolvePaths();
 
 function usage(): never {
@@ -30,6 +38,9 @@ Usage:
   mr workspace remove ID
   mr models [list | set <role> <model> [model|alternative] | preset <key>]
   mr flow-models
+  mr atlas index
+  mr atlas init [--guided] [--no-rules] [--lang en|es] [--write-repo-agents] [--yes]
+  mr atlas rules [--diff] [--guided] [--lang en|es] [--write-repo-agents] [--yes]
   mr sync [ID]
   mr doctor
   mr launch [opencode arguments...]`);
@@ -219,6 +230,89 @@ async function commandModels(arguments_: readonly string[]): Promise<void> {
   await interactiveModelSelector(paths);
 }
 
+async function activeWorkspace() {
+  const registry = await loadRegistry(paths);
+  const workspace = detectWorkspace(registry, process.cwd());
+  if (workspace === undefined) throw new Error("Workspace not found. Register it with `mr workspace add PATH` and run this command inside it.");
+  return workspace;
+}
+
+async function writeRepositoryAgents(
+  workspace: Awaited<ReturnType<typeof activeWorkspace>>,
+  profiles: Awaited<ReturnType<typeof buildAtlasBaseline>>["profiles"],
+  rules: WorkspaceRules,
+  language: AgentsLanguage,
+  assumeYes: boolean,
+): Promise<void> {
+  for (const profile of profiles) {
+    const repositoryRules = rules.repositories.find((candidate) => candidate.repo === profile.repo);
+    if (repositoryRules === undefined) continue;
+    const path = join(workspace.root, profile.root, "AGENTS.md");
+    const next = renderRepositoryAgentsMarkdown(repositoryRules, profile, rules.preferences, language);
+    const previous = await readFile(path, "utf8").catch(() => undefined);
+    const diff = renderRulesDiff(previous, next);
+    info(`Proposed ${path}:\n${diff}`);
+    if (diff === "No changes.") continue;
+    const confirmed = assumeYes || (process.stdin.isTTY && process.stdout.isTTY && await approve(`Write ${path}?`));
+    if (!confirmed) {
+      warning(`Preserved ${path}; pass --yes to accept the displayed diff non-interactively.`);
+      continue;
+    }
+    await atomicWrite(path, next.endsWith("\n") ? next : `${next}\n`);
+    success(`Wrote ${path}`);
+  }
+}
+
+async function commandAtlas(arguments_: readonly string[]): Promise<void> {
+  const action = arguments_[0] ?? "init";
+  if (!["index", "init", "rules"].includes(action)) throw new Error("Usage: mr atlas index | init [--guided] [--no-rules] [--lang en|es] | rules [--diff] [--guided] [--lang en|es]");
+  const workspace = await activeWorkspace();
+  heading(`mr atlas ${action}`);
+  const graph = await indexAtlasWorkspace(paths, workspace);
+  info(`Indexed ${String(graph.stats.totalFiles)} files, ${String(graph.stats.totalNodes)} nodes, ${String(graph.stats.totalEdges)} edges.`);
+  if (action === "index") {
+    success("Atlas index updated.");
+    return;
+  }
+  const baseline = await buildAtlasBaseline(workspace, graph);
+  for (const error of baseline.errors) warning(`Best-effort profiler: ${error}`);
+  await saveRepositoryProfiles(workspace, baseline.profiles);
+  if (arguments_.includes("--no-rules")) {
+    success(`Atlas profiles saved for ${String(baseline.profiles.length)} repositories; rules were skipped.`);
+    return;
+  }
+  if (baseline.proposal === undefined) {
+    warning("Atlas index is usable, but no rules proposal could be generated.");
+    return;
+  }
+  const language: AgentsLanguage = option(arguments_, "--lang") === "es" ? "es" : "en";
+  const interactive = process.stdin.isTTY && process.stdout.isTTY;
+  let rules = baseline.proposal.rules;
+  if (interactive) {
+    const onboarding = await runAtlasOnboarding(baseline.proposal, baseline.profiles, { guided: arguments_.includes("--guided"), language });
+    if (onboarding.action === "skip") {
+      success("Atlas profiles saved; rules onboarding skipped.");
+      return;
+    }
+    rules = onboarding.rules;
+  } else if (arguments_.includes("--guided")) {
+    warning("Guided onboarding requires a TTY; inferred rules remain unconfirmed.");
+  }
+  const internalAgents = join(workspace.contextRoot, "atlas", "AGENTS.md");
+  const previous = await readFile(internalAgents, "utf8").catch(() => undefined);
+  const written = await saveWorkspaceRules(workspace, rules, baseline.profiles, language);
+  if (arguments_.includes("--diff")) {
+    const next = await readFile(internalAgents, "utf8");
+    info(`Rules projection diff:\n${renderRulesDiff(previous, next)}`);
+  }
+  if (arguments_.includes("--write-repo-agents")) {
+    await writeRepositoryAgents(workspace, baseline.profiles, rules, language, arguments_.includes("--yes"));
+  }
+  await seedModels(paths, sourceRoot);
+  await syncWorkspace(paths, workspace);
+  success(`Atlas rules saved (${String(written.length)} artifacts, ${String(baseline.profiles.length)} repositories).`);
+}
+
 async function main(): Promise<void> {
   const [command, ...arguments_] = process.argv.slice(2);
   switch (command) {
@@ -228,6 +322,7 @@ async function main(): Promise<void> {
     case "workspace": await commandWorkspace(arguments_); break;
     case "models": await commandModels(arguments_); break;
     case "flow-models": await interactiveModelSelector(paths); break;
+    case "atlas": await commandAtlas(arguments_); break;
     case "sync": await commandSync(arguments_[0]); break;
     case "doctor": await commandDoctor(); break;
     case "launch": process.exitCode = await launch(paths, process.cwd(), arguments_); break;

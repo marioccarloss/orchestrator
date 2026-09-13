@@ -18,6 +18,7 @@ const sampleSpec: BlueprintSpec = {
   slug: "user-feed",
   title: "Red Social - Feed de Publicaciones",
   mode: "idea",
+  userLanguage: "es",
   overview: "Implementación del muro principal con feed algorítmico y paginado por cursor.",
   sdd: {
     entities: [
@@ -99,9 +100,21 @@ void test("renderSafetyGateDiff formats structured warning banner", () => {
     },
   });
   const diff = renderSafetyGateDiff(mutation);
-  assert.match(diff, /SAFETY GATE/u);
+  assert.match(diff, /COMPUERTA DE SEGURIDAD/u);
   assert.match(diff, /🚨 DELETE/u);
   assert.match(diff, /GH-101/u);
+});
+
+void test("Blueprint projections honor a persisted English user language", () => {
+  const english = { ...sampleSpec, userLanguage: "en" as const };
+  const markdown = renderBlueprintMarkdown(english);
+  const summary = renderBlueprintExecutiveSummary(english);
+  const mutation = BlueprintMutationSchema.parse({ action: "create", target: { title: "Create issue", repo: "org/repo" } });
+  assert.match(markdown, /Executive Summary/u);
+  assert.match(markdown, /Non-negotiable Invariants/u);
+  assert.match(summary, /Blueprint Approved/u);
+  assert.match(renderSafetyGateDiff(mutation, "en"), /SAFETY GATE/u);
+  assert.doesNotMatch(`${markdown}\n${summary}`, /Resumen Ejecutivo|Blueprint Aprobado/u);
 });
 
 void test("saveBlueprintSpec persists json and markdown to .blueprint/specs/", async () => {

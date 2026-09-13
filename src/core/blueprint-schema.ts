@@ -2,6 +2,8 @@ import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { canonicalJson } from "./files.js";
+import { normalizeUserLanguage, UserLanguageSchema, type UserLanguage } from "./language.js";
+import { messagesFor } from "./render.js";
 
 export const BlueprintModeSchema = z.enum(["idea", "ticket"]);
 export type BlueprintMode = z.infer<typeof BlueprintModeSchema>;
@@ -35,6 +37,7 @@ export const BlueprintSpecSchema = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
   title: z.string().min(1),
   mode: BlueprintModeSchema,
+  userLanguage: UserLanguageSchema.optional(),
   overview: z.string().min(1),
   sdd: z.object({
     entities: z.array(BlueprintEntitySchema).default([]),
@@ -63,31 +66,32 @@ export const BlueprintMutationSchema = z.object({
 });
 export type BlueprintMutation = z.infer<typeof BlueprintMutationSchema>;
 
-export function renderBlueprintMarkdown(spec: BlueprintSpec): string {
+export function renderBlueprintMarkdown(spec: BlueprintSpec, language: UserLanguage = normalizeUserLanguage(spec.userLanguage)): string {
+  const m = messagesFor(language).blueprint;
   const lines: string[] = [
     `# Blueprint: ${spec.title}`,
     ``,
-    `> **Modo**: ${spec.mode} | **Slug**: \`${spec.slug}\` | **Fecha**: ${spec.createdAt}`,
+    `> **${m.mode}**: ${spec.mode} | **Slug**: \`${spec.slug}\` | **${m.date}**: ${spec.createdAt}`,
     ``,
-    `## 1. Resumen Ejecutivo (RPI - Request Intent)`,
+    `## 1. ${m.executiveSummary}`,
     spec.overview,
     ``,
-    `### Intención del Requerimiento`,
+    `### ${m.requestIntent}`,
     spec.rpi.requestIntent,
     ``,
-    `### Impacto Transversal`,
+    `### ${m.transversalImpact}`,
     ...(spec.rpi.transversalImpact.length > 0
       ? spec.rpi.transversalImpact.map((item) => `- ${item}`)
-      : ["- Sin impactos colaterales detectados."]),
+      : [`- ${m.noImpact}`]),
     ``,
-    `### [Supuestos e Inferencias Asumidas]`,
+    `### [${m.assumptions}]`,
     ...(spec.rpi.assumedInferences.length > 0
       ? spec.rpi.assumedInferences.map((item) => `- ⚠️ ${item}`)
-      : ["- Ninguno; requerimiento completamente delimitado."]),
+      : [`- ${m.noAssumptions}`]),
     ``,
-    `## 2. Especificación de Diseño (SDD)`,
+    `## 2. ${m.designSpec}`,
     ``,
-    `### Entidades Core`,
+    `### ${m.coreEntities}`,
     ...(spec.sdd.entities.length > 0
       ? spec.sdd.entities.map((e) => {
           const fieldsStr = Object.entries(e.fields)
@@ -95,56 +99,58 @@ export function renderBlueprintMarkdown(spec: BlueprintSpec): string {
             .join(", ");
           return `- **${e.name}**: ${e.description}${fieldsStr ? ` (${fieldsStr})` : ""}`;
         })
-      : ["- No se definieron nuevas entidades."]),
+      : [`- ${m.noEntities}`]),
     ``,
-    `### Invariantes No Negociables`,
+    `### ${m.invariants}`,
     ...(spec.sdd.invariants.length > 0
       ? spec.sdd.invariants.map((item) => `- 🔒 ${item}`)
-      : ["- Reglas estándar del proyecto."]),
+      : [`- ${m.standardRules}`]),
     ``,
-    `### Contratos de Datos y APIs`,
+    `### ${m.contracts}`,
     ...(spec.sdd.contracts.length > 0
       ? spec.sdd.contracts.map((c) => `- \`${c.endpointOrFunction}\` -> In: \`${c.input}\`, Out: \`${c.output}\``)
-      : ["- No hay nuevos contratos explícitos."]),
+      : [`- ${m.noContracts}`]),
     ``,
-    `### Condiciones de Verificación y Test`,
+    `### ${m.testConditions}`,
     ...(spec.sdd.testConditions.length > 0
       ? spec.sdd.testConditions.map((item) => `- ✅ ${item}`)
-      : ["- Validación mediante suite de tests estándar."]),
+      : [`- ${m.defaultTests}`]),
     ``,
-    `## 3. Plan de Desglose en Tareas (GitHub Projects v2)`,
+    `## 3. ${m.taskBreakdown}`,
     ...(spec.tasks.length > 0
       ? spec.tasks.map((t) => `- [ ] **[${t.id}] ${t.title}** (${t.priority}): ${t.description}`)
-      : ["- Pendiente de desglose en fase transaccional."]),
+      : [`- ${m.pendingBreakdown}`]),
   ];
 
   return lines.join("\n");
 }
 
-export function renderBlueprintExecutiveSummary(spec: BlueprintSpec): string {
+export function renderBlueprintExecutiveSummary(spec: BlueprintSpec, language: UserLanguage = normalizeUserLanguage(spec.userLanguage)): string {
+  const m = messagesFor(language).blueprint;
   const assumptionsCount = spec.rpi.assumedInferences.length;
   const entitiesCount = spec.sdd.entities.length;
   const tasksCount = spec.tasks.length;
 
   return [
-    `# Blueprint Aprobado: ${spec.title} (\`${spec.slug}\`)`,
-    `• Modo: ${spec.mode.toUpperCase()}`,
-    `• Entidades SDD: ${entitiesCount} | Invariantes: ${spec.sdd.invariants.length} | Tareas: ${tasksCount}`,
-    `• Supuestos asumidos: ${assumptionsCount > 0 ? `${assumptionsCount} inferencias` : "0 (especificación exacta)"}`,
-    `• Resumen: ${spec.overview}`,
-    `• Artefacto: .blueprint/specs/YYYY-MM-DD_${spec.slug}.md`,
+    `# ${m.approved}: ${spec.title} (\`${spec.slug}\`)`,
+    `• ${m.mode}: ${spec.mode.toUpperCase()}`,
+    `• ${m.sddEntities}: ${entitiesCount} | ${m.invariants}: ${spec.sdd.invariants.length} | ${messagesFor(language).common.tasks}: ${tasksCount}`,
+    `• ${m.assumed}: ${assumptionsCount > 0 ? `${assumptionsCount} ${m.inferences}` : `0 (${m.exactSpec})`}`,
+    `• ${m.summary}: ${spec.overview}`,
+    `• ${m.artifact}: .blueprint/specs/YYYY-MM-DD_${spec.slug}.md`,
   ].join("\n");
 }
 
-export function renderSafetyGateDiff(mutation: BlueprintMutation): string {
+export function renderSafetyGateDiff(mutation: BlueprintMutation, language: UserLanguage = "es"): string {
+  const m = messagesFor(language).blueprint;
   const actionBadge = mutation.action === "delete" ? "🚨 DELETE" : mutation.action === "update" ? "🔄 UPDATE" : "✨ CREATE";
   return [
     `┌────────────────────────────────────────────────────────┐`,
-    `│ SAFETY GATE: MUTACIÓN EN GITHUB PROJECTS              │`,
+    `│ ${m.safetyGate.padEnd(54).slice(0, 54)}│`,
     `├────────────────────────────────────────────────────────┤`,
-    `│ Acción    : ${actionBadge.padEnd(42)}│`,
-    `│ Repo      : ${mutation.target.repo.padEnd(42)}│`,
-    `│ Título    : ${mutation.target.title.padEnd(42)}│`,
+    `│ ${m.action.padEnd(10).slice(0, 10)}: ${actionBadge.padEnd(42).slice(0, 42)}│`,
+    `│ ${m.repo.padEnd(10).slice(0, 10)}: ${mutation.target.repo.padEnd(42).slice(0, 42)}│`,
+    `│ ${m.title.padEnd(10).slice(0, 10)}: ${mutation.target.title.padEnd(42).slice(0, 42)}│`,
     mutation.target.id ? `│ ID        : ${mutation.target.id.padEnd(42)}│` : "",
     `└────────────────────────────────────────────────────────┘`,
   ].filter(Boolean).join("\n");
@@ -163,7 +169,7 @@ export async function saveBlueprintSpec(
   const markdownPath = join(dir, `${baseName}.md`);
 
   await writeFile(jsonPath, canonicalJson(spec));
-  await writeFile(markdownPath, renderBlueprintMarkdown(spec));
+  await writeFile(markdownPath, renderBlueprintMarkdown(spec, normalizeUserLanguage(spec.userLanguage)));
 
   return { jsonPath, markdownPath };
 }

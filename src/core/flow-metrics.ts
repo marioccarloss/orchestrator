@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { z } from "zod";
 import { atomicWrite, canonicalJson } from "./files.js";
 import type { MrPaths } from "./paths.js";
+import { ContextRoleSchema, type ContextRole } from "./budgets.js";
+import { RiskLaneSchema, type RiskLane } from "./risk.js";
+import { UserLanguageSchema, type UserLanguage } from "./language.js";
 
 const TokenUsageSchema = z.strictObject({
   input: z.number().nonnegative(),
@@ -17,21 +20,36 @@ const MessageUsageSchema = z.strictObject({
   providerID: z.string().min(1),
   modelID: z.string().min(1),
   cost: z.number().nonnegative(),
+  role: z.string().min(1).optional(),
+  taskId: z.string().min(1).optional(),
   tokens: TokenUsageSchema,
+});
+
+const ContextHydrationUsageSchema = z.strictObject({
+  role: ContextRoleSchema,
+  lane: RiskLaneSchema,
+  taskId: z.string().min(1).optional(),
+  requestedChars: z.number().int().positive(),
+  usedChars: z.number().int().nonnegative(),
+  truncated: z.number().int().nonnegative(),
+  recordedAt: z.iso.datetime(),
 });
 
 export const FlowMetricsSchema = z.strictObject({
   schemaVersion: z.literal(1),
   ticketId: z.string().min(1),
   flowStartedAt: z.iso.datetime(),
+  userLanguage: UserLanguageSchema.optional(),
   status: z.enum(["active", "completed", "aborted"]),
   sessionIDs: z.array(z.string().min(1)),
   messages: z.record(z.string(), MessageUsageSchema),
+  hydrations: z.array(ContextHydrationUsageSchema).default([]),
   updatedAt: z.iso.datetime(),
   completedAt: z.iso.datetime().optional(),
 });
 
 export type FlowMetrics = z.infer<typeof FlowMetricsSchema>;
+export type ContextHydrationUsage = z.infer<typeof ContextHydrationUsageSchema>;
 
 export interface AssistantUsageUpdate {
   readonly id: string;
@@ -39,6 +57,8 @@ export interface AssistantUsageUpdate {
   readonly providerID: string;
   readonly modelID: string;
   readonly cost: number;
+  readonly role?: string;
+  readonly taskId?: string;
   readonly tokens: {
     readonly input: number;
     readonly output: number;
@@ -57,6 +77,14 @@ export interface FlowUsageSummary {
   readonly messages: number;
   readonly sessions: number;
   readonly tokens: z.infer<typeof TokenUsageSchema>;
+  readonly context?: {
+    readonly role: ContextRole;
+    readonly lane: RiskLane;
+    readonly requestedChars: number;
+    readonly usedChars: number;
+    readonly truncated: number;
+    readonly hydrations: number;
+  };
 }
 
 function flowMetricsPath(paths: MrPaths, workspaceId: string): string {
@@ -82,15 +110,18 @@ export async function startFlowMetrics(
   ticketId: string,
   flowStartedAt: string,
   sessionID: string,
+  userLanguage?: UserLanguage,
 ): Promise<FlowMetrics> {
   const now = new Date().toISOString();
   const metrics = FlowMetricsSchema.parse({
     schemaVersion: 1,
     ticketId,
     flowStartedAt,
+    ...(userLanguage === undefined ? {} : { userLanguage }),
     status: "active",
     sessionIDs: [sessionID],
     messages: {},
+    hydrations: [],
     updatedAt: now,
   });
   await saveFlowMetrics(paths, workspaceId, metrics);
@@ -101,12 +132,16 @@ export async function bindFlowSession(
   paths: MrPaths,
   workspaceId: string,
   sessionID: string,
+  userLanguage?: UserLanguage,
 ): Promise<FlowMetrics | undefined> {
   const current = await loadFlowMetrics(paths, workspaceId);
-  if (current === undefined || current.sessionIDs.includes(sessionID)) return current;
+  if (current === undefined) return current;
+  const hasSession = current.sessionIDs.includes(sessionID);
+  if (hasSession && (userLanguage === undefined || current.userLanguage === userLanguage)) return current;
   const updated = FlowMetricsSchema.parse({
     ...current,
-    sessionIDs: [...current.sessionIDs, sessionID],
+    sessionIDs: hasSession ? current.sessionIDs : [...current.sessionIDs, sessionID],
+    ...(userLanguage === undefined ? {} : { userLanguage }),
     updatedAt: new Date().toISOString(),
   });
   await saveFlowMetrics(paths, workspaceId, updated);
@@ -121,7 +156,7 @@ export async function bindChildFlowSession(
 ): Promise<boolean> {
   const current = await loadFlowMetrics(paths, workspaceId);
   if (!current?.sessionIDs.includes(parentSessionID)) return false;
-  await bindFlowSession(paths, workspaceId, childSessionID);
+  await bindFlowSession(paths, workspaceId, childSessionID, current.userLanguage);
   return true;
 }
 
@@ -142,6 +177,8 @@ export async function recordFlowAssistantUsage(
     providerID: update.providerID,
     modelID: update.modelID,
     cost: Math.max(previous?.cost ?? 0, finiteNonNegative(update.cost)),
+    ...(update.role === undefined ? (previous?.role === undefined ? {} : { role: previous.role }) : { role: update.role }),
+    ...(update.taskId === undefined ? (previous?.taskId === undefined ? {} : { taskId: previous.taskId }) : { taskId: update.taskId }),
     tokens: {
       input: Math.max(previous?.tokens.input ?? 0, finiteNonNegative(update.tokens.input)),
       output: Math.max(previous?.tokens.output ?? 0, finiteNonNegative(update.tokens.output)),
@@ -155,6 +192,23 @@ export async function recordFlowAssistantUsage(
     messages: { ...current.messages, [update.id]: message },
     updatedAt: new Date().toISOString(),
   }));
+  return true;
+}
+
+export async function recordContextHydration(
+  paths: MrPaths,
+  workspaceId: string,
+  usage: Omit<ContextHydrationUsage, "recordedAt">,
+): Promise<boolean> {
+  const current = await loadFlowMetrics(paths, workspaceId);
+  if (current === undefined) return false;
+  const hydration = ContextHydrationUsageSchema.parse({ ...usage, recordedAt: new Date().toISOString() });
+  const updated = FlowMetricsSchema.parse({
+    ...current,
+    hydrations: [...current.hydrations, hydration].slice(-100),
+    updatedAt: hydration.recordedAt,
+  });
+  await saveFlowMetrics(paths, workspaceId, updated);
   return true;
 }
 
@@ -178,6 +232,7 @@ export async function finalizeFlowMetrics(
 
 export function summarizeFlowMetrics(metrics: FlowMetrics): FlowUsageSummary {
   const messages = Object.values(metrics.messages);
+  const latestContext = metrics.hydrations.at(-1);
   return {
     ticketId: metrics.ticketId,
     status: metrics.status,
@@ -191,5 +246,15 @@ export function summarizeFlowMetrics(metrics: FlowMetrics): FlowUsageSummary {
       cacheRead: total.cacheRead + message.tokens.cacheRead,
       cacheWrite: total.cacheWrite + message.tokens.cacheWrite,
     }), { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }),
+    ...(latestContext === undefined ? {} : {
+      context: {
+        role: latestContext.role,
+        lane: latestContext.lane,
+        requestedChars: latestContext.requestedChars,
+        usedChars: latestContext.usedChars,
+        truncated: latestContext.truncated,
+        hydrations: metrics.hydrations.length,
+      },
+    }),
   };
 }
