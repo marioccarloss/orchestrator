@@ -96,8 +96,7 @@ Tradicionalmente, los frameworks de agentes delegan la lógica de control, los b
 └── docs/                       # Documentación técnica completa
     ├── INSTALLATION.md
     ├── DEVELOPMENT.md
-    ├── USAGE.md
-    └── TRANSFER_MACBOOK_AIR.md
+    └── USAGE.md
 ```
 
 ---
