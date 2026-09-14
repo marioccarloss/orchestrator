@@ -1,10 +1,10 @@
 import { Parser, Language, type Node as SyntaxNode } from "web-tree-sitter";
 import { parseAllDocuments } from "yaml";
 import { createHash } from "node:crypto";
-import { readFile, mkdir, readdir } from "node:fs/promises";
+import { readFile, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./process.js";
 import type { MrPaths } from "./paths.js";
@@ -252,7 +252,7 @@ async function withParsedRoot<T>(
 
 // ─── File Discovery ──────────────────────────────────────────────────────────
 
-const EXCLUDED_DIRS = new Set(["node_modules", "vendor", ".git", "dist", "build", "out", "coverage", "target", ".next", ".turbo", "var", ".astro", ".expo", "storybook-static", "public/build"]);
+const EXCLUDED_DIRS = new Set(["node_modules", "vendor", ".git", "dist", "build", "out", "coverage", "target", ".next", ".turbo", "var", ".astro", ".expo", "storybook-static", "public/build", "runtimes"]);
 
 export const DEFAULT_INCLUDE_PATTERNS: readonly string[] = [
   // Single-repo layout: code
@@ -319,6 +319,10 @@ export const DEFAULT_INCLUDE_PATTERNS: readonly string[] = [
   "repos/*/code/*.json",
   "repos/*/code/*.yml",
   "repos/*/code/*.yaml",
+  // OpenAPI specifications stored outside source/resource trees
+  "repos/**/apis/**/*.yml",
+  "repos/**/apis/**/*.yaml",
+  "repos/**/apis/**/*.json",
   "repos/**/config/**/*.php",
   "repos/**/config/**/*.yml",
   "repos/**/config/**/*.yaml",
@@ -427,22 +431,48 @@ async function collectSourceFiles(
   const excludes = excludePatterns.map(globToRegExp);
   const found: string[] = [];
   const stack: string[] = [""];
+  const visitedDirs = new Set<string>();
+  const rootRealPath = await realpath(root);
   while (stack.length > 0) {
     const relDir = stack.pop();
     if (relDir === undefined) break;
+    const absDir = join(root, relDir);
+    try {
+      const realDir = await realpath(absDir);
+      const fromRoot = relative(rootRealPath, realDir);
+      if (isAbsolute(fromRoot) || fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) continue;
+      if (visitedDirs.has(realDir)) continue;
+      visitedDirs.add(realDir);
+    } catch {
+      continue;
+    }
     let entries;
     try {
-      entries = await readdir(join(root, relDir), { withFileTypes: true });
+      entries = await readdir(absDir, { withFileTypes: true });
     } catch {
       continue;
     }
     for (const entry of entries) {
       const relPath = relDir === "" ? entry.name : `${relDir}/${entry.name}`;
-      if (entry.isDirectory()) {
+      let isDirectory = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const realTarget = await realpath(join(root, relPath));
+          const fromRoot = relative(rootRealPath, realTarget);
+          if (isAbsolute(fromRoot) || fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) continue;
+          const target = await stat(realTarget);
+          isDirectory = target.isDirectory();
+          isFile = target.isFile();
+        } catch {
+          continue;
+        }
+      }
+      if (isDirectory) {
         if (!EXCLUDED_DIRS.has(entry.name)) stack.push(relPath);
         continue;
       }
-      if (!entry.isFile()) continue;
+      if (!isFile) continue;
       if (CONFIG_SKIP_FILES.has(entry.name)) continue;
       if (!includes.some((re) => re.test(relPath))) continue;
       if (excludes.some((re) => re.test(relPath))) continue;
@@ -1596,7 +1626,7 @@ export async function saveAtlasGraph(paths: MrPaths, workspaceId: string, graph:
   const cacheDir = join(paths.cacheRoot, workspaceId);
   await mkdir(cacheDir, { recursive: true });
   const cachePath = join(cacheDir, ATLAS_CACHE_FILE);
-  await atomicWrite(cachePath, canonicalJson(graph));
+  await atomicWrite(cachePath, JSON.stringify(graph));
   return cachePath;
 }
 

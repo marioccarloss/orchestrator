@@ -1,9 +1,10 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { AtlasIndexer, findNodeByName, findNodesByKind, getNodeDependencies, getImpactAnalysis, checkGovernance } from "../src/core/atlas.js";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { AtlasIndexer, findNodeByName, findNodesByKind, getNodeDependencies, getImpactAnalysis, checkGovernance, loadAtlasGraph, saveAtlasGraph } from "../src/core/atlas.js";
+import { mkdtemp, readFile, rm, symlink, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolvePaths } from "../src/core/paths.js";
 
 async function createTestProject(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "mr-atlas-"));
@@ -424,6 +425,38 @@ test("tsconfig path aliases resolve while external packages remain in coverage",
     const graph = await new AtlasIndexer().indexWorkspace(dir);
     assert.equal(graph.coverage.unresolvedImports.some((row) => row.specifier === "@/domain/user"), false);
     assert.ok(graph.coverage.unresolvedImports.some((row) => row.specifier === "react"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+test("Atlas cache is minified and remains loadable", async () => {
+  const dir = await createTestProject();
+  try {
+    const paths = resolvePaths({ HOME: dir });
+    const graph = await new AtlasIndexer().indexWorkspace(dir);
+    const cachePath = await saveAtlasGraph(paths, "test-workspace", graph);
+    const raw = await readFile(cachePath, "utf8");
+    assert.equal(raw.includes("\n"), false);
+    assert.deepEqual(await loadAtlasGraph(paths, "test-workspace"), graph);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+test("Atlas follows internal directory symlinks for OpenAPI files and skips runtimes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mr-atlas-symlink-"));
+  try {
+    await mkdir(join(dir, "runtimes", "api-source"), { recursive: true });
+    await mkdir(join(dir, "runtimes", "ignored", "src"), { recursive: true });
+    await mkdir(join(dir, "repos", "service"), { recursive: true });
+    await writeFile(join(dir, "runtimes", "api-source", "openapi.yaml"), "openapi: 3.0.0\ninfo:\n  title: Example\n  version: 1.0.0\n");
+    await writeFile(join(dir, "runtimes", "ignored", "src", "skip.ts"), "export const skipped = true;\n");
+    await symlink("../../runtimes/api-source", join(dir, "repos", "service", "apis"));
+
+    const graph = await new AtlasIndexer().indexWorkspace(dir);
+    assert.ok(graph.files.some((file) => file.path === "repos/service/apis/openapi.yaml"));
+    assert.equal(graph.files.some((file) => file.path.startsWith("runtimes/")), false);
   } finally {
     await rm(dir, { recursive: true });
   }
