@@ -9,15 +9,17 @@ test("creates native workflow adapters for every selected client without duplica
     "claude-code",
     "antigravity-desktop",
     "agy-cli",
+    "fx-cli",
   ], "/home/tester");
 
-  expect(artifacts).toHaveLength(15);
-  expect(new Set(artifacts.map((artifact) => artifact.path)).size).toBe(15);
+  expect(artifacts).toHaveLength(18);
+  expect(new Set(artifacts.map((artifact) => artifact.path)).size).toBe(18);
   expect(artifacts.map((artifact) => artifact.invocation)).toContain("$flow");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.cursor/skills/flow/SKILL.md");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.codex/skills/flow/SKILL.md");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.gemini/commands/flow.toml");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.gemini/config/skills/blueprint/SKILL.md");
+  expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.fx/skills/flow/SKILL.md");
 });
 
 test("all adapters bind a workspace and delegate state to mr-orchestrator tools", () => {
@@ -27,10 +29,12 @@ test("all adapters bind a workspace and delegate state to mr-orchestrator tools"
     "claude-code",
     "antigravity-desktop",
     "agy-cli",
+    "fx-cli",
   ], "/home/tester");
 
   for (const artifact of artifacts) {
     expect(artifact.content).toContain("mr_bind_workspace");
+    expect(artifact.content).toContain("action=validate");
     if (artifact.path.includes("flow-models")) {
       expect(artifact.content).toContain("mr_models");
     } else if (artifact.path.includes("flow")) {
@@ -66,6 +70,7 @@ test("all native workflow adapters keep context input after static instructions"
     "claude-code",
     "antigravity-desktop",
     "agy-cli",
+    "fx-cli",
   ], "/home/tester");
 
   for (const artifact of artifacts) {
@@ -81,20 +86,23 @@ test("creates an explicit model recovery workflow for every host", () => {
     "claude-code",
     "antigravity-desktop",
     "agy-cli",
+    "fx-cli",
   ], "/home/tester");
   const modelAdapters = artifacts.filter((artifact) => artifact.path.includes("flow-models"));
 
-  expect(modelAdapters).toHaveLength(5);
+  expect(modelAdapters).toHaveLength(6);
   for (const artifact of modelAdapters) {
     expect(artifact.content).toContain("mr_models");
     expect(artifact.content).toContain("action=candidates");
     expect(artifact.content).toContain("explicit confirmation");
     expect(artifact.content).toContain("Never claim that a candidate has available quota");
+    const expectedHarness = artifact.owner;
+    expect(artifact.content).toContain(`harness=${expectedHarness}`);
   }
 });
 
 test("preserves isolated role responsibilities in flow adapters", () => {
-  const artifacts = adapterArtifacts(["codex-cli", "cursor-cli", "antigravity-desktop", "agy-cli"], "/home/tester");
+  const artifacts = adapterArtifacts(["codex-cli", "cursor-cli", "antigravity-desktop", "agy-cli", "fx-cli"], "/home/tester");
   const flowAdapters = artifacts.filter((artifact) => /(?:\/|^)flow(?:\.|\/)/.test(artifact.path));
 
   for (const artifact of flowAdapters) {
@@ -104,5 +112,14 @@ test("preserves isolated role responsibilities in flow adapters", () => {
     expect(artifact.content).toContain("judge-a role");
     expect(artifact.content).toContain("judge-b role");
     expect(artifact.content).toContain("fix role");
+    if (artifact.owner !== "antigravity") {
+      expect(artifact.content).toContain(`run-role ${artifact.owner} <role>`);
+    }
   }
+});
+
+test("names the independent Gemini MCP server selected by each adapter", () => {
+  const artifacts = adapterArtifacts(["antigravity-desktop", "agy-cli"], "/home/tester");
+  expect(artifacts.filter((artifact) => artifact.owner === "antigravity").every((artifact) => artifact.content.includes("mr-orchestrator-antigravity"))).toBe(true);
+  expect(artifacts.filter((artifact) => artifact.owner === "agy").every((artifact) => artifact.content.includes("mr-orchestrator-agy"))).toBe(true);
 });

@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import type { HarnessId } from "./harness.js";
 
 export interface FacadeTool {
   description: string;
@@ -73,9 +74,10 @@ export interface Bridge {
   call(name: string, args: Record<string, unknown>): Promise<unknown>;
   listTools(): Promise<Record<string, FacadeTool>>;
   boundWorkspace(): RegisteredWorkspace | undefined;
+  harness(): HarnessId;
 }
 
-export function createBridge(loader: FacadeLoader, workspaces: RegisteredWorkspace[] = []): Bridge {
+export function createBridge(loader: FacadeLoader, harness: HarnessId, workspaces: RegisteredWorkspace[] = []): Bridge {
   let bound: RegisteredWorkspace | undefined;
   let tools: ToolRegistry | undefined;
 
@@ -91,7 +93,7 @@ export function createBridge(loader: FacadeLoader, workspaces: RegisteredWorkspa
     }
     bound = match;
     tools = await loader(match.path);
-    return { title: "Workspace Bound", output: `Bound mr-orchestrator to ${match.id} at ${match.path}.` };
+    return { title: "Workspace Bound", output: `Bound mr-orchestrator (${harness}) to ${match.id} at ${match.path}.` };
   }
 
   return {
@@ -102,7 +104,8 @@ export function createBridge(loader: FacadeLoader, workspaces: RegisteredWorkspa
       }
       const tool = tools[name];
       if (tool === undefined) throw new Error(`Unknown mr-orchestrator tool '${name}'.`);
-      return await Reflect.apply(tool.execute, undefined, [args]);
+      const scopedArgs = name === "mr_models" ? { ...args, harness } : args;
+      return await Reflect.apply(tool.execute, undefined, [scopedArgs]);
     },
     async listTools() {
       const registry = tools ?? await (async () => {
@@ -114,6 +117,9 @@ export function createBridge(loader: FacadeLoader, workspaces: RegisteredWorkspa
     boundWorkspace() {
       return bound;
     },
+    harness() {
+      return harness;
+    },
   };
 }
 
@@ -122,15 +128,15 @@ const bindSchema = z.object({
   workspacePath: z.string().optional().describe("Registered mr-orchestrator workspace root"),
 });
 
-export async function createMcpBridge(loader: FacadeLoader, workspaces: RegisteredWorkspace[]): Promise<McpServer> {
-  const bridge = createBridge(loader, workspaces);
+export async function createMcpBridge(loader: FacadeLoader, workspaces: RegisteredWorkspace[], harness: HarnessId): Promise<McpServer> {
+  const bridge = createBridge(loader, harness, workspaces);
   const server = new McpServer(
     {
       name: "mr-orchestrator-bridge",
       version: "0.1.0",
     },
     {
-      instructions: "Before any mr-orchestrator tool call, call mr_bind_workspace with one registered workspaceId or workspacePath. The bridge never assumes a current working directory.",
+      instructions: `Harness identity is '${harness}'. Before any mr-orchestrator tool call, call mr_bind_workspace with one registered workspaceId or workspacePath. The bridge never assumes a current working directory.`,
     },
   );
 
@@ -170,7 +176,7 @@ async function loaderForToolListing(loader: FacadeLoader, workspaces: Registered
   return loader(first.path);
 }
 
-export async function serveStdio(loader: FacadeLoader, workspaces: RegisteredWorkspace[]): Promise<void> {
-  const server = await createMcpBridge(loader, workspaces);
+export async function serveStdio(loader: FacadeLoader, workspaces: RegisteredWorkspace[], harness: HarnessId): Promise<void> {
+  const server = await createMcpBridge(loader, workspaces, harness);
   await server.connect(new StdioServerTransport());
 }

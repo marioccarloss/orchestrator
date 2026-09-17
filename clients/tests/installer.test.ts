@@ -62,7 +62,7 @@ afterAll(async () => {
 });
 
 test("installs and uninstalls only owned unchanged adapters", async () => {
-  await runInstaller(`await install(["codex-cli", "cursor-cli", "claude-code", "antigravity-desktop", "agy-cli"]);`);
+  await runInstaller(`await install(["codex-cli", "cursor-cli", "claude-code", "antigravity-desktop", "agy-cli", "fx-cli"]);`);
 
   expect(await readFile(join(sandbox, ".cursor", "skills", "flow", "SKILL.md"), "utf8")).toBe(customCursorFlow);
   expect(await readFile(join(sandbox, ".cursor", "skills", "blueprint", "SKILL.md"), "utf8")).toContain("/blueprint");
@@ -70,13 +70,32 @@ test("installs and uninstalls only owned unchanged adapters", async () => {
   expect(await readFile(join(sandbox, ".codex", "skills", "blueprint", "SKILL.md"), "utf8")).toContain("$blueprint");
   expect(await readFile(join(sandbox, ".codex", "skills", "flow", "SKILL.md"), "utf8")).toContain("$flow");
   expect(await readFile(join(sandbox, ".gemini", "commands", "flow.toml"), "utf8")).toContain("{{args}}");
+  expect(await readFile(join(sandbox, ".fx", "skills", "flow", "SKILL.md"), "utf8")).toContain("$flow");
   expect(await readFile(join(sandbox, ".cursor", "skills", "flow-models", "SKILL.md"), "utf8")).toContain("mr_models");
+  const cursorConfig = JSON.parse(await readFile(join(sandbox, ".cursor", "mcp.json"), "utf8")) as {
+    mcpServers: Record<string, { args?: string[]; env?: Record<string, string> }>;
+  };
+  expect(cursorConfig.mcpServers["mr-orchestrator"]?.args?.slice(-2)).toEqual(["--harness", "cursor"]);
+  expect(cursorConfig.mcpServers["mr-orchestrator"]?.env?.["MR_HARNESS_ID"]).toBe("cursor");
+  const codexConfig = await readFile(join(sandbox, ".codex", "config.toml"), "utf8");
+  expect(codexConfig).toContain('"--harness", "codex"');
+  expect(codexConfig).toContain('MR_HARNESS_ID = "codex"');
+  const geminiConfig = JSON.parse(await readFile(join(sandbox, ".gemini", "config", "mcp_config.json"), "utf8")) as {
+    mcpServers: Record<string, { args?: string[] }>;
+  };
+  expect(geminiConfig.mcpServers["mr-orchestrator-antigravity"]?.args?.slice(-2)).toEqual(["--harness", "antigravity"]);
+  expect(geminiConfig.mcpServers["mr-orchestrator-agy"]?.args?.slice(-2)).toEqual(["--harness", "agy"]);
+  const fxConfig = JSON.parse(await readFile(join(sandbox, ".fx", "mcp.json"), "utf8")) as {
+    mcp: Record<string, { command?: string[]; environment?: Record<string, string> }>;
+  };
+  expect(fxConfig.mcp["mr-orchestrator"]?.command?.slice(-2)).toEqual(["--harness", "fx"]);
+  expect(fxConfig.mcp["mr-orchestrator"]?.environment?.["MR_HARNESS_ID"]).toBe("fx");
 
   const manifest = JSON.parse(await readFile(join(sandbox, "data", "mr-orchestrator-clients", "manifest.json"), "utf8")) as {
     entries: Array<{ kind?: string; path: string }>;
   };
-  expect(manifest.entries.filter((entry) => entry.kind === "config")).toHaveLength(4);
-  expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(14);
+  expect(manifest.entries.filter((entry) => entry.kind === "config")).toHaveLength(5);
+  expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(17);
 
   await runInstaller("await uninstall(false);");
 
