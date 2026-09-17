@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-09-17
+
+### Added
+
+- Added partial per-harness model overrides, validated native catalogs, effective roster diagnostics, role dispatch for external clients, and fx CLI adapter support.
+- Added one-shot Engram prefetch with Atlas warm-up before planning and compact Flow completion memories for future runs.
+- Added typed English-only internal execution receipts for implementation and remediation roles.
+
+### Changed
+
+- Model-facing SDD, Atlas, evidence, and context payloads now use whitespace-free JSON while persisted artifacts remain human-readable.
+- `next-task` now transports `ContextBundle` as a nested object instead of a double-serialized JSON string.
+- External MCP bridges now bind a trusted harness identity and reject missing, conflicting, unsupported, or ambiguous model mappings fail-closed.
+
+### Fixed
+
+- Removed the implicit Antigravity fallback when an external bridge starts without a trusted harness identity.
+- Updated the real bridge smoke fixture to use the current model-assignment schema and preserve global assignments while testing scoped overrides.
+
+## [0.9.1] - 2026-09-14
+
+### Changed
+
+- Improved Atlas incremental indexing and cache validation for changed workspace content.
+
 ## [0.9.0] - 2026-09-14
 
 ### Added
@@ -137,6 +162,10 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Bun-only runtime, package management, build, test, and CLI workflow using the public npm registry.
 - GitHub Actions verification for type checking, linting, and tests.
 
+[0.9.2]: https://github.com/marioccarloss/orchestrator/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/marioccarloss/orchestrator/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/marioccarloss/orchestrator/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/marioccarloss/orchestrator/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/marioccarloss/orchestrator/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/marioccarloss/orchestrator/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/marioccarloss/orchestrator/compare/v0.5.0...v0.6.0
