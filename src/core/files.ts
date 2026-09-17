@@ -7,6 +7,11 @@ export function canonicalJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+/** Compact serialization for model-facing transport. Persisted files stay readable via canonicalJson. */
+export function compactJson(value: unknown): string {
+  return JSON.stringify(value);
+}
+
 export function sha256(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }

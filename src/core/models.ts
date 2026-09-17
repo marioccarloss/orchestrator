@@ -3,7 +3,25 @@ import type { MrPaths } from "./paths.js";
 import { runCommand } from "./process.js";
 import { refreshInstallManifestFiles } from "./install.js";
 import {
+  legacyOpenCodeCatalog,
+  loadHarnessCatalog,
+  loadHarnessOverride,
+  nativeModelMap,
+  removeHarnessOverride,
+  resolveEffectiveModels,
+  resolveStoredHarnessModels,
+  saveHarnessCatalog,
+  saveHarnessOverride,
+  validateConfiguredHarnesses,
+  writeEffectiveHarnessModels,
+  type EffectiveHarnessModels,
+} from "./harness-models.js";
+import {
   ModelMapSchema,
+  type HarnessId,
+  type HarnessModelCatalog,
+  type HarnessModelOverride,
+  type HarnessRoleOverride,
   type ModelAssignment,
   type ModelMap,
   type ModelTarget,
@@ -278,6 +296,207 @@ export function fetchAvailableModels(): readonly string[] {
   return discoverAvailableModels().models;
 }
 
+async function effectiveForOverride(
+  paths: MrPaths,
+  global: ModelMap,
+  harness: HarnessId,
+  override: HarnessModelOverride | undefined,
+): Promise<EffectiveHarnessModels> {
+  const storedCatalog = await loadHarnessCatalog(paths, harness);
+  if (storedCatalog === undefined && harness !== "opencode") {
+    throw new Error(`[${harness}] no model catalog configured; create its catalog.json before assigning models`);
+  }
+  return resolveEffectiveModels(global, override, storedCatalog ?? legacyOpenCodeCatalog(global, override), harness);
+}
+
+export async function loadEffectiveModels(paths: MrPaths, harness: HarnessId): Promise<EffectiveHarnessModels> {
+  return resolveStoredHarnessModels(paths, await loadModels(paths), harness);
+}
+
+async function applyHarnessOverride(
+  paths: MrPaths,
+  harness: HarnessId,
+  override: HarnessModelOverride | undefined,
+  sync = true,
+): Promise<EffectiveHarnessModels> {
+  const global = await loadModels(paths);
+  const effective = await effectiveForOverride(paths, global, harness, override);
+  if (override === undefined || Object.keys(override.roles).length === 0) {
+    await removeHarnessOverride(paths, harness);
+  } else {
+    await saveHarnessOverride(paths, override);
+  }
+  await writeEffectiveHarnessModels(paths, effective);
+  if (sync && harness === "opencode") await syncAllWorkspaces(paths);
+  return effective;
+}
+
+export async function setHarnessModelRole(
+  paths: MrPaths,
+  harness: HarnessId,
+  role: ModelRole,
+  model: string,
+  slot: ModelSlot = "model",
+  sync = true,
+): Promise<EffectiveHarnessModels> {
+  const current = await loadHarnessOverride(paths, harness);
+  const roleOverride = current?.roles[role];
+  const target = parseModelTarget(model);
+  const updatedRole: HarnessRoleOverride = slot === "model"
+    ? { ...(roleOverride?.alternative === undefined ? {} : { alternative: roleOverride.alternative }), primary: target }
+    : { ...(roleOverride?.primary === undefined ? {} : { primary: roleOverride.primary }), alternative: target };
+  return applyHarnessOverride(paths, harness, {
+    schemaVersion: SCHEMA_VERSION,
+    harness,
+    roles: { ...(current?.roles ?? {}), [role]: updatedRole },
+  }, sync);
+}
+
+function sameTarget(left: ModelTarget, right: ModelTarget): boolean {
+  return left.model === right.model && left.variant === right.variant;
+}
+
+export async function setHarnessModels(
+  paths: MrPaths,
+  harness: HarnessId,
+  models: ModelMap,
+  sync = true,
+): Promise<EffectiveHarnessModels> {
+  const global = await loadModels(paths);
+  const logical = ModelMapSchema.parse(models);
+  const roles: HarnessModelOverride["roles"] = {};
+  for (const role of ROLES.map((metadata) => metadata.role)) {
+    const primary = logical.roles[role];
+    const globalPrimary = global.roles[role];
+    const roleOverride: { primary?: ModelTarget; alternative?: ModelTarget } = {};
+    if (!sameTarget(primary, globalPrimary)) {
+      roleOverride.primary = { model: primary.model, ...(primary.variant === undefined ? {} : { variant: primary.variant }) };
+    }
+    if (!sameTarget(primary.alternative, globalPrimary.alternative)) {
+      roleOverride.alternative = primary.alternative;
+    }
+    if (roleOverride.primary !== undefined || roleOverride.alternative !== undefined) roles[role] = roleOverride;
+  }
+  return applyHarnessOverride(paths, harness, {
+    schemaVersion: SCHEMA_VERSION,
+    harness,
+    roles,
+  }, sync);
+}
+
+export async function resetHarnessModels(
+  paths: MrPaths,
+  harness: HarnessId,
+  role?: ModelRole,
+  slot?: ModelSlot,
+  sync = true,
+): Promise<EffectiveHarnessModels> {
+  const current = await loadHarnessOverride(paths, harness);
+  if (current === undefined || role === undefined) return applyHarnessOverride(paths, harness, undefined, sync);
+  let roles = { ...current.roles };
+  const roleOverride = roles[role];
+  if (roleOverride === undefined) return applyHarnessOverride(paths, harness, current, sync);
+  if (slot === undefined) {
+    roles = Object.fromEntries(Object.entries(roles).filter(([key]) => key !== role));
+  } else {
+    const updatedRole: HarnessRoleOverride | undefined = slot === "model"
+      ? (roleOverride.alternative === undefined ? undefined : { alternative: roleOverride.alternative })
+      : (roleOverride.primary === undefined ? undefined : { primary: roleOverride.primary });
+    if (updatedRole === undefined) roles = Object.fromEntries(Object.entries(roles).filter(([key]) => key !== role));
+    else roles[role] = updatedRole;
+  }
+  return applyHarnessOverride(paths, harness, {
+    schemaVersion: SCHEMA_VERSION,
+    harness,
+    roles,
+  }, sync);
+}
+
+const OPENCODE_VARIANTS = ["low", "medium", "high", "xhigh", "max"] as const;
+const FX_VARIANTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export interface FxDiscoveredModel {
+  readonly id: string;
+  readonly source?: string;
+}
+
+function fxLogicalModel(model: FxDiscoveredModel): string {
+  if (model.id.includes("/")) return model.id;
+  const source = model.source?.toLowerCase() ?? "";
+  if (source.includes("codex")) return `openai/${model.id}`;
+  if (source.includes("grok")) return `xai/${model.id}`;
+  return `fx/${model.id}`;
+}
+
+export function parseFxAvailableModels(output: string): readonly FxDiscoveredModel[] {
+  const parsed: unknown = JSON.parse(output);
+  if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { models?: unknown }).models)) {
+    throw new Error("fx models --json returned an invalid model catalog");
+  }
+  return (parsed as { models: unknown[] }).models.map((value) => {
+    if (typeof value !== "object" || value === null || typeof (value as { id?: unknown }).id !== "string") {
+      throw new Error("fx models --json returned a model without an id");
+    }
+    const candidate = value as { id: string; source?: unknown };
+    return {
+      id: candidate.id,
+      ...(typeof candidate.source === "string" ? { source: candidate.source } : {}),
+    };
+  });
+}
+
+export interface RefreshedHarnessCatalog {
+  readonly catalog: HarnessModelCatalog;
+  readonly effective?: EffectiveHarnessModels;
+  readonly warning?: string;
+}
+
+export async function refreshHarnessCatalog(paths: MrPaths, harness: HarnessId): Promise<RefreshedHarnessCatalog> {
+  if (harness !== "opencode" && harness !== "fx") {
+    throw new Error(`[${harness}] automatic model discovery is not implemented; maintain ${harness}/catalog.json explicitly`);
+  }
+  const discovered = harness === "opencode"
+    ? discoverAvailableModels()
+    : (() => {
+        const result = runCommand("fx", ["models", "--json"]);
+        if (!result.ok) throw new Error(`[fx] could not discover models: ${result.stderr.trim() || result.stdout.trim() || "fx models --json failed"}`);
+        return { models: parseFxAvailableModels(result.stdout), source: "fx models --json" };
+      })();
+  const catalogModels = harness === "opencode"
+    ? Object.fromEntries(discovered.models.map((model) => [model, {
+        nativeModel: model,
+        variants: Object.fromEntries(OPENCODE_VARIANTS.map((variant) => [variant, variant])),
+      }]))
+    : Object.fromEntries((discovered.models as readonly FxDiscoveredModel[]).map((model) => [fxLogicalModel(model), {
+        nativeModel: model.id,
+        variants: Object.fromEntries(FX_VARIANTS.map((variant) => [variant, variant])),
+      }]));
+  const catalog: HarnessModelCatalog = {
+    schemaVersion: SCHEMA_VERSION,
+    harness,
+    applicationMode: harness === "opencode" ? "native-role" : "per-invocation",
+    models: catalogModels,
+    provenance: { source: "discovered", refreshedAt: new Date().toISOString() },
+  };
+  await saveHarnessCatalog(paths, catalog);
+  let effective: EffectiveHarnessModels | undefined;
+  let validationWarning: string | undefined;
+  try {
+    const global = await loadModels(paths);
+    effective = resolveEffectiveModels(global, await loadHarnessOverride(paths, harness), catalog, harness);
+    await writeEffectiveHarnessModels(paths, effective);
+  } catch (error: unknown) {
+    validationWarning = `Catalog saved, but the current ${harness} roster is invalid: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const discoveryWarning = "warning" in discovered ? discovered.warning : undefined;
+  const warning = [discoveryWarning, validationWarning].filter((value): value is string => value !== undefined).join("\n");
+  return {
+    catalog,
+    ...(effective === undefined ? {} : { effective }),
+    ...(warning.length === 0 ? {} : { warning }),
+  };
+}
+
 export async function saveModels(paths: MrPaths, models: ModelMap): Promise<void> {
   const valid = ModelMapSchema.parse(models);
   await atomicWrite(paths.models, canonicalJson(valid));
@@ -293,7 +512,10 @@ export async function syncAllWorkspaces(paths: MrPaths): Promise<readonly string
   // Model definitions are global and must also refresh when there are no
   // registered workspaces. syncWorkspace writes them too, but this final write
   // makes the zero-workspace case correct and deterministic.
-  const models = await loadModels(paths);
+  const global = await loadModels(paths);
+  const effective = await resolveStoredHarnessModels(paths, global, "opencode");
+  const models = nativeModelMap(effective);
+  await writeEffectiveHarnessModels(paths, effective);
   await writeGlobalDefinitions(paths, models);
   await refreshInstallManifestFiles(paths, buildGlobalDefinitionFiles(paths, models));
   return synced;
@@ -301,7 +523,9 @@ export async function syncAllWorkspaces(paths: MrPaths): Promise<readonly string
 
 export async function setModels(paths: MrPaths, models: ModelMap, sync = true): Promise<ModelMap> {
   const valid = ModelMapSchema.parse(models);
+  const effectiveHarnesses = await validateConfiguredHarnesses(paths, valid);
   await saveModels(paths, valid);
+  await Promise.all(effectiveHarnesses.map((effective) => writeEffectiveHarnessModels(paths, effective)));
   if (sync) {
     await syncAllWorkspaces(paths);
   }
@@ -345,28 +569,36 @@ export async function promoteAlternativeModel(
   paths: MrPaths,
   role: ModelRole,
   failedModel: string,
+  harness: HarnessId = "opencode",
 ): Promise<AlternativePromotion> {
-  const current = await loadModels(paths);
-  const assignment = current.roles[role];
-  if (baseModel(assignment.model) !== baseModel(failedModel)) {
+  const effective = await loadEffectiveModels(paths, harness);
+  const assignment = effective.roles[role];
+  const failedBase = baseModel(failedModel);
+  if (baseModel(assignment.primary.native.model) !== failedBase && baseModel(assignment.primary.logical.model) !== failedBase) {
     return {
       promoted: false,
-      model: formatModelTarget(assignment),
-      alternative: formatModelTarget(assignment.alternative),
+      model: formatModelTarget(assignment.primary.logical),
+      alternative: formatModelTarget(assignment.alternative.logical),
     };
   }
-  const promoted: ModelAssignment = {
-    ...assignment.alternative,
-    alternative: { model: assignment.model, ...(assignment.variant === undefined ? {} : { variant: assignment.variant }) },
-  };
-  await setModels(paths, {
+  const current = await loadHarnessOverride(paths, harness);
+  const promotedOverride: HarnessModelOverride = {
     schemaVersion: SCHEMA_VERSION,
-    roles: { ...current.roles, [role]: promoted },
-  });
+    harness,
+    roles: {
+      ...(current?.roles ?? {}),
+      [role]: {
+        primary: assignment.alternative.logical,
+        alternative: assignment.primary.logical,
+      },
+    },
+  };
+  const promoted = await applyHarnessOverride(paths, harness, promotedOverride);
+  const promotedAssignment = promoted.roles[role];
   return {
     promoted: true,
-    model: formatModelTarget(promoted),
-    alternative: formatModelTarget(promoted.alternative),
+    model: formatModelTarget(promotedAssignment.primary.logical),
+    alternative: formatModelTarget(promotedAssignment.alternative.logical),
   };
 }
 

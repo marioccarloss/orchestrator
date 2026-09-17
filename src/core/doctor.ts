@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { delimiter } from "node:path";
-import { generatedConfigPath } from "./config.js";
+import { generatedConfigPath, loadModels } from "./config.js";
 import { capabilityPaths, loadCapabilitySelection } from "./capabilities.js";
 import { loadManifest } from "./install.js";
 import type { MrPaths } from "./paths.js";
@@ -10,6 +10,8 @@ import { AtlasIndexer, computeWorkspaceFileHashes, isGraphFresh, loadAtlasGraph 
 import { discoverRepositories } from "./rules/discover.js";
 import { profileRepository } from "./rules/profiler.js";
 import { loadWorkspaceRules, staleRuleRepositories } from "./rules/store.js";
+import { configuredHarnesses, resolveStoredHarnessModels } from "./harness-models.js";
+import type { HarnessId } from "./schema.js";
 
 export interface CheckResult {
   readonly name: string;
@@ -24,6 +26,37 @@ function commandVersion(command: string, arguments_: readonly string[]): CheckRe
     ok: result.ok,
     detail: result.ok ? `${result.stdout}${result.stderr}`.trim() : "not available",
   };
+}
+
+export async function checkHarnessModelRosters(paths: MrPaths): Promise<readonly CheckResult[]> {
+  try {
+    const models = await loadModels(paths);
+    const harnesses = new Set<HarnessId>(["opencode", ...await configuredHarnesses(paths)]);
+    const checks: CheckResult[] = [];
+    for (const harness of harnesses) {
+      try {
+        const effective = await resolveStoredHarnessModels(paths, models, harness);
+        checks.push({
+          name: `${harness} model roster`,
+          ok: true,
+          detail: `${effective.applicationMode}; ${String(Object.keys(effective.roles).length)} roles validated`,
+        });
+      } catch (error: unknown) {
+        checks.push({
+          name: `${harness} model roster`,
+          ok: false,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return checks;
+  } catch (error: unknown) {
+    return [{
+      name: "model rosters",
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+    }];
+  }
 }
 
 export async function runDoctor(paths: MrPaths, env: NodeJS.ProcessEnv = process.env): Promise<readonly CheckResult[]> {
@@ -74,6 +107,8 @@ export async function runDoctor(paths: MrPaths, env: NodeJS.ProcessEnv = process
   } catch (error: unknown) {
     checks.push({ name: "install manifest", ok: false, detail: (error as Error).message });
   }
+
+  checks.push(...await checkHarnessModelRosters(paths));
 
   const registry = await loadRegistry(paths);
   checks.push({

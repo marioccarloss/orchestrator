@@ -4,12 +4,13 @@ import { loadRegistry, detectWorkspace } from "./core/workspace.js";
 import { resolvePaths } from "./core/paths.js";
 import { buildTaskDeveloperNote, messagesFor, renderCoverageReceipt, renderFlowStatus, renderFlowUsage, renderPlanExplanation, renderVerdict, renderWorkspaceMap } from "./core/render.js";
 import { loadModels } from "./core/config.js";
-import { buildModelCandidates, discoverAvailableModels, formatModelTarget, promoteAlternativeModel, ROLES, setModelRole, type ModelRole } from "./core/models.js";
+import { buildModelCandidates, discoverAvailableModels, formatModelTarget, loadEffectiveModels, promoteAlternativeModel, refreshHarnessCatalog, resetHarnessModels, ROLES, setHarnessModelRole, setModelRole, type ModelRole } from "./core/models.js";
+import { harnessCatalogPath, loadHarnessCatalog, parseHarnessId, writeEffectiveHarnessModels } from "./core/harness-models.js";
 import { writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { implementationAgentForDifficulty, JudgeFindingsSchema, JudgeVerdictSchema, requiresJudgment, type FlowState, type FlowEvent, type PlanCapsule } from "./core/flow-schema.js";
 import { getDiffHash, getFullDiff, mergeVerdicts, validateJudgeFindings } from "./core/judgment.js";
-import { canonicalJson, sha256 } from "./core/files.js";
+import { canonicalJson, compactJson, sha256 } from "./core/files.js";
 import {
   AtlasIndexer,
   saveAtlasGraph,
@@ -31,7 +32,7 @@ import { getOrIndexAtlas } from "./core/atlas-service.js";
 import { addEvidence, checkEvidenceFreshness, listEvidence, loadEvidenceStore, readEvidenceSlice, EvidenceKindSchema, StoredEvidenceSourceSchema, type EvidenceStore, type FreshnessResult } from "./core/evidence-store.js";
 import { gateAfterImplement, gateBeforeImplement, gateBeforeJudgment, gatePlan, gateRepositoryRules, gatesMode, renderGateResult, shouldBlockGate, type GateResult } from "./core/gates.js";
 import { getGitDiffFiles, getGitDiffNames, loadVerificationReceipt, saveVerificationReceipt, VerificationReceiptSchema } from "./core/verification.js";
-import { hydrateContext, serializeBundle, type HydrationRole } from "./core/context-hydrator.js";
+import { hydrateContext, serializeBundle, type ContextBundle, type HydrationRole } from "./core/context-hydrator.js";
 import { loadRepositoryProfiles, loadWorkspaceRules } from "./core/rules/store.js";
 import { ruleInvariants, rulesDigest } from "./core/rules/generator.js";
 import { assessRiskLane, type RiskLane } from "./core/risk.js";
@@ -81,7 +82,16 @@ import {
 } from "./core/blueprint-schema.js";
 import { classifyQuotaError, resolveModelRole } from "./core/quota.js";
 import { PersistentMemoryStore } from "./core/memory-store.js";
+import {
+  buildFlowCompletionMemory,
+  buildFlowMemoryQuery,
+  loadFlowEngramPrefetch,
+  persistFlowCompletionMemory,
+  renderFlowEngramPrefetch,
+  warmFlowContext,
+} from "./core/engram-bridge.js";
 import { InsufficientEvidenceSchema } from "./core/grounding.js";
+import { InternalExecutionReceiptSchema, serializeInternalExecutionReceipt } from "./core/internal-receipt.js";
 import {
   bindChildFlowSession,
   bindFlowSession,
@@ -124,6 +134,7 @@ export async function createMrOrchestrator(
   const workspace = detectWorkspace(registry, ctx.directory);
   const workspaceId = workspace?.id ?? "unknown";
   const workspaceRoot = workspace?.root ?? ctx.directory;
+  const activeHarness = parseHarnessId(process.env["MR_HARNESS_ID"]);
   const persistedFlow = await loadFlowState(paths, workspaceId);
   let outputLanguage = normalizeUserLanguage(persistedFlow?.userLanguage);
   const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string }>();
@@ -205,6 +216,26 @@ export async function createMrOrchestrator(
     return result.graph;
   }
 
+  async function warmTicketContext(ticketId: string, title: string, description: string, extra?: string): Promise<string> {
+    try {
+      const prefetch = await warmFlowContext({
+        paths,
+        workspaceId,
+        workspaceRoot,
+        ticketId,
+        query: buildFlowMemoryQuery(title, description, extra),
+        indexAtlas: async () => {
+          const result = await getOrIndexAtlas(paths, workspaceId, workspaceRoot);
+          atlasFreshness.set(result.graph, result.fresh);
+          return { reindexed: result.reindexed };
+        },
+      });
+      return renderFlowEngramPrefetch(prefetch);
+    } catch (error: unknown) {
+      return `Flow warm-up skipped: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
   async function getTaskEvidenceFreshness(
     task: SddTask,
     store: EvidenceStore,
@@ -223,7 +254,7 @@ export async function createMrOrchestrator(
     return `${output}\n\n${renderCoverageReceipt(graph, atlasFreshness.get(graph) ?? false, files === undefined ? {} : { files }, outputLanguage)}`;
   }
 
-  async function hydrateFor(role: HydrationRole, taskId?: string, budgetChars?: number, sessionID?: string): Promise<string> {
+  async function hydrateFor(role: HydrationRole, taskId?: string, budgetChars?: number, sessionID?: string): Promise<ContextBundle> {
     const research = await loadResearch(paths, workspaceId);
     if (research === undefined) throw new Error("No research capsule found.");
     const store = await loadEvidenceStore(paths, workspaceId, research.ticketId);
@@ -247,6 +278,8 @@ export async function createMrOrchestrator(
       ]);
       if (verdictA !== undefined && verdictB !== undefined) findings = mergeVerdicts(verdictA, verdictB).findings;
     }
+    const engramPrefetch = await loadFlowEngramPrefetch(paths, workspaceId);
+    const memoryContext = engramPrefetch?.ticketId === research.ticketId ? engramPrefetch.hits : undefined;
     const bundle = await hydrateContext({
       role, lane, ticketId: research.ticketId, research, store, graph,
       readSlice: (ref) => readEvidenceSlice(paths, workspaceId, research.ticketId, ref),
@@ -257,6 +290,7 @@ export async function createMrOrchestrator(
       ...(budgetChars === undefined ? {} : { budgetChars }),
       ...(workspaceRules === undefined ? {} : { rules: rulesDigest(workspaceRules, repo, task?.files.map((file) => file.path) ?? []) }),
       ...(findings === undefined ? {} : { findings }),
+      ...(memoryContext === undefined ? {} : { memoryContext }),
       ...(role !== "fix" ? {} : {
         readLiveRange: async (file: string, startLine: number, endLine: number) => {
           try {
@@ -278,7 +312,7 @@ export async function createMrOrchestrator(
         ...(taskId === undefined ? {} : { taskId }),
       }));
     }
-    return serializeBundle(bundle);
+    return bundle;
   }
 
   async function rulesGateForCurrentDiff(): Promise<GateResult> {
@@ -344,7 +378,7 @@ export async function createMrOrchestrator(
       if (assignment === undefined) return;
       sessionModels.delete(sessionID);
       try {
-        const fallback = await promoteAlternativeModel(paths, assignment.role, assignment.model);
+        const fallback = await promoteAlternativeModel(paths, assignment.role, assignment.model, activeHarness);
         const recovery = fallback.promoted
           ? `Fallback activado: ${fallback.model}. El anterior queda como alternativa: ${fallback.alternative}.`
           : `El modelo activo ya cambió a ${fallback.model}; no se volvió a rotar.`;
@@ -433,7 +467,14 @@ export async function createMrOrchestrator(
           }
           const sessionID = toolSessionID(context);
           await withUsageWriteLock(async () => startFlowMetrics(paths, workspaceId, ticketId, state.startedAt, sessionID, state.userLanguage));
-          return { title: "Flow Started", output: await renderStatus(state, sessionID) };
+          const warmNote = "ticket" in state
+            ? await warmTicketContext(state.ticket.ref.id, state.ticket.title, state.ticket.description, args.taskText)
+            : "";
+          const status = await renderStatus(state, sessionID);
+          return {
+            title: "Flow Started",
+            output: warmNote.length === 0 ? status : `${status}\n\n${warmNote}`,
+          };
         },
       }),
 
@@ -476,7 +517,35 @@ export async function createMrOrchestrator(
             userLanguage: detectLanguage(`${title}\n${description}`, state.userLanguage),
           };
           const next = await applyEvent(paths, workspaceId, event);
-          return { title: "Ticket Loaded", output: await renderStatus(next, toolSessionID(context)) };
+          const warmNote = await warmTicketContext(ticketId, title, description);
+          const status = await renderStatus(next, toolSessionID(context));
+          return {
+            title: "Ticket Loaded",
+            output: warmNote.length === 0 ? status : `${status}\n\n${warmNote}`,
+          };
+        },
+      }),
+
+      mr_flow_memory_prefetch: tool({
+        description: "Prefetch Engram project memory and warm Atlas for the active flow ticket. Runs automatically after ticket load; call again only when the task scope changes materially.",
+        args: {
+          query: tool.schema.string().optional().describe("Optional override query; defaults to the active ticket title and description"),
+        },
+        execute: async (args, context) => {
+          const state = await ensureFlowState();
+          if (!("ticket" in state)) {
+            return { title: "Flow Memory Prefetch Rejected", output: "Ticket context is required before Engram prefetch." };
+          }
+          const warmNote = await warmTicketContext(
+            state.ticket.ref.id,
+            state.ticket.title,
+            state.ticket.description,
+            args.query,
+          );
+          return {
+            title: "Flow Memory Prefetched",
+            output: `${warmNote}\n\n${await renderStatus(state, toolSessionID(context))}`,
+          };
         },
       }),
 
@@ -679,7 +748,7 @@ export async function createMrOrchestrator(
             }
             return {
               title: "Judgment Blocked",
-              output: canonicalJson(insufficient.data),
+              output: compactJson(insufficient.data),
             };
           }
 
@@ -808,9 +877,21 @@ export async function createMrOrchestrator(
           const event: FlowEvent = { type: "finish_confirmed", commitHash, prUrl, humanApproved: args.humanApproved };
           const next = await applyEvent(paths, workspaceId, event);
           await withUsageWriteLock(async () => finalizeFlowMetrics(paths, workspaceId, "completed"));
+          const [brief, spec] = await Promise.all([loadPlanningBrief(paths, workspaceId), loadSpec(paths, workspaceId)]);
+          const memoryPayload = buildFlowCompletionMemory({
+            state,
+            ...(brief === undefined ? {} : { brief }),
+            ...(spec === undefined ? {} : { spec }),
+            ...(commitHash === undefined ? {} : { commitHash }),
+            ...(prUrl === undefined ? {} : { prUrl }),
+          });
+          const memoryResult = await persistFlowCompletionMemory(paths, workspaceRoot, memoryPayload);
           const output = await renderStatus(next, toolSessionID(context), true);
+          const memoryNote = memoryResult.ok
+            ? `Engram saved under topic '${memoryPayload.topic}'.`
+            : `Engram save skipped: ${memoryResult.detail}`;
           await clearFlowState(paths, workspaceId);
-          return { title: "Flow Complete", output };
+          return { title: "Flow Complete", output: `${output}\n\n${memoryNote}` };
         },
       }),
 
@@ -832,8 +913,10 @@ export async function createMrOrchestrator(
       mr_models: tool({
         description: "List or update mr-orchestrator model assignments for the interactive /flow-models workflow",
         args: {
-          action: tool.schema.enum(["status", "providers", "models", "candidates", "set"]).optional()
-            .describe("status=current roster, providers=available providers, models=models for provider, candidates=alternatives for a role, set=save role/model"),
+          action: tool.schema.enum(["status", "providers", "models", "candidates", "set", "reset", "validate", "catalog"]).optional()
+            .describe("Model operation; status is the default"),
+          harness: tool.schema.enum(["opencode", "codex", "cursor", "claude", "antigravity", "agy", "fx"]).optional()
+            .describe("Optional harness scope. Omit to inspect or edit the global roster."),
           category: tool.schema.enum(["flow", "blueprint"]).optional()
             .describe("Filter by process category: flow (8 steps) or blueprint (3 steps)"),
           role: tool.schema.enum([
@@ -853,15 +936,22 @@ export async function createMrOrchestrator(
           model: tool.schema.string().optional().describe("Full provider/model-id[#variant] used by action=set"),
           target: tool.schema.enum(["model", "alternative"]).optional().describe("Slot to update with action=set; defaults to model"),
           failedModel: tool.schema.string().optional().describe("Optional provider/model-id to exclude after a quota failure"),
+          refresh: tool.schema.boolean().optional().describe("Refresh a discoverable harness catalog with action=catalog"),
         },
         execute: async (args, _context) => {
           const action = args.action ?? "status";
+          const harness = args.harness === undefined ? undefined : parseHarnessId(args.harness);
           if (action === "providers" || action === "models") {
-            const catalog = discoverAvailableModels();
-            const available = catalog.models.filter((model) => !model.startsWith("openrouter/"));
+            const discovered = harness === undefined || harness === "opencode" ? discoverAvailableModels() : undefined;
+            const stored = harness === undefined ? undefined : await loadHarnessCatalog(paths, harness);
+            if (harness !== undefined && harness !== "opencode" && stored === undefined) {
+              throw new Error(`[${harness}] no model catalog found at ${harnessCatalogPath(paths, harness)}`);
+            }
+            const available = (stored === undefined ? discovered?.models ?? [] : Object.keys(stored.models))
+              .filter((model) => !model.startsWith("openrouter/"));
             if (action === "providers") {
               const providers = Array.from(new Set(available.map((model) => model.split("/", 1)[0]))).sort();
-              const warning = catalog.warning === undefined ? "" : `\n\nAviso: ${catalog.warning}`;
+              const warning = discovered?.warning === undefined ? "" : `\n\nAviso: ${discovered.warning}`;
               return { title: "Model Providers", output: providers.join("\n") + warning };
             }
             if (args.provider === undefined || args.provider.trim().length === 0) {
@@ -873,12 +963,22 @@ export async function createMrOrchestrator(
             return { title: `Models: ${args.provider}`, output: models.join("\n") };
           }
           if (action === "candidates") {
-            if (args.role === undefined) throw new Error("action=candidates requires role");
-            const models = await loadModels(paths);
-            const catalog = discoverAvailableModels();
-            const result = buildModelCandidates(models.roles[args.role], catalog.models, args.failedModel);
+            const role = args.role;
+            if (role === undefined) throw new Error("action=candidates requires role");
+            const discovered = harness === undefined || harness === "opencode" ? discoverAvailableModels() : undefined;
+            const stored = harness === undefined ? undefined : await loadHarnessCatalog(paths, harness);
+            if (harness !== undefined && harness !== "opencode" && stored === undefined) {
+              throw new Error(`[${harness}] no model catalog found at ${harnessCatalogPath(paths, harness)}`);
+            }
+            const assignment = harness === undefined
+              ? (await loadModels(paths)).roles[role]
+              : await loadEffectiveModels(paths, harness).then((effective) => ({
+                  ...effective.roles[role].primary.logical,
+                  alternative: effective.roles[role].alternative.logical,
+                }));
+            const result = buildModelCandidates(assignment, stored === undefined ? discovered?.models ?? [] : Object.keys(stored.models), args.failedModel);
             const lines = [
-              `Rol: ${args.role}`,
+              `Rol: ${role}`,
               `Modelo activo: ${result.activeModel}`,
               `Alternativa configurada: ${result.alternativeModel}`,
               args.failedModel === undefined ? "" : `Modelo excluido: ${args.failedModel.trim()}`,
@@ -889,7 +989,7 @@ export async function createMrOrchestrator(
               `Aviso: ${result.warning}`,
               "Para cancelar, no llames a action=set. Para guardar una selección, solicita confirmación explícita y llama a action=set.",
             ].filter((line) => line.length > 0);
-            if (catalog.warning !== undefined) lines.push(`Aviso de catálogo: ${catalog.warning}`);
+            if (discovered?.warning !== undefined) lines.push(`Aviso de catálogo: ${discovered.warning}`);
             return { title: "Model Candidates", output: lines.join("\n") };
           }
           if (action === "set") {
@@ -901,21 +1001,52 @@ export async function createMrOrchestrator(
               throw new Error("model must use provider/model-id[#variant] format");
             }
             const target = args.target ?? "model";
-            await setModelRole(paths, args.role, model, target);
-            return { title: "Model Updated", output: `${args.role}.${target} → ${model}` };
+            if (harness === undefined) await setModelRole(paths, args.role, model, target);
+            else await setHarnessModelRole(paths, harness, args.role, model, target);
+            return { title: "Model Updated", output: `${harness ?? "global"}.${args.role}.${target} → ${model}` };
+          }
+          if (action === "reset") {
+            if (harness === undefined) throw new Error("action=reset requires harness");
+            await resetHarnessModels(paths, harness, args.role, args.target);
+            return { title: "Harness Models Reset", output: `${harness}${args.role === undefined ? "" : `.${args.role}${args.target === undefined ? "" : `.${args.target}`}`} now inherits the global roster where reset` };
+          }
+          if (action === "validate") {
+            const selectedHarness = harness ?? activeHarness;
+            const effective = await loadEffectiveModels(paths, selectedHarness);
+            const path = await writeEffectiveHarnessModels(paths, effective);
+            return { title: "Harness Models Valid", output: `${selectedHarness}: ${effective.applicationMode}\n${path}` };
+          }
+          if (action === "catalog") {
+            const selectedHarness = harness ?? activeHarness;
+            if (args.refresh === true) {
+              const refreshed = await refreshHarnessCatalog(paths, selectedHarness);
+              return {
+                title: "Harness Catalog Refreshed",
+                output: `${selectedHarness}: ${Object.keys(refreshed.catalog.models).length} models\n${harnessCatalogPath(paths, selectedHarness)}${refreshed.warning === undefined ? "" : `\nWarning: ${refreshed.warning}`}`,
+              };
+            }
+            const catalog = await loadHarnessCatalog(paths, selectedHarness);
+            if (catalog === undefined) throw new Error(`[${selectedHarness}] no model catalog found at ${harnessCatalogPath(paths, selectedHarness)}`);
+            return { title: "Harness Model Catalog", output: JSON.stringify(catalog, null, 2) };
           }
 
-          const models = await loadModels(paths);
+          const effective = harness === undefined ? undefined : await loadEffectiveModels(paths, harness);
+          const globalModels = effective === undefined ? await loadModels(paths) : undefined;
           const category = args.category;
-          const lines = ["# Roster de Modelos mr-orchestrator", ""];
+          const lines = [`# Roster de Modelos mr-orchestrator${harness === undefined ? " (global)" : ` (${harness})`}`, ""];
           const flowRoles = ROLES.filter((r) => r.category === "flow");
           const blueprintRoles = ROLES.filter((r) => r.category === "blueprint");
 
           if (!category || category === "flow") {
             lines.push("### /flow (Entrega quirúrgica)");
             for (const meta of flowRoles) {
-              const assignment = models.roles[meta.role];
-              lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${formatModelTarget(assignment)}\` → fallback \`${formatModelTarget(assignment.alternative)}\``);
+              if (globalModels !== undefined) {
+                const assignment = globalModels.roles[meta.role];
+                lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${formatModelTarget(assignment)}\` → fallback \`${formatModelTarget(assignment.alternative)}\``);
+              } else if (effective !== undefined) {
+                const assignment = effective.roles[meta.role];
+                lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${formatModelTarget(assignment.primary.logical)}\` ⇒ \`${formatModelTarget(assignment.primary.native)}\` [${assignment.primary.origin}] → fallback \`${formatModelTarget(assignment.alternative.logical)}\` ⇒ \`${formatModelTarget(assignment.alternative.native)}\` [${assignment.alternative.origin}]`);
+              }
             }
           }
 
@@ -923,8 +1054,13 @@ export async function createMrOrchestrator(
             if (lines.length > 2 && !category) lines.push("");
             lines.push("### /blueprint (Aterrizaje y tickets)");
             for (const meta of blueprintRoles) {
-              const assignment = models.roles[meta.role];
-              lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${formatModelTarget(assignment)}\` → fallback \`${formatModelTarget(assignment.alternative)}\``);
+              if (globalModels !== undefined) {
+                const assignment = globalModels.roles[meta.role];
+                lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${formatModelTarget(assignment)}\` → fallback \`${formatModelTarget(assignment.alternative)}\``);
+              } else if (effective !== undefined) {
+                const assignment = effective.roles[meta.role];
+                lines.push(`- **${meta.label}** (\`${meta.role}\`): \`${formatModelTarget(assignment.primary.logical)}\` ⇒ \`${formatModelTarget(assignment.primary.native)}\` [${assignment.primary.origin}] → fallback \`${formatModelTarget(assignment.alternative.logical)}\` ⇒ \`${formatModelTarget(assignment.alternative.native)}\` [${assignment.alternative.origin}]`);
+              }
             }
           }
 
@@ -1125,7 +1261,7 @@ export async function createMrOrchestrator(
           if (profiles === undefined) return { title: "Atlas Profile", output: "No Atlas repository profile found. Run `mr atlas init`." };
           const selected = args.repo === undefined ? profiles : profiles.filter((profile) => profile.repo === args.repo);
           const digest = rules === undefined ? [] : rulesDigest(rules, args.repo, args.files ?? []);
-          return { title: "Atlas Profile", output: canonicalJson({ profiles: selected, rules: digest }).trimEnd() };
+          return { title: "Atlas Profile", output: compactJson({ profiles: selected, rules: digest }) };
         },
       }),
 
@@ -1180,7 +1316,7 @@ export async function createMrOrchestrator(
 
             if (args.action === "slice") {
               const slice = await extractNodeSlice(workspaceRoot, node, args.context ?? 0);
-              return { title: `Slice: ${node.name}`, output: withCoverage(graph, canonicalJson({ symbol: node.name, ...slice }).trimEnd(), [node.filePath]) };
+              return { title: `Slice: ${node.name}`, output: withCoverage(graph, compactJson({ symbol: node.name, ...slice }), [node.filePath]) };
             }
 
             if (args.action === "tests") {
@@ -1248,7 +1384,7 @@ export async function createMrOrchestrator(
                   }
                   return {
                     title: `Semantic: ${node.name}`,
-                    output: withCoverage(enriched, canonicalJson({ type, references, callers, callEdges, ...(evidenceRef === undefined ? {} : { evidenceRef }) }).trimEnd(), [node.filePath, ...references.map((reference) => workspacePath(reference.file))]),
+                    output: withCoverage(enriched, compactJson({ type, references, callers, callEdges, ...(evidenceRef === undefined ? {} : { evidenceRef }) }), [node.filePath, ...references.map((reference) => workspacePath(reference.file))]),
                   };
                 } catch (error: unknown) {
                   return { title: `Semantic: ${node.name}`, output: withCoverage(graph, `Semantic analysis unavailable: ${error instanceof Error ? error.message : String(error)}`, [node.filePath]) };
@@ -1258,7 +1394,7 @@ export async function createMrOrchestrator(
                 const semantic = inspectPhpSemantics(workspaceRoot, [node.filePath], { symfonyConsoleIntrospection: args.symfonyConsoleIntrospection ?? false });
                 const enriched = applyPhpSemanticResult(graph, semantic, node.filePath);
                 await saveAtlasGraph(paths, workspaceId, enriched);
-                return { title: `Semantic: ${node.name}`, output: withCoverage(enriched, canonicalJson(semantic).trimEnd(), [node.filePath]) };
+                return { title: `Semantic: ${node.name}`, output: withCoverage(enriched, compactJson(semantic), [node.filePath]) };
               }
               return { title: `Semantic: ${node.name}`, output: withCoverage(graph, "Semantic analysis is not available for this file type.", [node.filePath]) };
             }
@@ -1397,7 +1533,7 @@ export async function createMrOrchestrator(
             ...(args.supports === undefined ? {} : { supports: args.supports }),
             ...(args.symbol === undefined ? {} : { symbol: args.symbol }),
           });
-          return { title: `Evidence: ${ref.id}`, output: canonicalJson({ id: ref.id, file: ref.file, range: ref.range, kind: ref.kind, supports: ref.supports }).trimEnd() };
+          return { title: `Evidence: ${ref.id}`, output: compactJson({ id: ref.id, file: ref.file, range: ref.range, kind: ref.kind, supports: ref.supports }) };
         },
       }),
 
@@ -1421,6 +1557,35 @@ export async function createMrOrchestrator(
         },
       }),
 
+      mr_internal_receipt: tool({
+        description: "Validate and minify an English internal execution receipt. Internal implementation and fix roles use this instead of prose handoffs.",
+        args: {
+          payload: tool.schema.string().describe("JSON matching InternalExecutionReceiptSchema"),
+        },
+        execute: async (args, context) => {
+          let raw: unknown;
+          try {
+            raw = JSON.parse(args.payload);
+          } catch (error) {
+            return { title: "Internal Receipt Rejected", output: `Invalid JSON: ${(error as Error).message}` };
+          }
+          const parsed = InternalExecutionReceiptSchema.safeParse(raw);
+          if (!parsed.success) {
+            return { title: "Internal Receipt Rejected", output: formatZodIssues(parsed.error) };
+          }
+          const expectedRole: Readonly<Record<typeof parsed.data.role, ModelRole>> = {
+            "mr-general": "general",
+            "mr-sdd-apply": "sddApply",
+            "mr-fix": "fix",
+          };
+          const caller = sessionModels.get(toolSessionID(context))?.role;
+          if (caller !== undefined && caller !== expectedRole[parsed.data.role]) {
+            return { title: "Internal Receipt Rejected", output: `Role mismatch: ${caller} cannot submit ${parsed.data.role}` };
+          }
+          return { title: "Internal Receipt", output: serializeInternalExecutionReceipt(parsed.data) };
+        },
+      }),
+
       mr_context_hydrate: tool({
         description: "Hydrate a deterministic, budgeted context bundle from stored evidence for a role and optional task",
         args: {
@@ -1430,7 +1595,7 @@ export async function createMrOrchestrator(
         },
         execute: async (args, context) => ({
           title: `Context: ${args.role}`,
-          output: await hydrateFor(args.role, args.taskId, args.budgetChars, toolSessionID(context)),
+          output: serializeBundle(await hydrateFor(args.role, args.taskId, args.budgetChars, toolSessionID(context))),
         }),
       }),
 
@@ -1453,7 +1618,7 @@ export async function createMrOrchestrator(
           if (insufficient.success) {
             return {
               title: `SDD ${kind} Blocked`,
-              output: canonicalJson(insufficient.data),
+              output: compactJson(insufficient.data),
             };
           }
 
@@ -1512,7 +1677,7 @@ export async function createMrOrchestrator(
               await rm(join(paths.generatedRoot, workspaceId, "sdd", "brief.json"), { force: true });
               return {
                 title: "SDD Planning Input Required",
-                output: canonicalJson(parsed.data),
+                output: compactJson(parsed.data),
               };
             }
             const savedPath = await saveSddArtifact(paths, workspaceId, kind, parsed.data);
@@ -1654,7 +1819,7 @@ export async function createMrOrchestrator(
           }
           return {
             title: `SDD Next Task: ${next.id}`,
-            output: canonicalJson({
+            output: compactJson({
               implementer,
               ...(economy === undefined ? {} : { economy }),
               developerNote: buildTaskDeveloperNote(next, acceptance, outputLanguage),
@@ -1662,7 +1827,7 @@ export async function createMrOrchestrator(
               acceptance,
               ...(bundle === undefined ? {} : { bundle }),
               ...(implementGate.violations.length === 0 ? {} : { gateWarnings: implementGate.violations }),
-            }).trimEnd(),
+            }),
           };
         },
       }),

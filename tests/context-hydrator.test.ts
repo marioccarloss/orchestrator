@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { hydrateContext } from "../src/core/context-hydrator.js";
+import { hydrateContext, serializeBundle } from "../src/core/context-hydrator.js";
 import type { AtlasGraph } from "../src/core/atlas.js";
 import type { EvidenceStore } from "../src/core/evidence-store.js";
 import type { ResearchCapsulePayload, SpecCapsulePayload, TaskGraphPayload } from "../src/core/sdd-schema.js";
@@ -71,6 +71,7 @@ test("implement hydration uses exactly task refs and includes acceptance and cal
   assert.equal(bundle.acceptance?.[0]?.id, "R1");
   assert.ok(bundle.neighbors.some((neighbor) => neighbor.relation === "callee" && neighbor.symbol === "callee"));
   assert.deepEqual(bundle.rules.map((rule) => rule.id), ["naming.files"]);
+  assert.doesNotMatch(serializeBundle(bundle), /\n/u);
 });
 
 test("hydration truncates whole slices at a deterministic budget", async () => {

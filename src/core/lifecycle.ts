@@ -1,13 +1,26 @@
-import { readFile, writeFile, mkdir, copyFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile, cp, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import type { MrPaths } from "./paths.js";
 import { loadRegistry, saveRegistry } from "./workspace.js";
-import type { WorkspaceRegistry } from "./schema.js";
+import {
+  HARNESS_IDS,
+  type HarnessId,
+  type HarnessModelCatalog,
+  type HarnessModelOverride,
+  type WorkspaceRegistry,
+} from "./schema.js";
 import { loadModels } from "./config.js";
 import { MigrationRegistry } from "./flow-schema.js";
 import { atomicWrite, canonicalJson, readJson } from "./files.js";
 import { InstallManifestSchema, type InstallManifest } from "./schema.js";
+import {
+  harnessModelsRoot,
+  loadHarnessCatalog,
+  loadHarnessOverride,
+  saveHarnessCatalog,
+  saveHarnessOverride,
+} from "./harness-models.js";
 
 // ─── Update & Migration ──────────────────────────────────────────────────────
 
@@ -25,7 +38,24 @@ export interface ProfileExport {
   readonly version: string;
   readonly registry: WorkspaceRegistry;
   readonly models: unknown;
+  readonly harnesses?: Partial<Record<HarnessId, ProfileHarnessModels>>;
   readonly manifest: InstallManifest;
+}
+
+export interface ProfileHarnessModels {
+  readonly models?: HarnessModelOverride;
+  readonly catalog?: HarnessModelCatalog;
+}
+
+async function loadProfileHarnesses(paths: MrPaths): Promise<Partial<Record<HarnessId, ProfileHarnessModels>>> {
+  const entries = await Promise.all(HARNESS_IDS.map(async (harness) => {
+    const [models, catalog] = await Promise.all([
+      loadHarnessOverride(paths, harness),
+      loadHarnessCatalog(paths, harness),
+    ]);
+    return [harness, { ...(models === undefined ? {} : { models }), ...(catalog === undefined ? {} : { catalog }) }] as const;
+  }));
+  return Object.fromEntries(entries.filter(([, value]) => value.models !== undefined || value.catalog !== undefined));
 }
 
 export async function createBackup(paths: MrPaths): Promise<string> {
@@ -47,6 +77,11 @@ export async function createBackup(paths: MrPaths): Promise<string> {
     }
   }
 
+  const harnesses = harnessModelsRoot(paths);
+  if (existsSync(harnesses)) {
+    await cp(harnesses, join(backupDir, "harnesses"), { recursive: true });
+  }
+
   return backupDir;
 }
 
@@ -62,6 +97,13 @@ export async function restoreBackup(paths: MrPaths, backupDir: string): Promise<
       await mkdir(dirname(dest), { recursive: true });
       await copyFile(src, dest);
     }
+  }
+
+  const harnesses = harnessModelsRoot(paths);
+  await rm(harnesses, { recursive: true, force: true });
+  const backedUpHarnesses = join(backupDir, "harnesses");
+  if (existsSync(backedUpHarnesses)) {
+    await cp(backedUpHarnesses, harnesses, { recursive: true });
   }
 }
 
@@ -80,6 +122,8 @@ set -eu
 cp "${join(backupPath, "workspaces.json")}" "${paths.registry}"
 cp "${join(backupPath, "models.json")}" "${paths.models}"
 cp "${join(backupPath, "install-manifest.json")}" "${paths.manifest}"
+rm -rf "${harnessModelsRoot(paths)}"
+if [ -d "${join(backupPath, "harnesses")}" ]; then cp -R "${join(backupPath, "harnesses")}" "${harnessModelsRoot(paths)}"; fi
 echo "Rollback complete to version ${fromVersion}"
 `;
   await writeFile(rollbackPath, rollbackScript, { mode: 0o755 });
@@ -131,6 +175,7 @@ function backupDir(path: string): string {
 export async function exportProfile(paths: MrPaths): Promise<string> {
   const registry = await loadRegistry(paths);
   const models = await loadModels(paths);
+  const harnesses = await loadProfileHarnesses(paths);
   const manifest = await readJson(paths.manifest, InstallManifestSchema);
 
   const profile: ProfileExport = {
@@ -139,6 +184,7 @@ export async function exportProfile(paths: MrPaths): Promise<string> {
     version: manifest.version,
     registry,
     models,
+    harnesses,
     manifest,
   };
 
@@ -167,6 +213,15 @@ export async function importProfile(paths: MrPaths, filepath: string): Promise<v
   // Restore models
   const { saveModels } = await import("./models.js");
   await saveModels(paths, profile.models as never);
+
+  // Replace harness-scoped source configuration. Generated effective files are
+  // diagnostics and are rebuilt by validation, so they are intentionally omitted.
+  await rm(harnessModelsRoot(paths), { recursive: true, force: true });
+  for (const harness of HARNESS_IDS) {
+    const config = profile.harnesses?.[harness];
+    if (config?.catalog !== undefined) await saveHarnessCatalog(paths, config.catalog);
+    if (config?.models !== undefined) await saveHarnessOverride(paths, config.models);
+  }
 
   // Restore manifest
   await atomicWrite(paths.manifest, canonicalJson(profile.manifest));

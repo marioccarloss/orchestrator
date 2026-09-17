@@ -69,6 +69,7 @@ Tradicionalmente, los frameworks de agentes delegan la lógica de control, los b
 │   │   ├── doctor.ts           # Diagnóstico de prerequisitos y consistencia de entorno
 │   │   ├── launch.ts           # Lanzador de OpenCode con inyección de OPENCODE_CONFIG
 │   │   ├── models.ts           # Gestión de roles, modelos, presets e interactividad
+│   │   ├── harness-models.ts   # Overrides parciales, catálogos y resolución efectiva por arnés
 │   │   └── process.ts          # Ejecución segura de subprocesos sincrónicos e interactivos
 │   └── tui/
 │       ├── index.ts            # Abstracciones sobre @clack/prompts para mensajes, intro/outro
@@ -192,7 +193,7 @@ Antes de aceptar una cápsula `TaskGraph`, el sistema valida:
 
 1. **Indexador propio de Atlas (tree-sitter):** No consume tokens de LLM para indexar. Un proceso local basado en tree-sitter genera el grafo de componentes, dependencias y module federation para TypeScript/TSX y Java. Además, un parser YAML/JSON dedicado indexa archivos de configuración (perfiles Spring, OpenAPI, tsconfig). La IA solo consume consultas quirúrgicas (`mr_atlas_query`, `mr_atlas_skeleton`).
 2. **Caché en disco con TTL y Hash:** Los esquemas de Figma y el contenido de tickets se descargan una sola vez a `.cache/` local.
-3. **Persistencia Engram en fronteras:** Las decisiones se graban en Engram exclusivamente al finalizar fases clave (e.g. fin de Plan, fin de Implementación), evitando la sobrecarga de llamadas continuas a memoria.
+3. **Engram en `/flow`:** Tras `mr_flow_ticket`, el plugin precalienta Atlas y ejecuta `engram search` una sola vez por ticket, persistiendo `flow-engram-prefetch.json` e inyectando `memoryContext` en `mr_context_hydrate`. Al cerrar con `mr_flow_finish`, guarda un resumen compacto en Engram bajo `flow/<ticket>`. Los agentes reutilizan el prefetch en lugar de repetir `mem_search` salvo cambio material de alcance.
 4. **Skeletons deterministas (`mr_atlas_skeleton`):** Extrae imports y firmas de archivos fuente (TS/TSX/Java) o estructura de claves de configs (JSON/YAML) con cuerpos elididos, reduciendo el consumo de tokens en un 85-90% frente a la lectura completa.
 5. **Prefijos cacheables y chaining finitario:** Reglas y ejemplos permanecen antes de un único `[CONTEXT_INPUT_PAYLOAD]`; cada fase intercambia únicamente la cápsula tipada necesaria para la siguiente.
 6. **Blueprint-lite adaptativo:** La comprobación se resuelve en el mismo pase del planner. Los tickets claros añaden solo un `PlanningBrief` compacto; una segunda invocación ocurre únicamente cuando una decisión de alto impacto requiere respuesta humana.

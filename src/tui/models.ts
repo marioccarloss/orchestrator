@@ -1,21 +1,26 @@
 import * as p from "@clack/prompts";
 import type { MrPaths } from "../core/paths.js";
 import { loadModels } from "../core/config.js";
+import { inheritedLogicalModelMap, loadHarnessCatalog, loadHarnessOverride, logicalModelMap, type EffectiveHarnessModels } from "../core/harness-models.js";
 import {
   ROLES,
   PRESETS,
   discoverAvailableModels,
   formatModelTarget,
+  loadEffectiveModels,
   parseModelTarget,
+  refreshHarnessCatalog,
+  setHarnessModels,
   setModels,
   type ModelRole,
   type RoleCategory,
 } from "../core/models.js";
-import type { ModelMap } from "../core/schema.js";
+import type { HarnessId, ModelMap } from "../core/schema.js";
 
 export interface ModelSelectorOptions {
   readonly installation?: boolean;
   readonly sync?: boolean;
+  readonly harness?: HarnessId;
 }
 
 export function formatModelMatrix(models: ModelMap, category?: RoleCategory): string {
@@ -46,6 +51,22 @@ export function formatModelMatrix(models: ModelMap, category?: RoleCategory): st
     }
   }
 
+  return lines.join("\n");
+}
+
+export function formatEffectiveModelMatrix(effective: EffectiveHarnessModels, category?: RoleCategory): string {
+  const lines = [`Arnés: ${effective.harness} · aplicación: ${effective.applicationMode}`];
+  for (const info of ROLES.filter((role) => category === undefined || role.category === category)) {
+    const assignment = effective.roles[info.role];
+    const primaryLogical = formatModelTarget(assignment.primary.logical);
+    const primaryNative = formatModelTarget(assignment.primary.native);
+    const alternativeLogical = formatModelTarget(assignment.alternative.logical);
+    const alternativeNative = formatModelTarget(assignment.alternative.native);
+    lines.push(
+      `• ${info.label.padEnd(28)} → ${primaryLogical} ⇒ ${primaryNative} [${assignment.primary.origin}]`
+      + `\n    ↳ fallback: ${alternativeLogical} ⇒ ${alternativeNative} [${assignment.alternative.origin}]`,
+    );
+  }
   return lines.join("\n");
 }
 
@@ -106,17 +127,39 @@ export async function interactiveModelSelector(
 ): Promise<boolean> {
   p.intro(options.installation
     ? "Configuración inicial de modelos de mr-orchestrator"
-    : "flow-models — configuración interactiva de modelos por steps");
+    : `flow-models — configuración ${options.harness === undefined ? "global" : `del arnés ${options.harness}`} por steps`);
 
-  const current = await loadModels(paths);
+  const global = await loadModels(paths);
+  const override = options.harness === undefined ? undefined : await loadHarnessOverride(paths, options.harness);
+  let currentEffective: EffectiveHarnessModels | undefined;
+  let resolutionWarning: string | undefined;
+  if (options.harness !== undefined) {
+    try {
+      currentEffective = await loadEffectiveModels(paths, options.harness);
+    } catch (error: unknown) {
+      resolutionWarning = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const current = currentEffective === undefined
+    ? (options.harness === undefined ? global : inheritedLogicalModelMap(global, override))
+    : logicalModelMap(currentEffective);
   let draft: ModelMap = structuredClone(current);
-  let catalog = discoverAvailableModels();
+  const storedCatalog = options.harness === undefined ? undefined : await loadHarnessCatalog(paths, options.harness);
+  let catalog = storedCatalog === undefined
+    ? (options.harness === undefined || options.harness === "opencode"
+        ? discoverAvailableModels()
+        : { models: [], source: options.harness })
+    : { models: Object.keys(storedCatalog.models), source: options.harness };
   let dirty = false;
-  if (catalog.warning !== undefined) p.log.warn(catalog.warning);
-  else p.log.info(`${String(catalog.models.length)} modelos encontrados en OpenCode.`);
+  if (resolutionWarning !== undefined) p.log.warn(`El roster actual todavía no es válido: ${resolutionWarning}`);
+  if ("warning" in catalog && catalog.warning !== undefined) p.log.warn(catalog.warning);
+  else p.log.info(`${String(catalog.models.length)} modelos encontrados en ${options.harness ?? "OpenCode"}.`);
 
   for (;;) {
-    p.note(formatModelMatrix(draft), "Modelos por proceso / step");
+    p.note(
+      !dirty && currentEffective !== undefined ? formatEffectiveModelMatrix(currentEffective) : formatModelMatrix(draft),
+      "Modelos por proceso / step",
+    );
     const action = await p.select<string>({
       message: "¿Qué deseas hacer?",
       options: [
@@ -136,15 +179,27 @@ export async function interactiveModelSelector(
       return false;
     }
     if (action === "save") {
-      if (dirty) await setModels(paths, draft, options.sync ?? true);
+      if (dirty) {
+        if (options.harness === undefined) await setModels(paths, draft, options.sync ?? true);
+        else await setHarnessModels(paths, options.harness, draft, options.sync ?? true);
+      }
       p.outro(dirty
-        ? "Modelos guardados. Reinicia las sesiones activas de OpenCode para aplicarlos."
+        ? `Modelos guardados en ${options.harness === undefined ? "el roster global" : `el override de ${options.harness}`}. Reinicia las sesiones activas para aplicarlos.`
         : "No había cambios que guardar.");
       return dirty;
     }
     if (action === "refresh") {
-      catalog = discoverAvailableModels();
-      if (catalog.warning !== undefined) p.log.warn(catalog.warning);
+      if (options.harness === undefined) {
+        catalog = discoverAvailableModels();
+      } else {
+        const refreshed = await refreshHarnessCatalog(paths, options.harness);
+        catalog = {
+          models: Object.keys(refreshed.catalog.models),
+          source: options.harness,
+          ...(refreshed.warning === undefined ? {} : { warning: refreshed.warning }),
+        };
+      }
+      if ("warning" in catalog && catalog.warning !== undefined) p.log.warn(catalog.warning);
       else p.log.success(`Catálogo actualizado: ${String(catalog.models.length)} modelos.`);
       continue;
     }
