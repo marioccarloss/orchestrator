@@ -1,7 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { createBackup, restoreBackup, planUpdate, exportProfile, detectPlatform, getWorkspacePlatform } from "../src/core/lifecycle.js";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { createBackup, restoreBackup, planUpdate, exportProfile, importProfile, detectPlatform, getWorkspacePlatform } from "../src/core/lifecycle.js";
+import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
@@ -55,6 +55,24 @@ async function setupTestPaths(): Promise<{ dir: string; paths: MrPaths }> {
     sourceRoot: "/test",
     files: [],
   }));
+  const cursorHarness = join(paths.configRoot, "harnesses", "cursor");
+  await mkdir(cursorHarness, { recursive: true });
+  await writeFile(join(cursorHarness, "models.json"), JSON.stringify({
+    schemaVersion: 1,
+    harness: "cursor",
+    roles: {
+      explore: { primary: { model: "github-copilot/gemini-3.7-flash" } },
+    },
+  }));
+  await writeFile(join(cursorHarness, "catalog.json"), JSON.stringify({
+    schemaVersion: 1,
+    harness: "cursor",
+    applicationMode: "per-invocation",
+    provenance: { source: "explicit" },
+    models: {
+      "github-copilot/gemini-3.7-flash": { nativeModel: "cursor/gemini-3.7-flash" },
+    },
+  }));
 
   return { dir, paths };
 }
@@ -67,6 +85,8 @@ test("createBackup creates backup directory with files", async () => {
     assert.ok(existsSync(join(backupDir, "workspaces.json")));
     assert.ok(existsSync(join(backupDir, "models.json")));
     assert.ok(existsSync(join(backupDir, "install-manifest.json")));
+    assert.ok(existsSync(join(backupDir, "harnesses", "cursor", "models.json")));
+    assert.ok(existsSync(join(backupDir, "harnesses", "cursor", "catalog.json")));
   } finally {
     await rm(dir, { recursive: true });
   }
@@ -79,6 +99,7 @@ test("restoreBackup restores files from backup", async () => {
 
     // Modify original files
     await writeFile(paths.registry, JSON.stringify({ schemaVersion: 1, workspaces: [{ id: "modified" }] }));
+    await writeFile(join(paths.configRoot, "harnesses", "cursor", "models.json"), "modified");
 
     // Restore
     await restoreBackup(paths, backupDir);
@@ -86,6 +107,8 @@ test("restoreBackup restores files from backup", async () => {
     const content = await import("node:fs/promises").then((m) => m.readFile(paths.registry, "utf8"));
     const registry = JSON.parse(content);
     assert.equal(registry.workspaces.length, 0); // Original empty registry
+    const harnessModels = JSON.parse(await readFile(join(paths.configRoot, "harnesses", "cursor", "models.json"), "utf8"));
+    assert.equal(harnessModels.harness, "cursor");
   } finally {
     await rm(dir, { recursive: true });
   }
@@ -114,6 +137,31 @@ test("exportProfile creates export file", async () => {
     const profile = JSON.parse(content);
     assert.equal(profile.schemaVersion, 1);
     assert.equal(profile.version, "0.1.0");
+    assert.equal(profile.harnesses.cursor.models.harness, "cursor");
+    assert.equal(profile.harnesses.cursor.catalog.applicationMode, "per-invocation");
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+test("importProfile replaces harness-scoped source configuration", async () => {
+  const { dir, paths } = await setupTestPaths();
+  try {
+    const exportPath = await exportProfile(paths);
+    const cursorModels = join(paths.configRoot, "harnesses", "cursor", "models.json");
+    await writeFile(cursorModels, JSON.stringify({ schemaVersion: 1, harness: "cursor", roles: {} }));
+    await mkdir(join(paths.configRoot, "harnesses", "claude"), { recursive: true });
+    await writeFile(join(paths.configRoot, "harnesses", "claude", "models.json"), JSON.stringify({
+      schemaVersion: 1,
+      harness: "claude",
+      roles: {},
+    }));
+
+    await importProfile(paths, exportPath);
+
+    const restored = JSON.parse(await readFile(cursorModels, "utf8"));
+    assert.equal(restored.roles.explore.primary.model, "github-copilot/gemini-3.7-flash");
+    assert.equal(existsSync(join(paths.configRoot, "harnesses", "claude")), false);
   } finally {
     await rm(dir, { recursive: true });
   }

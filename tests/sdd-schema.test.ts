@@ -173,6 +173,7 @@ test("operational capsule schemas exclude volatile persistence timestamps", () =
   const second = canonicalSddPayload(shuffled);
   assert.equal(first, second);
   assert.doesNotMatch(first, /createdAt/u);
+  assert.doesNotMatch(first, /\n| {2}/u);
 
   const briefPayload = canonicalSddPayload(makePlanningBrief());
   assert.equal(JSON.parse(briefPayload).status, "READY");

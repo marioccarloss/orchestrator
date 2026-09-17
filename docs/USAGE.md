@@ -54,15 +54,21 @@ mr sync
 ```
 
 ### `mr flow-models` / `mr models`
-Abre el selector buscable de modelos disponibles en OpenCode. Permite recorrer todos los procesos/steps, cambiar uno, aplicar un preset o actualizar el catálogo. Los cambios se guardan de una vez y sincronizan todos los workspaces:
+Abre el selector buscable del roster global o del override parcial de un arnés. Sin `--harness` edita el baseline compartido; con `--harness` solo persiste los roles cambiados para ese cliente:
 ```bash
 mr flow-models
+mr flow-models --harness cursor
 ```
 `mr models` es un alias equivalente para la UI interactiva.
 Otras operaciones CLI directas para modelos:
-- `mr models list`: Muestra la matriz completa de roles, modelos asignados y estado de recomendación.
-- `mr models set <rol> <modelo>`: Asigna un modelo a un rol específico (ej: `mr models set orchestrator github-copilot/gpt-5.6-sol`).
+- `mr models list [--harness <id>]`: Muestra el roster efectivo y el origen `global` u `override` de cada target.
+- `mr models set <rol> <modelo[#variante]> [model|alternative] [--harness <id>]`: Cambia un target global o crea un override atómico para un arnés.
+- `mr models reset [<rol> [model|alternative]] --harness <id>`: Elimina todos los overrides del arnés, un rol o un target concreto.
+- `mr models validate --harness <id>`: Valida y traduce el roster efectivo contra el catálogo del arnés.
+- `mr models catalog --harness <id> --refresh`: Actualiza el catálogo cuando el adaptador soporta descubrimiento automático.
 - `mr models preset <nombre>`: Aplica un conjunto preconfigurado (`balanced`, `gpt-sol`, `claude-opus`).
+
+Los identificadores admitidos son `opencode`, `codex`, `cursor`, `claude`, `antigravity`, `agy` y `fx`. No existe `--workspace`: cambiar el workspace cambia el código y el estado de ejecución, nunca el roster de modelos.
 
 ### `mr atlas index | init | rules`
 
@@ -195,7 +201,7 @@ Forense y cirujano de código para React:
 - Genera un parche mínimo y quirúrgico que respeta las normas de gobernanza.
 
 #### `/flow-models`
-Abre un flujo guiado dentro de la TUI de OpenCode mediante sus preguntas interactivas. Para cada proceso/step configura un modelo principal y su alternativa específica. La elección actualiza `models.json`, las definiciones globales y todos los workspaces registrados. Para el editor directo, buscable y sin intervención del modelo usa `mr flow-models`. Reinicia las sesiones activas para aplicar la nueva asignación.
+Abre un flujo guiado dentro de la TUI de OpenCode mediante sus preguntas interactivas. Para cada proceso/step configura un modelo principal y su alternativa específica. Sin arnés explícito actualiza el baseline global; desde un bridge externo, `mr_models` recibe la identidad confiable del arnés y limita los cambios a su override. Para el editor directo y buscable usa `mr flow-models [--harness <id>]`. Reinicia las sesiones activas para aplicar la nueva asignación.
 
 ---
 
@@ -209,12 +215,13 @@ Estas herramientas son invocadas internamente por los comandos y agentes, pero p
 |---|---|
 | `mr_flow_status` | Obtiene el estado actual del flujo activo |
 | `mr_flow_start` | Inicia un nuevo flujo (dificultad, ticketId, hasFigma) |
-| `mr_flow_ticket` | Carga el contenido del ticket en el flujo |
+| `mr_flow_ticket` | Carga el contenido del ticket, precalienta Atlas y prefetch de Engram para el ticket |
+| `mr_flow_memory_prefetch` | Refresca prefetch Engram + warm Atlas (automático tras `mr_flow_ticket`; manual solo si cambia el alcance) |
 | `mr_flow_plan` | Somete el plan de implementación para aprobación |
 | `mr_flow_implement` | Marca la implementación como completada |
 | `mr_flow_judge` | Somete hallazgos estructurados; verifica archivo, línea, lado, snippet, requisito y hash del diff antes de aceptar el veredicto |
 | `mr_flow_fix` | Marca las correcciones como aplicadas |
-| `mr_flow_finish` | Finaliza el flujo con commit y PR opcional |
+| `mr_flow_finish` | Finaliza el flujo con commit y PR opcional; persiste resumen compacto en Engram (`flow/<ticket>`) |
 | `mr_flow_abort` | Aborta el flujo actual |
 
 Cada estado incluye una línea de progreso tipo pedido:
@@ -236,7 +243,8 @@ Pipeline determinista de especificación y ejecución de tareas:
 | `mr_sdd_task_status` | Marca el estado de una tarea (`pending`, `in_progress`, `done`, `blocked`). Solo marca `done` tras pasar los comandos de verificación. |
 | `mr_sdd_verify` | Registra los resultados exigidos y guarda un recibo ligado al hash actual del diff. |
 | `mr_evidence_add` / `mr_evidence_list` | Guarda slices direccionados por contenido y comparte sus referencias sin duplicar el archivo en cada prompt. |
-| `mr_context_hydrate` | Construye el bundle mínimo para rol, tarea y carril; informa presupuesto, uso y truncamiento. |
+| `mr_context_hydrate` | Construye el bundle mínimo para rol, tarea y carril; incluye `memoryContext` del prefetch Engram cuando existe; informa presupuesto, uso y truncamiento. |
+| `mr_internal_receipt` | Valida el cierre de implementadores y fix como recibo tipado en inglés y devuelve JSON realmente minificado, sin prosa libre. |
 
 **Flujo SDD/RPI típico:**
 1. `mr_sdd_submit kind=research` — Cápsula de evidencia del explore (archivos, líneas, constraints).
@@ -269,7 +277,8 @@ Un override positivo explícito sigue siendo válido y también queda reflejado 
 
 - La salida humana de Flow y Blueprint se renderiza en el `userLanguage` persistido: `es`, `en`, `pt`, `ca` o `fr`.
 - Ante texto corto o ambiguo se conserva el idioma anterior; sin señal suficiente, el fallback es español.
-- Prompts, contratos tipados, recibos y comunicación entre agentes permanecen en inglés.
+- Prompts, contratos tipados, recibos y comunicación entre agentes permanecen en inglés. Los implementadores y fix cierran mediante `mr_internal_receipt`, que exige `language: "en"` y rechaza campos libres fuera del esquema.
+- El transporte hacia modelos usa JSON sin indentación; los artefactos persistidos conservan formato legible. `next-task` incluye `ContextBundle` como objeto, sin doble serialización.
 - Status, planes, veredictos, cobertura y Markdown presentado a la persona se generan mediante plantillas deterministas, no mediante traducción libre del modelo.
 
 ### Gates deterministas
@@ -304,13 +313,13 @@ export MR_GATES_MODE=warn
 | `mr_propose_save` | Guarda una propuesta técnica en `.aicontext/deliverables/mr/proposals/` |
 | `mr_prompt_build` | Construye un prompt desde una plantilla (bugfix, feature, refactor, review) |
 | `mr_prompt_copy` | Copia texto al portapapeles del SO |
-| `mr_models` | Muestra el roster de modelos actual |
+| `mr_models` | Lista, valida o modifica el roster global o el override del arnés que inyecta el bridge |
 
 ---
 
 ## 7. Personalización de Modelos de Inteligencia Artificial
 
-Los modelos asociados a cada rol están tipados y pueden modificarse en el archivo de configuración global:
+Los modelos asociados a cada rol están tipados. El baseline completo vive en:
 
 ```text
 ~/.config/mr-orchestrator/models.json
@@ -340,9 +349,40 @@ Ejemplo de configuración:
 }
 ```
 
-Ante `429 insufficient_quota` o `quota_exceeded`, el plugin promueve automáticamente `alternative.model` a `model` para ese rol y conserva el principal fallido como nueva alternativa. La unidad activa queda persistida, pero no se repite automáticamente para evitar duplicar efectos. Reinicia OpenCode y reanuda la tarea.
+Cada arnés puede guardar un override **parcial** y un catálogo independiente:
 
-*Nota: Cualquier cambio manual en `models.json` se aplica al workspace ejecutando `mr sync`.*
+```text
+~/.config/mr-orchestrator/harnesses/<harness-id>/models.json
+~/.config/mr-orchestrator/harnesses/<harness-id>/catalog.json
+~/.config/mr-orchestrator/generated/harnesses/<harness-id>/effective-models.json
+```
+
+La resolución siempre aplica `models.json` global → override parcial → validación y traducción del catálogo. Un target incluye modelo y variante como unidad atómica: si cambias el modelo sin pasar `--variant`, no se conserva implícitamente la variante del target sustituido.
+
+Ejemplo de catálogo explícito para un arnés externo:
+
+```json
+{
+  "schemaVersion": 1,
+  "harness": "cursor",
+  "applicationMode": "per-invocation",
+  "provenance": { "source": "explicit" },
+  "models": {
+    "openai/gpt-5.6-sol": {
+      "nativeModel": "openai/gpt-5.6-sol",
+      "variants": ["high"]
+    }
+  }
+}
+```
+
+OpenCode conserva el catálogo legado si todavía no existe `harnesses/opencode/catalog.json`. Los demás arneses fallan antes del despacho cuando falta su catálogo o un modelo/variante no está soportado. Los modos gestionados y verificados son `opencode=native-role` y `codex|cursor|claude|agy|fx=per-invocation`; un catálogo que declare otro modo se rechaza. Antigravity permanece sin aplicación heterogénea verificada y falla de forma cerrada en vez de fingir soporte.
+
+Codex, Cursor Agent, Claude Code, AGY y fx usan aplicación `per-invocation`: sus adaptadores ejecutan cada pase aislado mediante `mr-clients run-role <arnés> <rol> -- <prompt>`. El runner vuelve a resolver y validar las fuentes globales/del arnés y lanza la CLI del host con su modelo y variante nativos (`codex exec`, `agent --print`, `claude --print`, `agy --print` o `fx ask`); no toma el artefacto generado como fuente, ni depende del modelo de la sesión padre o de archivos del workspace.
+
+Ante `429 insufficient_quota` o `quota_exceeded`, el plugin promueve automáticamente `alternative.model` a `model` para ese rol y conserva el principal fallido como nueva alternativa. Si la ejecución pertenece a un arnés externo, la promoción solo modifica su override; nunca reescribe el baseline global. La unidad activa queda persistida, pero no se repite automáticamente para evitar duplicar efectos. Reinicia el cliente y reanuda la tarea.
+
+*Nota: cualquier cambio manual debe validarse con `mr models validate --harness <id>`. Para OpenCode, `mr sync` regenera las definiciones de sus workspaces con el roster efectivo, pero el workspace no se convierte en ámbito de configuración.*
 
 ---
 

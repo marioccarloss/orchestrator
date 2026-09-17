@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
   "roles": {
-    "orchestrator": { "model": "github-copilot/gemini-3.8-flash", "variant": "high", "alternative": { "model": "opencode-go/deepseek-v4.1-flash", "variant": "high" } },
-    "explore": { "model": "opencode-go/deepseek-v4.1-flash", "variant": "high", "alternative": { "model": "github-copilot/gemini-3.8-flash", "variant": "high" } },
-    "plan": { "model": "openai/gpt-5.6-sol", "variant": "high", "alternative": { "model": "openai/gpt-6-astra", "variant": "xhigh" } },
+    "orchestrator": { "model": "github-copilot/kimi-k3", "variant": "high", "alternative": { "model": "github-copilot/gemini-3.8-flash", "variant": "high" } },
+    "explore": { "model": "github-copilot/gemini-3.8-flash", "variant": "high", "alternative": { "model": "github-copilot/kimi-k3", "variant": "high" } },
+    "plan": { "model": "github-copilot/claude-opus-5", "variant": "high", "alternative": { "model": "github-copilot/gpt-6-astra", "variant": "xhigh" } },
     "general": { "model": "github-copilot/gpt-5.6-sol", "variant": "high", "alternative": { "model": "github-copilot/claude-opus-5", "variant": "medium" } },
-    "sddApply": { "model": "openai/gpt-5.6-sol", "variant": "high", "alternative": { "model": "github-copilot/claude-opus-5", "variant": "medium" } },
-    "judgeA": { "model": "opencode-go/glm-5.3", "variant": "max", "alternative": { "model": "github-copilot/grok-4.6", "variant": "xhigh" } },
-    "judgeB": { "model": "opencode-go/qwen3.8-max", "variant": "xhigh", "alternative": { "model": "github-copilot/grok-4.6", "variant": "xhigh" } },
-    "fix": { "model": "openai/gpt-5.6-sol", "variant": "high", "alternative": { "model": "opencode-go/deepseek-v4.1-flash", "variant": "max" } },
-    "bpExtractor": { "model": "opencode-go/deepseek-v4.1-flash", "variant": "low", "alternative": { "model": "github-copilot/gemini-3.8-flash", "variant": "low" } },
-    "bpArchitect": { "model": "opencode/claude-fable-5-1", "variant": "max", "alternative": { "model": "openai/gpt-5.6-sol", "variant": "high" } },
-    "bpTransactor": { "model": "opencode-go/deepseek-v4.1-flash", "variant": "low", "alternative": { "model": "github-copilot/gemini-3.8-flash", "variant": "low" } }
+    "sddApply": { "model": "github-copilot/gpt-5.6-sol", "variant": "high", "alternative": { "model": "github-copilot/claude-opus-5", "variant": "medium" } },
+    "judgeA": { "model": "github-copilot/grok-4.6", "variant": "xhigh", "alternative": { "model": "github-copilot/claude-opus-4.8", "variant": "high" } },
+    "judgeB": { "model": "github-copilot/claude-opus-4.8-fast", "variant": "high", "alternative": { "model": "github-copilot/grok-4.6", "variant": "xhigh" } },
+    "fix": { "model": "github-copilot/gpt-5.6-sol", "variant": "high", "alternative": { "model": "github-copilot/claude-opus-5", "variant": "medium" } },
+    "bpExtractor": { "model": "github-copilot/gpt-5.4-mini", "variant": "low", "alternative": { "model": "github-copilot/gpt-5.6-luna", "variant": "low" } },
+    "bpArchitect": { "model": "github-copilot/gemini-3.8-flash", "variant": "high", "alternative": { "model": "github-copilot/claude-opus-5", "variant": "high" } },
+    "bpTransactor": { "model": "github-copilot/gpt-5.4-mini", "variant": "low", "alternative": { "model": "github-copilot/gpt-5.6-luna", "variant": "low" } }
   }
 }

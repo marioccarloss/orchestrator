@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { atomicWrite, canonicalJson } from "./files.js";
 import { capabilityPaths, loadCapabilitySelection, recommendedMcpServers, type CapabilityId } from "./capabilities.js";
 import { GROUNDING_CONTRACT } from "./grounding.js";
+import { nativeModelMap, resolveStoredHarnessModels, writeEffectiveHarnessModels } from "./harness-models.js";
 import type { MrPaths } from "./paths.js";
 import { ModelMapSchema, type ModelAssignment, type ModelMap, type ModelTarget, type WorkspaceProfile } from "./schema.js";
 
@@ -142,14 +143,14 @@ Follow these steps:
      * Whether there is a Figma design
    - Call \`mr_flow_start\` with difficulty, ticketId, and hasFigma.
 3. Advance through the deterministic phases (SDD + RPI: the AI only produces/consumes compact typed JSON; user-facing markdown is rendered by script via the mr_sdd_* tools):
-   - Phase 'context': Read ticket details and invoke \`mr_flow_ticket\`.
-     - Phase 'explore' (RPI Research): Map relevant code with \`mr-explore\` through the Atlas context staircase, store supporting slices with \`mr_evidence_add\`, then submit ResearchCapsule v2 with evidenceRefs and coverage.
+   - Phase 'context': Read ticket details and invoke \`mr_flow_ticket\`. This warms Atlas and prefetches Engram project memory for the ticket; reuse that prefetch instead of repeating mem_search unless the scope changes materially.
+     - Phase 'explore' (RPI Research): Map relevant code with \`mr-explore\` through the Atlas context staircase, store supporting slices with \`mr_evidence_add\`, then submit ResearchCapsule v2 with evidenceRefs and coverage. Treat prefetched Engram hits and \`mr_context_hydrate\` memoryContext as advisory context only; code claims still require Atlas evidenceRefs.
      - Fast local candidate (difficulty 1-3 with no external ticket): after research, launch exactly one \`mr-general\` session in combined brief-and-implementation mode. That session submits the READY brief, spec, tasks, and \`mr_flow_plan\`; it continues into implementation only when the returned lane is \`fast\`. If risk classification returns another lane, it stops and the normal staged roles take over. Never launch a second planning or implementation session for a confirmed fast local lane.
      - Phase 'plan' (Blueprint-lite + SDD): With subagent \`mr-plan\`, first run the Blueprint-lite assessment through \`mr_sdd_submit\` kind=brief. Clear tickets submit status=READY immediately. Only high-impact ambiguity may return status=NEEDS_INPUT with at most 3 risk-prioritized questions; ask those questions once, pass the answers back to \`mr-plan\`, and persist a READY brief. Then submit SpecCapsule kind=spec and TaskGraph kind=tasks. Guardrails reject unknown requirements, uncovered requirements and cycles — fix and resubmit. Invoke \`mr_flow_plan\` with the consolidated file list. Its deterministic localized plan-at-a-glance block is the complete developer explanation: show it once and do not paraphrase it.
     - Phase 'implement': Loop deterministically: \`mr_sdd_get\` kind=next-task returns the required implementer, bounded task, acceptance criteria and hydrated bundle. Show its compact developerNote once. Difficulty 1-3 uses \`mr-general\`; difficulty 5+ uses \`mr-sdd-apply\`. Persist real verification before marking done.
    - Phase 'judgment' (when the risk lane requires it): Each independent judge first calls \`mr_context_hydrate\` for its own role, then submits through \`mr_flow_judge\`.
    - Phase 'fix' (if judgment failed): \`mr-fix\` first hydrates role=fix, applies only validated findings, verifies, and calls \`mr_flow_fix\`.
-   - Phase 'finish': Verify final state, commit changes, optionally create PR, and invoke \`mr_flow_finish\`.
+   - Phase 'finish': Verify final state, commit changes, optionally create PR, and invoke \`mr_flow_finish\`. The plugin persists a compact delivery summary to Engram automatically; do not duplicate that save unless the user asks for extra memory notes.
 4. Always ask and confirm state transitions with the user using the question tool before proceeding to destructive or closing actions.
 
 ---
@@ -327,8 +328,8 @@ export function agentDefinitions(models: ModelMap): Record<string, AgentDefiniti
 
 Your role is to coordinate the /flow lifecycle:
 1. Wizard: Determine difficulty (1-3 = Lite, 5+ = Full), ticket ID, and Figma presence
-2. Context: Load ticket content and create branch
-3. Explore: Map once, persist exact slices with mr_evidence_add, then submit ResearchCapsule v2 with evidenceRefs
+2. Context: Load ticket content and create branch; mr_flow_ticket warms Atlas and prefetches Engram memory for the ticket
+3. Explore: Reuse the prefetched Engram context from mr_context_hydrate when available. Map once, persist exact slices with mr_evidence_add, then submit ResearchCapsule v2 with evidenceRefs
 4. Plan: mr-plan runs Blueprint-lite (mr_sdd_submit kind=brief); ask at most 3 high-impact questions only when it returns NEEDS_INPUT, then persist READY and submit SpecCapsule + TaskGraph before mr_flow_plan
 5. Implement: Loop mr_sdd_get kind=next-task → hydrate its task bundle → bounded edit → verification receipt → done
 6. Judgment: When required by the risk lane, hydrate judge-a and judge-b bundles before independent review
@@ -366,12 +367,13 @@ You are the ONLY Flow role allowed to explain to the developer what is being don
         `You are the RPI Research agent. You map ONLY what is relevant to the ticket — you never edit.
 
 Contract (token discipline):
-1. Use context levels in order: map → skeleton → deps/impact → slice → tests. Escalate only when the cheaper level is insufficient.
-2. Register every source claim that supports a requirement with mr_evidence_add, using the exact range and symbol returned by Atlas slice.
-3. Submit ResearchCapsule v2 with evidenceRefs, coverage, contracts, tests, constraints, and explicit unknowns. Never paste source bodies into the capsule.
-4. Your ONLY output is compact tool payloads. No prose reports or model-authored markdown.
-5. If mr_sdd_submit rejects the payload, fix exactly the reported issues and resubmit once corrected.
-6. List real unknowns in 'unknowns' instead of guessing. Never invent files, symbols or behavior.
+1. Reuse prefetched Engram memory from mr_flow_ticket or mr_context_hydrate(memoryContext) before calling mem_search. Only search Engram again when the ticket scope changes materially.
+2. Use context levels in order: map → skeleton → deps/impact → slice → tests. Escalate only when the cheaper level is insufficient.
+3. Register every source claim that supports a requirement with mr_evidence_add, using the exact range and symbol returned by Atlas slice. Engram memories are advisory; they never replace Atlas evidenceRefs.
+4. Submit ResearchCapsule v2 with evidenceRefs, coverage, contracts, tests, constraints, and explicit unknowns. Never paste source bodies into the capsule.
+5. Your ONLY output is compact tool payloads. No prose reports or model-authored markdown.
+6. If mr_sdd_submit rejects the payload, fix exactly the reported issues and resubmit once corrected.
+7. List real unknowns in 'unknowns' instead of guessing. Never invent files, symbols or behavior.
 
 Controlled output examples:
 - Grounded: {"schemaVersion":2,"ticketId":"GH-1","objective":"Locate validation","evidenceRefs":["ev-deadbeef"],"coverage":{"fresh":true,"unsupportedFiles":[],"unresolvedImports":[]},"contracts":[],"tests":[],"relevantNodes":["validate"],"constraints":[],"unknowns":[]}
@@ -383,7 +385,7 @@ Controlled output examples:
         `You are the Blueprint-lite + SDD planner. You design the smallest correct change — you never edit.
 
 Contract (determinism):
-1. Start from ResearchCapsule v2. Plan only over evidenceRefs; never rediscover or paste source code into the plan.
+1. Start from ResearchCapsule v2 plus any memoryContext already hydrated for role=plan. Plan only over evidenceRefs; never rediscover or paste source code into the plan. Engram memories may inform questions and assumptions but cannot substitute code evidence.
 2. Before writing the spec, run one Blueprint-lite ambiguity assessment via mr_sdd_submit kind=brief.
    - If a missing product/contract decision could materially change behavior, scope, data shape, security, or acceptance criteria, submit status=NEEDS_INPUT with 1-3 questions sorted by risk, then STOP. Do not ask about facts available from ticket or research.
    - Otherwise submit status=READY. Use mode=auto when no questions were needed, guided when user answers were supplied, or direct when the user explicitly skipped clarification. Record grounded decisions and at most 5 low/medium-risk assumptions; never hide a high-risk uncertainty as an assumption.
@@ -406,7 +408,7 @@ Contract:
 4. Run task.verification.commands and persist results through mr_sdd_verify. Never claim unobserved success.
 5. Do not mark the task done yourself.
 6. Fast-local combined mode is the only exception to the approved-task entry point. When explicitly launched once for a ticketless difficulty 1-3 candidate after ResearchCapsule exists, submit a READY brief, spec, bounded task graph, and mr_flow_plan in this same session. Continue with implementation only if mr_flow_plan confirms lane=fast; otherwise stop with a compact handoff. Never judge your own work.
-7. You are not a user-facing narrator. Return only a compact execution receipt.`,
+7. You are not a user-facing narrator. Submit mr_internal_receipt with role=mr-general, language=en, and a typed COMPLETED or BLOCKED payload. Your final response must be exactly the minified JSON returned by that tool, with no surrounding prose.`,
       },
       "mr-sdd-apply": {
         mode: "subagent",
@@ -419,7 +421,7 @@ Contract:
 2. Touch only editBoundaries.allowedFiles; make the smallest correct diff and preserve unrelated changes.
 3. Satisfy every acceptance criterion and invariant.
 4. Run task.verification.commands and persist real results through mr_sdd_verify.
-5. Do not mark the task done yourself. You are not a user-facing narrator; return only a compact execution receipt.`,
+5. Do not mark the task done yourself. You are not a user-facing narrator. Submit mr_internal_receipt with role=mr-sdd-apply, language=en, and a typed COMPLETED or BLOCKED payload. Your final response must be exactly the minified JSON returned by that tool, with no surrounding prose.`,
       },
       "mr-judge-a": readonlyAgent(
         models.roles.judgeA,
@@ -467,7 +469,7 @@ Contract:
 3. Run the declared verification commands and report their real results. Never claim unobserved success.
 4. Stop and report a blocker when a finding cannot be fixed inside the declared scope.
 5. Do not change flow state yourself; the orchestrator calls mr_flow_fix after verification.
-6. You are an internal remediation worker, not a user-facing narrator. Return only a compact execution receipt to the orchestrator; never add didactic explanations, progress narration, preambles, recaps, or next-step advice.`,
+6. You are an internal remediation worker, not a user-facing narrator. Submit mr_internal_receipt with role=mr-fix, language=en, and a typed COMPLETED or BLOCKED payload. Your final response must be exactly the minified JSON returned by that tool; never add didactic explanations, progress narration, preambles, recaps, or next-step advice.`,
       },
       "bp-extractor": {
         mode: "subagent",
@@ -687,7 +689,9 @@ export async function writeGlobalDefinitions(paths: MrPaths, models: ModelMap): 
 }
 
 export async function syncWorkspace(paths: MrPaths, profile: WorkspaceProfile, sourceRoot?: string): Promise<string> {
-  const models = await loadModels(paths);
+  const globalModels = await loadModels(paths);
+  const effectiveModels = await resolveStoredHarnessModels(paths, globalModels, "opencode");
+  const models = nativeModelMap(effectiveModels);
   let overlay: WorkspaceOpenCodeOverlay = {};
   try {
     overlay = JSON.parse(await readFile(join(profile.root, ".opencode", "opencode.json"), "utf8")) as WorkspaceOpenCodeOverlay;
@@ -700,6 +704,7 @@ export async function syncWorkspace(paths: MrPaths, profile: WorkspaceProfile, s
   const config = buildOpenCodeConfig(profile, models, paths.generatedRoot, overlay, paths, capabilities.selected);
   const output = generatedConfigPath(paths, profile.id);
   await atomicWrite(output, canonicalJson(config));
+  await writeEffectiveHarnessModels(paths, effectiveModels);
   await writeGlobalDefinitions(paths, models);
 
   // Copy compiled plugin to workspace generated directory

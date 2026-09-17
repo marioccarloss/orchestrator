@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { atomicWrite, canonicalJson, readJson, removeEmptyDirectory, sha256 } from "./files.js";
 import { buildGlobalDefinitionFiles, loadModels } from "./config.js";
 import { loadCapabilitySelection, recommendedMcpCatalog } from "./capabilities.js";
+import { nativeModelMap, resolveStoredHarnessModels, writeEffectiveHarnessModels } from "./harness-models.js";
 import type { MrPaths } from "./paths.js";
 import { InstallManifestSchema, SCHEMA_VERSION, type InstallManifest } from "./schema.js";
 
@@ -125,7 +126,10 @@ export async function install(paths: MrPaths, sourceRoot: string, version: strin
     [join(paths.opencodePluginsRoot, "mr-orchestrator-loader.ts"), loaderPlugin()],
     [join(paths.configRoot, "recommended-mcps.json"), canonicalJson(recommendedMcpCatalog(paths, capabilities.selected))],
   ]);
-  const models = await loadModels(paths);
+  const globalModels = await loadModels(paths);
+  const effectiveModels = await resolveStoredHarnessModels(paths, globalModels, "opencode");
+  const models = nativeModelMap(effectiveModels);
+  await writeEffectiveHarnessModels(paths, effectiveModels);
   for (const [path, content] of buildGlobalDefinitionFiles(paths, models)) {
     files.set(path, content);
   }
