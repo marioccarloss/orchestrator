@@ -8,6 +8,7 @@ import { formatModelMatrix } from "../src/tui/models.js";
 import {
   fetchAvailableModels,
   buildModelCandidates,
+  loadEffectiveModels,
   parseAvailableModels,
   promoteAlternativeModel,
   setModelPreset,
@@ -18,6 +19,7 @@ import {
   type ModelRole,
 } from "../src/core/models.js";
 import { loadModels, buildOpenCodeConfig, generatedConfigPath } from "../src/core/config.js";
+import { loadHarnessOverride, logicalModelMap } from "../src/core/harness-models.js";
 import { addWorkspace } from "../src/core/workspace.js";
 import type { WorkspaceProfile } from "../src/core/schema.js";
 import { classifyQuotaError, resolveModelRole } from "../src/core/quota.js";
@@ -27,17 +29,17 @@ void test("repository models.json keeps the governed role roster", async () => {
     roles: Record<string, { model: string; variant?: string; alternative: { model: string; variant?: string } }>;
   };
   assert.deepEqual(configured.roles, {
-    orchestrator: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" } },
-    explore: { model: "opencode-go/deepseek-v4.1-flash", variant: "high", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "high" } },
-    plan: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "openai/gpt-6-astra", variant: "xhigh" } },
+    orchestrator: { model: "github-copilot/kimi-k3", variant: "high", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "high" } },
+    explore: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "github-copilot/kimi-k3", variant: "high" } },
+    plan: { model: "github-copilot/claude-opus-5", variant: "high", alternative: { model: "github-copilot/gpt-6-astra", variant: "xhigh" } },
     general: { model: "github-copilot/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
-    sddApply: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
-    judgeA: { model: "opencode-go/glm-5.3", variant: "max", alternative: { model: "github-copilot/grok-4.6", variant: "xhigh" } },
-    judgeB: { model: "opencode-go/qwen3.8-max", variant: "xhigh", alternative: { model: "github-copilot/grok-4.6", variant: "xhigh" } },
-    fix: { model: "openai/gpt-5.6-sol", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "max" } },
-    bpExtractor: { model: "opencode-go/deepseek-v4.1-flash", variant: "low", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "low" } },
-    bpArchitect: { model: "opencode/claude-fable-5-1", variant: "max", alternative: { model: "openai/gpt-5.6-sol", variant: "high" } },
-    bpTransactor: { model: "opencode-go/deepseek-v4.1-flash", variant: "low", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "low" } },
+    sddApply: { model: "github-copilot/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
+    judgeA: { model: "github-copilot/grok-4.6", variant: "xhigh", alternative: { model: "github-copilot/claude-opus-4.8", variant: "high" } },
+    judgeB: { model: "github-copilot/claude-opus-4.8-fast", variant: "high", alternative: { model: "github-copilot/grok-4.6", variant: "xhigh" } },
+    fix: { model: "github-copilot/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
+    bpExtractor: { model: "github-copilot/gpt-5.4-mini", variant: "low", alternative: { model: "github-copilot/gpt-5.6-luna", variant: "low" } },
+    bpArchitect: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "high" } },
+    bpTransactor: { model: "github-copilot/gpt-5.4-mini", variant: "low", alternative: { model: "github-copilot/gpt-5.6-luna", variant: "low" } },
   });
 });
 
@@ -218,10 +220,15 @@ void test("loadModels migrates legacy string roles and alternative promotion is 
   assert.equal(promotion.alternative, "legacy/general#max");
 
   const persisted = await loadModels(paths);
-  assert.equal(persisted.roles.general.model, "github-copilot/claude-opus-5");
-  assert.equal(persisted.roles.general.variant, "medium");
-  assert.equal(persisted.roles.general.alternative.model, "legacy/general");
-  assert.equal(persisted.roles.general.alternative.variant, "max");
+  assert.equal(persisted.roles.general.model, "legacy/general", "a harness quota failure must not mutate the global roster");
+  const override = await loadHarnessOverride(paths, "opencode");
+  assert.equal(override?.roles.general?.primary?.model, "github-copilot/claude-opus-5");
+  assert.equal(override?.roles.general?.alternative?.model, "legacy/general");
+  const effective = logicalModelMap(await loadEffectiveModels(paths, "opencode"));
+  assert.equal(effective.roles.general.model, "github-copilot/claude-opus-5");
+  assert.equal(effective.roles.general.variant, "medium");
+  assert.equal(effective.roles.general.alternative.model, "legacy/general");
+  assert.equal(effective.roles.general.alternative.variant, "max");
 });
 
 void test("classifies only non-recoverable quota failures and maps OpenCode agents to roles", () => {

@@ -8,13 +8,15 @@ import { CAPABILITY_IDS, LOCAL_CAPABILITY_IDS, capabilityPaths, defaultCapabilit
 import { runDoctor } from "./core/doctor.js";
 import { install, planUninstall, uninstall } from "./core/install.js";
 import { launch } from "./core/launch.js";
-import { setModelPreset, setModelRole, type ModelRole, type ModelSlot } from "./core/models.js";
+import { loadEffectiveModels, refreshHarnessCatalog, resetHarnessModels, setHarnessModelRole, setModelPreset, setModelRole, type ModelSlot } from "./core/models.js";
+import { harnessCatalogPath, loadHarnessCatalog, parseHarnessId, writeEffectiveHarnessModels } from "./core/harness-models.js";
 import { resolvePaths } from "./core/paths.js";
+import { ModelRoleSchema, type HarnessId } from "./core/schema.js";
 import { addWorkspace, detectWorkspace, loadRegistry, removeWorkspace } from "./core/workspace.js";
 import { spawnInteractive } from "./core/process.js";
 import { approve, failure, heading, info, success, warning } from "./tui/index.js";
 import { formatCapabilityGuide, interactiveCapabilitySelector } from "./tui/capabilities.js";
-import { formatModelMatrix, interactiveModelSelector } from "./tui/models.js";
+import { formatEffectiveModelMatrix, formatModelMatrix, interactiveModelSelector } from "./tui/models.js";
 import { buildAtlasBaseline, indexAtlasWorkspace } from "./core/atlas-init.js";
 import type { WorkspaceRules } from "./core/rules/generator.js";
 import { saveRepositoryProfiles, saveWorkspaceRules } from "./core/rules/store.js";
@@ -36,8 +38,13 @@ Usage:
   mr workspace add PATH
   mr workspace list
   mr workspace remove ID
-  mr models [list | set <role> <model> [model|alternative] | preset <key>]
-  mr flow-models
+  mr models list [--harness ID] [--effective] [--origins]
+  mr models set <role> <model> [model|alternative] [--harness ID]
+  mr models reset [role [model|alternative]] --harness ID
+  mr models validate --harness ID
+  mr models catalog --harness ID [--refresh]
+  mr models preset <key>
+  mr flow-models [--harness ID]
   mr atlas index
   mr atlas init [--guided] [--no-rules] [--lang en|es] [--write-repo-agents] [--yes]
   mr atlas rules [--diff] [--guided] [--lang en|es] [--write-repo-agents] [--yes]
@@ -204,30 +211,75 @@ async function commandDoctor(): Promise<void> {
 }
 
 async function commandModels(arguments_: readonly string[]): Promise<void> {
-  const sub = arguments_[0];
+  const harnessValue = option(arguments_, "--harness");
+  if (arguments_.includes("--harness") && harnessValue === undefined) throw new Error("--harness requires an id");
+  const harness: HarnessId | undefined = harnessValue === undefined ? undefined : parseHarnessId(harnessValue);
+  const positional = arguments_.filter((argument, index) => {
+    const previous = arguments_[index - 1];
+    return argument !== "--harness"
+      && previous !== "--harness"
+      && argument !== "--effective"
+      && argument !== "--origins"
+      && argument !== "--refresh";
+  });
+  const sub = positional[0];
   if (sub === "list") {
-    const models = await loadModels(paths);
-    console.log(formatModelMatrix(models));
+    if (harness === undefined) console.log(formatModelMatrix(await loadModels(paths)));
+    else console.log(formatEffectiveModelMatrix(await loadEffectiveModels(paths, harness)));
     return;
   }
-  if (sub === "set" && arguments_[1] !== undefined && arguments_[2] !== undefined) {
-    const role = arguments_[1] as ModelRole;
-    const model = arguments_[2];
-    const slot = (arguments_[3] ?? "model") as ModelSlot;
+  if (sub === "set" && positional[1] !== undefined && positional[2] !== undefined) {
+    const role = ModelRoleSchema.parse(positional[1]);
+    const model = positional[2];
+    const slot = (positional[3] ?? "model") as ModelSlot;
     if (slot !== "model" && slot !== "alternative") {
-      throw new Error("Usage: mr models set <role> <model> [model|alternative]");
+      throw new Error("Usage: mr models set <role> <model> [model|alternative] [--harness ID]");
     }
-    await setModelRole(paths, role, model, slot);
-    success(`Rol '${role}.${slot}' actualizado a '${model}' y workspaces sincronizados.`);
+    if (harness === undefined) await setModelRole(paths, role, model, slot);
+    else await setHarnessModelRole(paths, harness, role, model, slot);
+    success(`Rol '${role}.${slot}' actualizado a '${model}' en ${harness === undefined ? "el roster global" : `el arnés '${harness}'`}.`);
     return;
   }
-  if (sub === "preset" && arguments_[1] !== undefined) {
-    const presetKey = arguments_[1];
+  if (sub === "reset") {
+    if (harness === undefined) throw new Error("mr models reset requires --harness ID; the global roster cannot inherit from another scope");
+    const role = positional[1] === undefined ? undefined : ModelRoleSchema.parse(positional[1]);
+    const slot = positional[2] as ModelSlot | undefined;
+    if (slot !== undefined && slot !== "model" && slot !== "alternative") {
+      throw new Error("Usage: mr models reset [role [model|alternative]] --harness ID");
+    }
+    const effective = await resetHarnessModels(paths, harness, role, slot);
+    success(`Override de '${harness}' restablecido. ${Object.values(effective.roles).filter((assignment) => assignment.primary.origin !== "global" || assignment.alternative.origin !== "global").length} rol(es) aún tienen overrides.`);
+    return;
+  }
+  if (sub === "validate") {
+    if (harness === undefined) throw new Error("mr models validate requires --harness ID");
+    const effective = await loadEffectiveModels(paths, harness);
+    const output = await writeEffectiveHarnessModels(paths, effective);
+    console.log(formatEffectiveModelMatrix(effective));
+    success(`Configuración válida; resultado efectivo: ${output}`);
+    return;
+  }
+  if (sub === "catalog") {
+    if (harness === undefined) throw new Error("mr models catalog requires --harness ID");
+    if (arguments_.includes("--refresh")) {
+      const refreshed = await refreshHarnessCatalog(paths, harness);
+      info(`Catálogo actualizado: ${Object.keys(refreshed.catalog.models).length} modelos en ${harnessCatalogPath(paths, harness)}.`);
+      if (refreshed.warning !== undefined) warning(refreshed.warning);
+    } else {
+      const catalog = await loadHarnessCatalog(paths, harness);
+      if (catalog === undefined) throw new Error(`No existe catálogo para '${harness}' en ${harnessCatalogPath(paths, harness)}`);
+      console.log(JSON.stringify(catalog, null, 2));
+    }
+    return;
+  }
+  if (sub === "preset" && positional[1] !== undefined) {
+    if (harness !== undefined) throw new Error("Presets are global; omit --harness or configure explicit harness roles");
+    const presetKey = positional[1];
     await setModelPreset(paths, presetKey);
     success(`Preset '${presetKey}' aplicado y workspaces sincronizados.`);
     return;
   }
-  await interactiveModelSelector(paths);
+  await interactiveModelSelector(paths, { ...(harness === undefined ? {} : { harness }) });
 }
 
 async function activeWorkspace() {
@@ -321,7 +373,12 @@ async function main(): Promise<void> {
     case "uninstall": await commandUninstall(arguments_); break;
     case "workspace": await commandWorkspace(arguments_); break;
     case "models": await commandModels(arguments_); break;
-    case "flow-models": await interactiveModelSelector(paths); break;
+    case "flow-models": {
+      const harnessValue = option(arguments_, "--harness");
+      if (arguments_.includes("--harness") && harnessValue === undefined) throw new Error("--harness requires an id");
+      await interactiveModelSelector(paths, harnessValue === undefined ? {} : { harness: parseHarnessId(harnessValue) });
+      break;
+    }
     case "atlas": await commandAtlas(arguments_); break;
     case "sync": await commandSync(arguments_[0]); break;
     case "doctor": await commandDoctor(); break;

@@ -1,7 +1,8 @@
 import type { AtlasGraph, AtlasNode } from "./atlas.js";
 import type { EvidenceKind, EvidenceRef, EvidenceStore, FreshnessResult } from "./evidence-store.js";
 import type { ContractRef, Requirement, ResearchCapsulePayload, SddTask, SpecCapsulePayload, TaskGraphPayload, TestRef } from "./sdd-schema.js";
-import { canonicalJson } from "./files.js";
+import type { EngramMemoryHit } from "./engram-bridge.js";
+import { compactJson } from "./files.js";
 import type { JudgeFinding } from "./flow-schema.js";
 import { CONTEXT_BUDGET_CHARS, ContextRoleSchema, contextBudgetChars, type ContextRole } from "./budgets.js";
 import type { RiskLane } from "./risk.js";
@@ -47,6 +48,7 @@ export interface ContextBundle {
   readonly rules: readonly RuleDigest[];
   readonly coverage: ResearchCapsulePayload["coverage"];
   readonly budget: { readonly requestedChars: number; readonly usedChars: number; readonly truncated: readonly string[] };
+  readonly memoryContext?: readonly EngramMemoryHit[];
 }
 
 export interface HydrateInput {
@@ -65,6 +67,7 @@ export interface HydrateInput {
   readonly rules?: readonly RuleDigest[];
   readonly findings?: readonly JudgeFinding[];
   readonly readLiveRange?: (file: string, startLine: number, endLine: number) => Promise<string | undefined>;
+  readonly memoryContext?: readonly EngramMemoryHit[];
 }
 
 function nodeNeighbors(graph: AtlasGraph, names: readonly string[]): ContextNeighbor[] {
@@ -158,6 +161,7 @@ export async function hydrateContext(input: HydrateInput): Promise<ContextBundle
     ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
     ...(task === undefined ? {} : { task }),
     ...(acceptance === undefined ? {} : { acceptance }),
+    ...(input.memoryContext === undefined || input.memoryContext.length === 0 ? {} : { memoryContext: input.memoryContext }),
   };
 
   interface Candidate { readonly id: string; readonly add: () => void; readonly remove: () => void }
@@ -180,12 +184,12 @@ export async function hydrateContext(input: HydrateInput): Promise<ContextBundle
   ];
   for (const candidate of queue) {
     candidate.add();
-    if (canonicalJson(bundle).length > requestedChars) {
+    if (compactJson(bundle).length > requestedChars) {
       candidate.remove();
       truncated.push(candidate.id);
     }
   }
-  budget.usedChars = canonicalJson(bundle).length;
+  budget.usedChars = compactJson(bundle).length;
   return bundle;
 }
 
@@ -196,5 +200,5 @@ function slicePriority(kind: EvidenceKind): number {
 }
 
 export function serializeBundle(bundle: ContextBundle): string {
-  return canonicalJson(bundle).trimEnd();
+  return compactJson(bundle);
 }

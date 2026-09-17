@@ -8,6 +8,8 @@ import { createMrOrchestrator } from "../src/plugin.js";
 import { resolvePaths } from "../src/core/paths.js";
 import { addWorkspace } from "../src/core/workspace.js";
 import { loadModels, seedModels } from "../src/core/config.js";
+import { loadHarnessOverride, logicalModelMap } from "../src/core/harness-models.js";
+import { loadEffectiveModels } from "../src/core/models.js";
 import { runCommand } from "../src/core/process.js";
 import { loadFlowState, saveFlowState } from "../src/core/flow-state.js";
 import type { PluginInput, ToolContext } from "@opencode-ai/plugin";
@@ -85,6 +87,7 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
       "mr_flow_status",
       "mr_flow_start",
       "mr_flow_ticket",
+      "mr_flow_memory_prefetch",
       "mr_flow_plan",
       "mr_flow_implement",
       "mr_flow_judge",
@@ -101,6 +104,7 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
       "mr_prompt_copy",
       "mr_evidence_add",
       "mr_evidence_list",
+      "mr_internal_receipt",
       "mr_context_hydrate",
       "mr_sdd_verify",
       "mr_memory_save",
@@ -137,6 +141,35 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
     assert.doesNotMatch(candidatesRes.output, /^- github-copilot\/kimi-k3$/mu);
     assert.ok(Object.keys(tools["mr_propose_save"]!.args).length >= 5, "mr_propose_save must define arguments");
     assert.ok(Object.keys(tools["mr_prompt_build"]!.args).length >= 2, "mr_prompt_build must define arguments");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("internal execution receipts are typed, English-tagged and minified", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    const tool = hooks.tool!["mr_internal_receipt"]!;
+    const accepted = await tool.execute({
+      payload: JSON.stringify({
+        schemaVersion: 1,
+        language: "en",
+        role: "mr-general",
+        status: "COMPLETED",
+        summary: "Implemented the bounded task",
+        changedFiles: ["src/a.ts"],
+        verification: [{ command: "bun test", exitCode: 0 }],
+      }),
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(accepted.title, "Internal Receipt");
+    assert.doesNotMatch(accepted.output, /\n/u);
+    assert.equal(JSON.parse(accepted.output).language, "en");
+
+    const rejected = await tool.execute({
+      payload: JSON.stringify({ schemaVersion: 1, language: "es", role: "mr-fix", status: "BLOCKED", summary: "Blocked", blocker: "Missing scope" }),
+    }, ctx.dummyToolContext) as { title: string };
+    assert.equal(rejected.title, "Internal Receipt Rejected");
   } finally {
     ctx.cleanup();
   }
@@ -231,7 +264,7 @@ void test("quota exhaustion promotes the role-specific alternative without repla
     await hooks["chat.params"]({
       sessionID: "quota-session",
       agent: "orchestrator",
-      model: { providerID: "github-copilot", id: "gemini-3.8-flash" },
+      model: { providerID: "github-copilot", id: "kimi-k3" },
     } as never, {} as never);
     await hooks.event({
       event: {
@@ -246,10 +279,14 @@ void test("quota exhaustion promotes the role-specific alternative without repla
       },
     } as never);
 
-    const models = await loadModels(ctx.paths);
-    assert.equal(models.roles.orchestrator.model, "opencode-go/deepseek-v4.1-flash");
+    const globalModels = await loadModels(ctx.paths);
+    assert.equal(globalModels.roles.orchestrator.model, "github-copilot/kimi-k3");
+    const override = await loadHarnessOverride(ctx.paths, "opencode");
+    assert.equal(override?.roles.orchestrator?.primary?.model, "github-copilot/gemini-3.8-flash");
+    const models = logicalModelMap(await loadEffectiveModels(ctx.paths, "opencode"));
+    assert.equal(models.roles.orchestrator.model, "github-copilot/gemini-3.8-flash");
     assert.equal(models.roles.orchestrator.variant, "high");
-    assert.equal(models.roles.orchestrator.alternative.model, "github-copilot/gemini-3.8-flash");
+    assert.equal(models.roles.orchestrator.alternative.model, "github-copilot/kimi-k3");
     assert.equal(models.roles.orchestrator.alternative.variant, "high");
     assert.ok(warnings.some((warning) => warning.includes("Fallback activado")));
     assert.ok(warnings.some((warning) => warning.includes("no se repite automáticamente")));
@@ -510,7 +547,7 @@ void test("active Flow planning requires a READY Blueprint-lite brief before the
     const nextTask = await tools["mr_sdd_get"]!.execute({ kind: "next-task" }, ctx.dummyToolContext) as { output: string };
     const nextPayload = JSON.parse(nextTask.output) as {
       developerNote: { what: string; why: string; touch: string; prove: string };
-      bundle: string;
+      bundle: { budget: { requestedChars: number; usedChars: number } };
       economy: { sessionMode: string; judges: boolean };
     };
     assert.deepEqual(nextPayload.developerNote, {
@@ -519,9 +556,9 @@ void test("active Flow planning requires a READY Blueprint-lite brief before the
       touch: "src/helper.ts",
       prove: "bun test tests/plugin.test.ts",
     });
-    const hydrated = JSON.parse(nextPayload.bundle) as { budget: { requestedChars: number; usedChars: number } };
-    assert.equal(hydrated.budget.requestedChars, 45_000);
-    assert.ok(hydrated.budget.usedChars > 0);
+    assert.equal(nextPayload.bundle.budget.requestedChars, 45_000);
+    assert.ok(nextPayload.bundle.budget.usedChars > 0);
+    assert.doesNotMatch(nextTask.output, /\n/u);
     assert.equal(nextPayload.economy.sessionMode, "staged");
     assert.equal(nextPayload.economy.judges, false);
     const budgetStatus = await tools["mr_flow_status"]!.execute({}, ctx.dummyToolContext) as { output: string };
@@ -821,7 +858,7 @@ void test("MrOrchestrator atlas and trace tools index and inspect codebase", asy
     // Bounded Language Service lookup persists resolved caller edges.
     const semanticRes = await tools["mr_atlas_query"]!.execute({ nodeName: "add", action: "semantic", depth: 1 }, dummyCtx) as { title: string; output: string };
     assert.equal(semanticRes.title, "Semantic: add");
-    assert.ok(semanticRes.output.includes('"type": "calls"'));
+    assert.ok(semanticRes.output.includes('"type":"calls"'));
     const dependentsRes = await tools["mr_atlas_query"]!.execute({ nodeName: "add", action: "dependents" }, dummyCtx) as { output: string };
     assert.ok(dependentsRes.output.includes("Widget"));
 

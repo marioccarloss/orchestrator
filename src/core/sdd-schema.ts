@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { atomicWrite, canonicalJson } from "./files.js";
+import { atomicWrite, canonicalJson, compactJson } from "./files.js";
 import type { MrPaths } from "./paths.js";
 import type { EvidenceStore, FreshnessResult } from "./evidence-store.js";
 
@@ -593,7 +593,7 @@ export function toOperationalSddPayload(artifact: SddArtifact): SddArtifactPaylo
 
 /** Stable model-facing serialization: schema-normalized keys, no volatile audit timestamp. */
 export function canonicalSddPayload(artifact: SddArtifact): string {
-  return canonicalJson(toOperationalSddPayload(artifact)).trimEnd();
+  return compactJson(toOperationalSddPayload(artifact));
 }
 
 async function loadJson<T>(filePath: string): Promise<T | undefined> {

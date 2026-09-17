@@ -177,6 +177,10 @@ void test("flow agent prompts are defined and invariant across model assignments
   for (const name of ["mr-general", "mr-sdd-apply", "mr-judge-a", "mr-judge-b", "mr-fix"]) {
     assert.ok(agents[name]?.prompt?.includes("not a user-facing narrator"), `${name} must stay internal`);
   }
+  for (const name of ["mr-general", "mr-sdd-apply", "mr-fix"]) {
+    assert.ok(agents[name]?.prompt?.includes("mr_internal_receipt"), `${name} must use a typed internal receipt`);
+    assert.ok(agents[name]?.prompt?.includes("exactly the minified JSON"), `${name} must not add prose to its receipt`);
+  }
   assert.ok(commandDefinitions(models)["flow"]?.template.includes("developerNote"));
   assert.ok(agents["mr-judge-a"]?.prompt?.includes("Controlled verdict examples"));
   assert.ok(agents["mr-judge-b"]?.prompt?.includes("Controlled verdict examples"));
