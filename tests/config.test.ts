@@ -192,7 +192,8 @@ void test("internal command and agent prompts stay in English and delegate user-
   const commands = commandDefinitions(models);
   for (const [name, command] of Object.entries(commands)) {
     assert.doesNotMatch(command.template, spanishLiteral, `/${name} template must stay in English`);
-    assert.doesNotMatch(command.description, spanishLiteral, `/${name} description must stay in English`);
+    const englishDescription = command.descriptionEn ?? command.description;
+    assert.doesNotMatch(englishDescription, spanishLiteral, `/${name} description must stay in English`);
   }
   const agents = agentDefinitions(models);
   for (const [name, agent] of Object.entries(agents)) {

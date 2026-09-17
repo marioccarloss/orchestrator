@@ -4,6 +4,7 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { atomicWrite, canonicalJson } from "./files.js";
 import { capabilityPaths, loadCapabilitySelection, recommendedMcpServers, type CapabilityId } from "./capabilities.js";
+import { FLOW_WIZARD_STEPS } from "./flow-wizard.js";
 import { GROUNDING_CONTRACT } from "./grounding.js";
 import { nativeModelMap, resolveStoredHarnessModels, writeEffectiveHarnessModels } from "./harness-models.js";
 import type { MrPaths } from "./paths.js";
@@ -108,7 +109,10 @@ function readonlyAgent(target: ModelTarget, description: string, prompt?: string
 }
 
 interface CommandDefinition {
+  /** User-facing description (may be localized). */
   readonly description: string;
+  /** Internal English description for tests and docs when description is localized. */
+  readonly descriptionEn?: string;
   readonly agent: string;
   readonly template: string;
 }
@@ -130,18 +134,16 @@ interface AgentDefinition {
 export function commandDefinitions(_models: ModelMap): Record<string, CommandDefinition> {
   const commands: Record<string, CommandDefinition> = {
     flow: {
-        description: "Start or continue the deterministic ticket-delivery flow; internal coordination is automatic",
+        description: "Wizard: ticket/tarea → dificultad → diseño → arranque del flujo",
+        descriptionEn: "Guided wizard: ticket/task → difficulty → design → start deterministic delivery flow",
         agent: "orchestrator",
         template: `You are executing the /flow deterministic workflow.
 
+${FLOW_WIZARD_STEPS}
+
 Follow these steps:
-1. Check current flow status using tool \`mr_flow_status\`.
-2. If no active flow is found:
-   - Parse or ask the user for:
-     * Ticket ID (e.g. GH-42, 123)
-     * Difficulty level (Fibonacci: 1 or 3 for Lite, 5, 8, 13, 21 for Full with Judgment Day)
-     * Whether there is a Figma design
-   - Call \`mr_flow_start\` with difficulty, ticketId, and hasFigma.
+1. Check current flow status using tool \`mr_flow_status\` (harness badge — do not restate role/model in prose).
+2. If no active flow is found: call \`mr_flow_wizard_begin\`, then loop \`mr_flow_wizard_step\` with each user answer (mirror options via native \`question\`). On \`complete\`, use returned \`startParams\` with \`mr_flow_start\` or follow \`autoStarted\`.
 3. Advance through the deterministic phases (SDD + RPI: the AI only produces/consumes compact typed JSON; user-facing markdown is rendered by script via the mr_sdd_* tools):
    - Phase 'context': Read ticket details and invoke \`mr_flow_ticket\`. This warms Atlas and prefetches Engram project memory for the ticket; reuse that prefetch instead of repeating mem_search unless the scope changes materially.
      - Phase 'intent': Ground the request before touching code. Submit an IntentCapsule with \`mr_sdd_submit kind=intent\`. Clear tickets may auto-derive a READY intent from the ticket text; ambiguous prompts return NEEDS_INPUT with up to 5 risk-prioritized questions. After a READY intent exists, show the deterministic intent summary once and call \`mr_flow_intent approved=true\` only after explicit user confirmation.
@@ -328,7 +330,7 @@ export function agentDefinitions(models: ModelMap): Record<string, AgentDefiniti
         prompt: `You are Orchestrator, the deterministic flow orchestrator for this workspace.
 
 Your role is to coordinate the /flow lifecycle:
-1. Wizard: Determine difficulty (1-3 = Lite, 5+ = Full), ticket ID, and Figma presence
+1. Wizard (${FLOW_WIZARD_STEPS})
 2. Context: Load ticket content and create branch; mr_flow_ticket warms Atlas and prefetches Engram memory for the ticket
 3. Intent: Submit mr_sdd_submit kind=intent; if NEEDS_INPUT, ask up to 5 material questions once, then persist READY and call mr_flow_intent approved=true after user confirmation
 4. Explore: Reuse the prefetched Engram context and approved intent when available. Map once, persist exact slices with mr_evidence_add, then submit ResearchCapsule v2 with evidenceRefs
@@ -340,11 +342,11 @@ Your role is to coordinate the /flow lifecycle:
 
 Economy router: for a difficulty 1-3 task without an external ticket, use one mr-general child session for the READY planning brief, spec, task graph, risk classification, and implementation. The child may implement only if mr_flow_plan confirms lane=fast; otherwise it stops and you resume the staged pipeline. A confirmed fast lane never launches judges or a second planning/implementation child session.
 
-The AI layer exchanges ONLY compact typed JSON capsules; user-facing markdown is always rendered by script (mr_sdd_* tools). Flow status tools provide the authoritative order-style progress and OpenCode-estimated spend; never calculate or invent cost yourself. Planning and next-task tools include deterministic ultra-compact developer explanations — show them once without adding a prose duplicate. Use the mr_flow_* tools to manage state transitions. Always confirm with the user before major transitions.
+The AI layer exchanges ONLY compact typed JSON capsules; user-facing markdown is always rendered by script (mr_sdd_* tools). Flow status tools provide the authoritative order-style progress, harness role badge, and OpenCode-estimated spend; never calculate or invent cost yourself. Never announce the active role or model in assistant prose — the harness badge on mr_flow_* tool titles carries that signal. Planning and next-task tools include deterministic ultra-compact developer explanations — show them once without adding a prose duplicate. Use the mr_flow_* tools to manage state transitions. Always confirm with the user before major transitions.
 
 Explain to the user in FlowState.userLanguage; never in English unless the task arrived in English. Internal agent payloads, prompts, receipts, and persisted typed artifacts remain in English.
 
-You are the ONLY Flow role allowed to explain to the developer what is being done. Present those explanations in an ADHD-friendly, didactic and condensed form: lead with the next action, number multi-step work, keep lists to at most 5 items, suppress tangents, state the current Flow state, make completed work visible, describe errors matter-of-factly, and end with exactly one concrete next step. Do not add preambles, recaps, or generic closers. Never relay another role's prose verbatim; reduce its structured receipt to the minimum developer-relevant explanation.`,
+You are the ONLY Flow role allowed to explain to the developer what is being done. Present those explanations in an ADHD-friendly, didactic and condensed form: lead with the next action, number multi-step work, keep lists to at most 5 items, suppress tangents, make completed work visible, describe errors matter-of-factly, and end with exactly one concrete next step. Do not add preambles, recaps, or generic closers. Never relay another role's prose verbatim; reduce its structured receipt to the minimum developer-relevant explanation.`,
         // Full autonomy by design. OpenCode evaluates the LAST matching rule,
         // so the broad "*" allow comes first and the narrow "ask" gates come last.
         // Only two things interrupt the user: publishing commits (push) and
@@ -658,9 +660,10 @@ export function buildGlobalDefinitionFiles(paths: MrPaths, models: ModelMap): Ma
   const files = new Map<string, string>();
 
   for (const [name, def] of Object.entries(commandDefinitions(models))) {
+    const description = def.descriptionEn === undefined ? def.description : `${def.description} — ${def.descriptionEn}`;
     files.set(
       join(paths.opencodeCommandsRoot, `${name}.md`),
-      `---\ndescription: ${yamlEscape(def.description)}\nagent: ${def.agent}\n---\n\n${def.template}\n`,
+      `---\ndescription: ${yamlEscape(description)}\nagent: ${def.agent}\n---\n\n${def.template}\n`,
     );
   }
 

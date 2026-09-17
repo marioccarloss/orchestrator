@@ -131,7 +131,7 @@ export async function applyEvent(
 ): Promise<FlowState> {
   const current = await loadFlowState(paths, workspaceId);
   if (current === undefined) {
-    if (event.type === "start") {
+    if (event.type === "start" || event.type === "wizard_begin") {
       const startedAt = new Date().toISOString();
       const initial: FlowState = {
         phase: "init",

@@ -4,16 +4,27 @@ Chuleta puntual para `/flow`, `/blueprint`, `/prompt` y `/atlas`. Todos reciben 
 
 ---
 
-## `/flow` — entrega determinista por ticket
+## `/flow` — wizard guiado → entrega determinista
 
-> Fuente: `src/core/config.ts:134`, `src/plugin.ts:394`.
+> Descripción del comando: *Wizard guiado: ticket/tarea → dificultad → diseño → arranque*.
 
-Escribes texto libre, ej. `/flow GH-42 dificultad 5`. El orchestrator ejecuta el wizard y te pide:
+Escribes `/flow`. El orchestrator ejecuta el **wizard determinista**:
 
-* `difficulty` — requerido: `1 | 3 | 5 | 8 | 13 | 21` (`1-3` = Lite, `5+` = Full con Judgment).
-* `ticketId` — opcional, ej. `GH-42`, `123`. Si se omite hay que dar `taskText`.
-* `taskText` — opcional, texto original; sin `ticketId` crea ticket sintético `LOCAL-*` y avanza directo a exploración.
-* `hasFigma` — opcional, default `false`.
+- `mr_flow_wizard_begin` → primera pregunta
+- `mr_flow_wizard_step answer=...` → siguiente paso (o `autoStarted: true` al final)
+- El orchestrator refleja las mismas opciones con `question` para la TUI
+
+Pasos:
+
+1. **Origen** — GitHub | Jira | GitLab | **No tengo ticket** (una sola opción).
+   - Con plataforma: identificador (`GH-42`, `PROJ-105`) → lectura vía gh/MCP o pegado manual si falla (`mr_flow_platform_status` es informativo, no bloqueante).
+   - Sin ticket: salta al paso 4 con tu descripción.
+2. **Dificultad Fibonacci** — `1 | 3 | 5 | 8 | 13 | 21` (`1-3` Lite, `5+` Full con Judgment si el carril lo exige).
+3. **Diseño** — No | Figma (figma-live-mcp) | Imagen | Otro. Sin preguntar “¿eres frontend?”. Figma no bloqueante si MCP no responde.
+4. **Instrucciones** — placeholder: se analizará el ticket; complementa aquí si quieres.
+5. **`mr_flow_start`** — arranca el flujo.
+
+Indicador de rol en el arnés (título de tools `mr_flow_*`, sin gastar tokens en prosa): `🔍 Explore · mr-explore · modelo`.
 
 Herramientas del ciclo:
 

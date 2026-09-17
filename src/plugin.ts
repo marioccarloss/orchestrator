@@ -36,7 +36,22 @@ import { hydrateContext, serializeBundle, type ContextBundle, type HydrationRole
 import { loadRepositoryProfiles, loadWorkspaceRules } from "./core/rules/store.js";
 import { ruleInvariants, rulesDigest } from "./core/rules/generator.js";
 import { assessRiskLane, type RiskLane } from "./core/risk.js";
+import {
+  applyWizardAnswer,
+  questionForStep,
+  serializeWizardQuestion,
+  type WizardStartParams,
+} from "./core/wizard-engine.js";
+import {
+  designSourceToHasFigma,
+  flowToolTitle,
+  mergeTaskText,
+  normalizeDesignSource,
+  renderPlatformStatus,
+} from "./core/flow-wizard.js";
+import { assessFigmaSetup, figmaSetupInstructions } from "./core/figma-setup.js";
 import { createTicketAdapter, nextLocalTicketId } from "./core/ticket.js";
+import type { DesignSource, TicketPlatform } from "./core/flow-schema.js";
 import { createProjectService, resolveTypeScriptCallEdges } from "./core/semantic/typescript.js";
 import { applyPhpSemanticResult, inspectPhpSemantics } from "./core/semantic/php.js";
 import {
@@ -145,7 +160,7 @@ export async function createMrOrchestrator(
   const activeHarness = parseHarnessId(process.env["MR_HARNESS_ID"]);
   const persistedFlow = await loadFlowState(paths, workspaceId);
   let outputLanguage = normalizeUserLanguage(persistedFlow?.userLanguage);
-  const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string }>();
+  const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string; readonly agent: string }>();
   const atlasFreshness = new WeakMap<AtlasGraph, boolean>();
   let judgmentWriteQueue: Promise<void> = Promise.resolve();
   let usageWriteQueue: Promise<void> = Promise.resolve();
@@ -176,19 +191,40 @@ export async function createMrOrchestrator(
 
   function flowTicketId(state: FlowState): string {
     if ("ticket" in state) return state.ticket.ref.id;
-    if ("ticketId" in state) return state.ticketId;
+    if (state.phase === "wizard") return state.wizardDraft.ticketId ?? "wizard";
     return "pending";
+  }
+
+  function flowDifficulty(state: FlowState | undefined): number | undefined {
+    if (state === undefined) return undefined;
+    if (state.phase === "wizard") return state.wizardDraft.difficulty;
+    return "difficulty" in state ? state.difficulty : undefined;
   }
 
   function effectiveLane(state: FlowState | undefined): RiskLane {
     if (state?.lane !== undefined) return state.lane;
-    if (state === undefined || !("difficulty" in state)) return "full";
-    if (state.difficulty >= 5) return "full";
+    const difficulty = flowDifficulty(state);
+    if (state === undefined || difficulty === undefined) return "full";
+    if (difficulty >= 5) return "full";
     return "ticket" in state && state.ticket.ref.platform === "local" ? "fast" : "standard";
   }
 
   function toolSessionID(context: { readonly sessionID: string } | undefined): string {
     return context?.sessionID ?? "external-client";
+  }
+
+  function toolAgent(context: { readonly agent?: string } | undefined): string | undefined {
+    return context?.agent;
+  }
+
+  function harnessOverride(
+    sessionID: string,
+    toolAgent?: string,
+  ): { readonly agent: string; readonly model?: string } | undefined {
+    const assignment = sessionModels.get(sessionID);
+    if (assignment !== undefined) return { agent: assignment.agent, model: assignment.model };
+    if (toolAgent === undefined) return undefined;
+    return { agent: toolAgent };
   }
 
   async function ensureFlowUsage(state: FlowState, sessionID: string): Promise<void> {
@@ -202,11 +238,127 @@ export async function createMrOrchestrator(
     });
   }
 
-  async function renderStatus(state: FlowState, sessionID: string, completed = false): Promise<string> {
+  async function loadFlowModels() {
+    return loadEffectiveModels(paths, activeHarness ?? "opencode");
+  }
+
+  async function flowTitle(
+    state: FlowState | undefined,
+    context?: { readonly sessionID: string; readonly agent?: string },
+  ): Promise<string> {
+    const models = await loadFlowModels();
+    const override = context === undefined
+      ? undefined
+      : harnessOverride(context.sessionID, context.agent);
+    return flowToolTitle(state, models, "mr-orchestrator /flow", override);
+  }
+
+  async function runFlowStart(
+    args: WizardStartParams & { readonly taskText?: string; readonly supplementalPrompt?: string; readonly designRef?: string },
+    context: { readonly sessionID: string; readonly agent?: string } | undefined,
+  ): Promise<{ readonly title: string; readonly output: string; readonly state: FlowState }> {
+    const difficulty = args.difficulty;
+    const ticketPlatform = args.ticketPlatform;
+    const autoFetchRemote = ticketPlatform !== "local";
+    const designSource = args.designSource;
+    const hasFigma = args.hasFigma;
+    const ticketId = args.ticketId ?? await nextLocalTicketId(paths, workspaceId);
+    const userLanguage = detectLanguage(args.taskText ?? args.supplementalPrompt ?? "");
+    outputLanguage = userLanguage;
+    const event: FlowEvent = {
+      type: "wizard_complete",
+      difficulty,
+      ticketId,
+      hasFigma,
+      ticketPlatform,
+      designSource,
+      ...(args.designRef === undefined || args.designRef.trim() === "" ? {} : { designRef: args.designRef.trim() }),
+      ...(args.supplementalPrompt === undefined || args.supplementalPrompt.trim() === ""
+        ? {}
+        : { supplementalPrompt: args.supplementalPrompt.trim() }),
+      userLanguage,
+    };
+    let state = await applyEvent(paths, workspaceId, event);
+    let fetchNote = "";
+    if (ticketPlatform === "local") {
+      const text = args.taskText ?? "";
+      const merged = mergeTaskText(text, args.supplementalPrompt);
+      const ticket = await createTicketAdapter("local", merged).fetch({ schemaVersion: 1, platform: "local", id: ticketId });
+      const attachments = [
+        ...ticket.attachments,
+        ...(args.designRef === undefined || args.designRef.trim() === "" ? [] : [`design:${designSource}:${args.designRef.trim()}`]),
+      ];
+      const branchKind = ticket.type === "bugfix" || ticket.type === "hotfix" ? ticket.type : "feature";
+      state = await applyEvent(paths, workspaceId, {
+        type: "context_ready",
+        ticket: { ...ticket, attachments },
+        branch: `${branchKind}/${ticketId.toLowerCase()}`,
+        baseBranch: "develop",
+        userLanguage,
+      });
+    } else if (autoFetchRemote) {
+      try {
+        const fetched = await createTicketAdapter(ticketPlatform).fetch({
+          schemaVersion: 1,
+          platform: ticketPlatform,
+          id: ticketId,
+        });
+        const description = mergeTaskText(fetched.description, args.supplementalPrompt);
+        const attachments = [
+          ...fetched.attachments,
+          ...(args.designRef === undefined || args.designRef.trim() === "" ? [] : [`design:${designSource}:${args.designRef.trim()}`]),
+        ];
+        const branchKind = fetched.type === "bugfix" || fetched.type === "hotfix" ? fetched.type : "feature";
+        state = await applyEvent(paths, workspaceId, {
+          type: "context_ready",
+          ticket: { ...fetched, description, attachments },
+          branch: `${branchKind}/${ticketId.toLowerCase().replace(/[^a-z0-9]+/gu, "-")}`,
+          baseBranch: "develop",
+          userLanguage,
+        });
+      } catch (error: unknown) {
+        fetchNote = [
+          `No se pudo leer ${ticketPlatform}:${ticketId} automáticamente (${error instanceof Error ? error.message : String(error)}).`,
+          "Pega título y descripción con mr_flow_ticket o continúa con taskText en un reinicio local.",
+          renderPlatformStatus(outputLanguage === "en" ? "en" : "es"),
+        ].join("\n");
+      }
+    }
+    const sessionID = toolSessionID(context);
+    await withUsageWriteLock(async () => startFlowMetrics(paths, workspaceId, ticketId, state.startedAt, sessionID, state.userLanguage));
+    const warmNote = "ticket" in state
+      ? await warmTicketContext(state.ticket.ref.id, state.ticket.title, state.ticket.description, args.taskText)
+      : "";
+    const intentNote = "ticket" in state && state.phase !== "context"
+      ? (await resolveAndPersistIntent(state.ticket, flowDifficulty(state))).output
+      : "";
+    const figmaNote = designSource === "figma"
+      ? figmaSetupInstructions(await assessFigmaSetup(paths), outputLanguage === "en" ? "en" : "es")
+      : "";
+    const status = await renderStatus(state, sessionID, false, toolAgent(context));
+    return {
+      title: await flowTitle(state, context),
+      output: [status, fetchNote, figmaNote, warmNote, intentNote].filter((part) => part.length > 0).join("\n\n"),
+      state,
+    };
+  }
+
+  async function renderStatus(
+    state: FlowState,
+    sessionID: string,
+    completed = false,
+    toolAgent?: string,
+  ): Promise<string> {
     outputLanguage = normalizeUserLanguage(state.userLanguage, outputLanguage);
     await ensureFlowUsage(state, sessionID);
-    const metrics = await loadFlowMetrics(paths, workspaceId);
-    return renderFlowStatus(state, metrics === undefined ? undefined : summarizeFlowMetrics(metrics), { completed, language: outputLanguage });
+    const [metrics, models] = await Promise.all([loadFlowMetrics(paths, workspaceId), loadFlowModels()]);
+    const override = harnessOverride(sessionID, toolAgent);
+    return renderFlowStatus(state, metrics === undefined ? undefined : summarizeFlowMetrics(metrics), {
+      completed,
+      language: outputLanguage,
+      models,
+      ...(override === undefined ? {} : { harnessBadge: flowToolTitle(state, models, "mr-orchestrator /flow", override) }),
+    });
   }
 
   async function ensureFlowState(): Promise<FlowState> {
@@ -436,6 +588,7 @@ export async function createMrOrchestrator(
       if (role === undefined) return;
       sessionModels.set(input.sessionID, {
         role,
+        agent: input.agent,
         model: `${input.model.providerID}/${input.model.id}`,
       });
     },
@@ -443,7 +596,7 @@ export async function createMrOrchestrator(
       // ─── Flow Tools ────────────────────────────────────────────────────────
 
       mr_flow_status: tool({
-        description: "Get the current mr-orchestrator flow status",
+        description: "Get the current mr-orchestrator flow status and harness role badge",
         args: {},
         execute: async (_args, context) => {
           const state = await loadFlowState(paths, workspaceId);
@@ -452,19 +605,108 @@ export async function createMrOrchestrator(
             outputLanguage = normalizeUserLanguage(metrics?.userLanguage, outputLanguage);
             const m = PLUGIN_MESSAGES[outputLanguage];
             const lastUsage = metrics === undefined ? "" : `\n\n${m.lastFlow} (${metrics.ticketId}, ${metrics.status}):\n${renderFlowUsage(summarizeFlowMetrics(metrics), outputLanguage)}`;
-            return { title: "Flow Status", output: `${m.noActiveFlow}${lastUsage}` };
+            return { title: "🧭 /flow", output: `${m.noActiveFlow}${lastUsage}` };
           }
-          return { title: "Flow Status", output: await renderStatus(state, toolSessionID(context)) };
+          return {
+            title: await flowTitle(state, context),
+            output: await renderStatus(state, toolSessionID(context), false, toolAgent(context)),
+          };
+        },
+      }),
+
+      mr_flow_platform_status: tool({
+        description: "Non-blocking readiness report for GitHub, Jira and GitLab ticket sources before the /flow wizard fetches a ticket",
+        args: {},
+        execute: async () => ({
+          title: "Ticket platforms",
+          output: renderPlatformStatus(outputLanguage === "en" ? "en" : "es"),
+        }),
+      }),
+
+      mr_flow_wizard_begin: tool({
+        description: "Begin the deterministic /flow wizard and return the first question (step=source)",
+        args: {},
+        execute: async (_args, context) => {
+          const existing = await loadFlowState(paths, workspaceId);
+          if (existing !== undefined && existing.phase !== "wizard") {
+            return {
+              title: await flowTitle(existing, context),
+              output: `Flow already active in phase '${existing.phase}'. Use mr_flow_status or mr_flow_abort.`,
+            };
+          }
+          const state = existing ?? await applyEvent(paths, workspaceId, {
+            type: "wizard_begin",
+            userLanguage: outputLanguage,
+          });
+          const question = questionForStep(state.phase === "wizard" ? state.wizardStep : "source", state.phase === "wizard" ? state.wizardDraft : {}, outputLanguage === "en" ? "en" : "es");
+          return {
+            title: "🧭 Wizard",
+            output: serializeWizardQuestion(question),
+          };
+        },
+      }),
+
+      mr_flow_wizard_step: tool({
+        description: "Submit one wizard answer; returns the next question or auto-starts the flow when complete",
+        args: {
+          answer: tool.schema.string().describe("User selection or text for the current wizard step"),
+        },
+        execute: async (args, context) => {
+          const state = await loadFlowState(paths, workspaceId);
+          if (state === undefined || state.phase !== "wizard") {
+            return { title: "Wizard Rejected", output: "No wizard in progress. Call mr_flow_wizard_begin first." };
+          }
+          const language = outputLanguage === "en" ? "en" : "es";
+          let result;
+          try {
+            result = applyWizardAnswer(state.wizardStep, args.answer, state.wizardDraft, language);
+          } catch (error: unknown) {
+            return {
+              title: "Wizard Rejected",
+              output: error instanceof Error ? error.message : String(error),
+            };
+          }
+          await applyEvent(paths, workspaceId, {
+            type: "wizard_step",
+            wizardStep: result.nextStep,
+            wizardDraft: result.draft,
+          });
+          if (result.complete === true && result.startParams !== undefined) {
+            const launched = await runFlowStart({
+              ...result.startParams,
+              ...(result.startParams.taskText === undefined ? {} : { taskText: result.startParams.taskText }),
+              ...(result.startParams.supplementalPrompt === undefined ? {} : { supplementalPrompt: result.startParams.supplementalPrompt }),
+              ...(result.startParams.designRef === undefined ? {} : { designRef: result.startParams.designRef }),
+            }, context);
+            return {
+              title: launched.title,
+              output: `wizard: complete\nautoStarted: true\n\n${launched.output}`,
+            };
+          }
+          if (result.question === undefined) {
+            return { title: "🧭 Wizard", output: "wizard: complete\nstartParams: call mr_flow_start with wizard draft fields" };
+          }
+          return {
+            title: "🧭 Wizard",
+            output: serializeWizardQuestion(result.question),
+          };
         },
       }),
 
       mr_flow_start: tool({
-        description: "Start a new mr-orchestrator flow. Without ticketId, taskText creates a synthetic LOCAL-* ticket and advances directly to exploration.",
+        description: "Start a /flow after the wizard. Local tasks use taskText (No tengo ticket). Remote tasks use ticketPlatform + ticketId.",
         args: {
-          difficulty: tool.schema.number().describe("Task difficulty (Fibonacci: 1, 3, 5, 8, 13, 21). This is an initial signal; plan risk can promote the lane."),
-          ticketId: tool.schema.string().optional().describe("Ticket identifier (for example GH-42 or 123). Omit for a local task."),
-          taskText: tool.schema.string().optional().describe("Original task text when no external ticket exists"),
-          hasFigma: tool.schema.boolean().optional().describe("Whether a Figma design exists for the task"),
+          difficulty: tool.schema.number().describe("Fibonacci difficulty: 1, 3, 5, 8, 13, or 21"),
+          ticketPlatform: tool.schema.enum(["github", "jira", "gitlab", "local"]).optional()
+            .describe("Ticket source chosen in the wizard. Use local for 'No tengo ticket'."),
+          ticketId: tool.schema.string().optional().describe("Remote ticket id (GH-42, PROJ-105). Omit for local tasks."),
+          taskText: tool.schema.string().optional().describe("Task description when ticketPlatform=local or ticket must be pasted manually"),
+          designSource: tool.schema.enum(["none", "figma", "image", "other"]).optional()
+            .describe("Design input from wizard: none, figma, image, or other"),
+          designRef: tool.schema.string().optional().describe("Figma URL, image path, or other design reference"),
+          supplementalPrompt: tool.schema.string().optional()
+            .describe("Optional instructions complementing the ticket analysis"),
+          hasFigma: tool.schema.boolean().optional().describe("Legacy flag; prefer designSource=figma"),
         },
         execute: async (args, context) => {
           const rawDifficulty = args.difficulty;
@@ -472,45 +714,29 @@ export async function createMrOrchestrator(
           const difficulty = validDifficulties.includes(rawDifficulty as 1 | 3 | 5 | 8 | 13 | 21)
             ? (rawDifficulty as 1 | 3 | 5 | 8 | 13 | 21)
             : 3;
-          if (args.ticketId === undefined && (args.taskText === undefined || args.taskText.trim() === "")) {
+          const ticketPlatform: TicketPlatform = args.ticketPlatform ?? (args.ticketId === undefined ? "local" : "github");
+          const designSource: DesignSource = normalizeDesignSource(args.designSource, args.hasFigma);
+          const hasFigma = designSourceToHasFigma(designSource) || args.hasFigma === true;
+          if (ticketPlatform === "local") {
+            if (args.taskText === undefined || args.taskText.trim() === "") {
+              return { title: "Flow Start Rejected", output: PLUGIN_MESSAGES[outputLanguage].startRejected };
+            }
+          } else if (args.ticketId === undefined || args.ticketId.trim() === "") {
             return { title: "Flow Start Rejected", output: PLUGIN_MESSAGES[outputLanguage].startRejected };
           }
-          const ticketId = args.ticketId ?? await nextLocalTicketId(paths, workspaceId);
-          const hasFigma = args.hasFigma ?? false;
-          const userLanguage = detectLanguage(args.taskText ?? "");
-          outputLanguage = userLanguage;
-          const event: FlowEvent = {
-            type: "wizard_complete",
+          const launched = await runFlowStart({
             difficulty,
-            ticketId,
+            ticketPlatform,
             hasFigma,
-            userLanguage,
-          };
-          let state = await applyEvent(paths, workspaceId, event);
-          if (args.ticketId === undefined) {
-            const ticket = await createTicketAdapter("local", args.taskText).fetch({ schemaVersion: 1, platform: "local", id: ticketId });
-            const branchKind = ticket.type === "bugfix" || ticket.type === "hotfix" ? ticket.type : "feature";
-            state = await applyEvent(paths, workspaceId, {
-              type: "context_ready",
-              ticket,
-              branch: `${branchKind}/${ticketId.toLowerCase()}`,
-              baseBranch: "develop",
-              userLanguage,
-            });
-          }
-          const sessionID = toolSessionID(context);
-          await withUsageWriteLock(async () => startFlowMetrics(paths, workspaceId, ticketId, state.startedAt, sessionID, state.userLanguage));
-          const warmNote = "ticket" in state
-            ? await warmTicketContext(state.ticket.ref.id, state.ticket.title, state.ticket.description, args.taskText)
-            : "";
-          const intentNote = "ticket" in state
-            ? (await resolveAndPersistIntent(state.ticket, "difficulty" in state ? state.difficulty : undefined)).output
-            : "";
-          const status = await renderStatus(state, sessionID);
-          return {
-            title: "Flow Started",
-            output: [status, warmNote, intentNote].filter((part) => part.length > 0).join("\n\n"),
-          };
+            designSource,
+            ...(args.ticketId === undefined || args.ticketId.trim() === "" ? {} : { ticketId: args.ticketId.trim() }),
+            ...(args.taskText === undefined || args.taskText.trim() === "" ? {} : { taskText: args.taskText.trim() }),
+            ...(args.designRef === undefined || args.designRef.trim() === "" ? {} : { designRef: args.designRef.trim() }),
+            ...(args.supplementalPrompt === undefined || args.supplementalPrompt.trim() === ""
+              ? {}
+              : { supplementalPrompt: args.supplementalPrompt.trim() }),
+          }, context);
+          return { title: launched.title, output: launched.output };
         },
       }),
 
@@ -555,7 +781,7 @@ export async function createMrOrchestrator(
           const next = await applyEvent(paths, workspaceId, event);
           const warmNote = await warmTicketContext(ticketId, title, description);
           const intentNote = (await resolveAndPersistIntent(event.ticket, "difficulty" in next ? next.difficulty : undefined)).output;
-          const status = await renderStatus(next, toolSessionID(context));
+          const status = await renderStatus(next, toolSessionID(context), false, toolAgent(context));
           return {
             title: "Ticket Loaded",
             output: [status, warmNote, intentNote].filter((part) => part.length > 0).join("\n\n"),
@@ -595,7 +821,7 @@ export async function createMrOrchestrator(
           const next = await applyEvent(paths, workspaceId, { type: "intent_ready" });
           return {
             title: "Intent Approved",
-            output: `${explanation}\n\n${await renderStatus(next, toolSessionID(context))}`,
+            output: `${explanation}\n\n${await renderStatus(next, toolSessionID(context), false, toolAgent(context))}`,
           };
         },
       }),
@@ -628,7 +854,7 @@ export async function createMrOrchestrator(
           );
           return {
             title: resolved.assessment.status === "NEEDS_INPUT" ? "Flow Intent Needs Input" : "Flow Intent Resolved",
-            output: `${resolved.output}\n\n${await renderStatus(state, toolSessionID(context))}`,
+            output: `${resolved.output}\n\n${await renderStatus(state, toolSessionID(context), false, toolAgent(context))}`,
           };
         },
       }),
@@ -651,7 +877,7 @@ export async function createMrOrchestrator(
           );
           return {
             title: "Flow Memory Prefetched",
-            output: `${warmNote}\n\n${await renderStatus(state, toolSessionID(context))}`,
+            output: `${warmNote}\n\n${await renderStatus(state, toolSessionID(context), false, toolAgent(context))}`,
           };
         },
       }),
@@ -717,7 +943,7 @@ export async function createMrOrchestrator(
           const event: FlowEvent = { type: "plan_approved", plan, lane: risk.lane, riskReasons: [...risk.reasons] };
           const next = await applyEvent(paths, workspaceId, event);
           const tasks = await loadTasks(paths, workspaceId);
-          return { title: "Plan Approved", output: `${renderPlanExplanation(plan, tasks?.tasks.length, normalizeUserLanguage(next.userLanguage))}\n\n${await renderStatus(next, toolSessionID(context))}` };
+          return { title: "Plan Approved", output: `${renderPlanExplanation(plan, tasks?.tasks.length, normalizeUserLanguage(next.userLanguage))}\n\n${await renderStatus(next, toolSessionID(context), false, toolAgent(context))}` };
         },
       }),
 
@@ -799,9 +1025,9 @@ export async function createMrOrchestrator(
           const next = await applyEvent(paths, workspaceId, event);
           const gateWarnings = judgmentGate.violations.length === 0 ? "" : `\n\nAtlas gate (${gatesMode()}):\n${renderGateResult(judgmentGate)}`;
           if (next.phase === "judgment") {
-            return { title: "Judgment Required", output: `${PLUGIN_MESSAGES[outputLanguage].implementationJudgment}${gateWarnings}\n\n${await renderStatus(next, toolSessionID(context))}` };
+            return { title: "Judgment Required", output: `${PLUGIN_MESSAGES[outputLanguage].implementationJudgment}${gateWarnings}\n\n${await renderStatus(next, toolSessionID(context), false, toolAgent(context))}` };
           }
-          return { title: "Implementation Complete", output: `${PLUGIN_MESSAGES[outputLanguage].implementationFast}\n\n${await renderStatus(next, toolSessionID(context))}` };
+          return { title: "Implementation Complete", output: `${PLUGIN_MESSAGES[outputLanguage].implementationFast}\n\n${await renderStatus(next, toolSessionID(context), false, toolAgent(context))}` };
         },
       }),
 
@@ -925,7 +1151,7 @@ export async function createMrOrchestrator(
               : { type: "judgment_failed", verdict: { critical: merged.critical, warnings: merged.warnings, suggestions: merged.suggestions } };
             const next = await applyEvent(paths, workspaceId, event);
 
-            return { title: "Judgment Complete", output: `${renderVerdict(merged, normalizeUserLanguage(next.userLanguage))}\n\n${await renderStatus(next, toolSessionID(_context))}` };
+            return { title: "Judgment Complete", output: `${renderVerdict(merged, normalizeUserLanguage(next.userLanguage))}\n\n${await renderStatus(next, toolSessionID(_context), false, toolAgent(_context))}` };
           });
         },
       }),
@@ -949,7 +1175,7 @@ export async function createMrOrchestrator(
 
           const event: FlowEvent = { type: "fix_done" };
           const next = await applyEvent(paths, workspaceId, event);
-          return { title: "Fix Applied", output: await renderStatus(next, toolSessionID(context)) };
+          return { title: "Fix Applied", output: await renderStatus(next, toolSessionID(context), false, toolAgent(context)) };
         },
       }),
 
@@ -993,7 +1219,7 @@ export async function createMrOrchestrator(
             ...(prUrl === undefined ? {} : { prUrl }),
           });
           const memoryResult = await persistFlowCompletionMemory(paths, workspaceRoot, memoryPayload);
-          const output = await renderStatus(next, toolSessionID(context), true);
+          const output = await renderStatus(next, toolSessionID(context), true, toolAgent(context));
           const memoryNote = memoryResult.ok
             ? `Engram saved under topic '${memoryPayload.topic}'.`
             : `Engram save skipped: ${memoryResult.detail}`;

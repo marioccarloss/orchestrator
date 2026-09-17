@@ -2,6 +2,9 @@ import { z } from "zod";
 import { RiskLaneSchema, type RiskLane } from "./risk.js";
 import { UserLanguageSchema, type UserLanguage } from "./language.js";
 
+export const DesignSourceSchema = z.enum(["none", "figma", "image", "other"]);
+export type DesignSource = z.infer<typeof DesignSourceSchema>;
+
 // ─── Flow State Machine ──────────────────────────────────────────────────────
 
 export const FlowDifficultySchema = z.union([
@@ -26,6 +29,20 @@ export function implementationAgentForDifficulty(difficulty: number, lane?: Risk
 export const TicketPlatformSchema = z.enum(["github", "jira", "gitlab", "local"]);
 
 export type TicketPlatform = z.infer<typeof TicketPlatformSchema>;
+
+export const WizardStepIdSchema = z.enum(["source", "ticket_id", "difficulty", "design", "design_ref", "instructions", "done"]);
+export type WizardStepId = z.infer<typeof WizardStepIdSchema>;
+
+export const WizardDraftSchema = z.object({
+  ticketPlatform: TicketPlatformSchema.optional(),
+  ticketId: z.string().optional(),
+  taskText: z.string().optional(),
+  difficulty: FlowDifficultySchema.optional(),
+  designSource: DesignSourceSchema.optional(),
+  designRef: z.string().optional(),
+  supplementalPrompt: z.string().optional(),
+});
+export type WizardDraft = z.infer<typeof WizardDraftSchema>;
 
 export const TicketRefSchema = z.object({
   schemaVersion: z.literal(1),
@@ -80,6 +97,10 @@ const RiskStateFields = {
   userLanguage: UserLanguageSchema.optional(),
   lane: RiskLaneSchema.optional(),
   riskReasons: z.array(z.string()).optional(),
+  ticketPlatform: TicketPlatformSchema.optional(),
+  designSource: DesignSourceSchema.optional(),
+  designRef: z.string().optional(),
+  supplementalPrompt: z.string().optional(),
 };
 
 export const FlowStateSchema = z.discriminatedUnion("phase", [
@@ -95,9 +116,8 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     schemaVersion: z.literal(1),
     workspaceId: z.string().min(1),
     startedAt: z.iso.datetime(),
-    difficulty: FlowDifficultySchema,
-    ticketId: z.string().min(1),
-    hasFigma: z.boolean(),
+    wizardStep: WizardStepIdSchema,
+    wizardDraft: WizardDraftSchema,
     ...RiskStateFields,
   }),
   z.object({
@@ -214,7 +234,26 @@ export type FlowState = z.infer<typeof FlowStateSchema>;
 
 export const FlowEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("start"), workspaceId: z.string().min(1), userLanguage: UserLanguageSchema.optional() }),
-  z.object({ type: z.literal("wizard_complete"), difficulty: FlowDifficultySchema, ticketId: z.string().min(1), hasFigma: z.boolean(), userLanguage: UserLanguageSchema.optional() }),
+  z.object({
+    type: z.literal("wizard_begin"),
+    userLanguage: UserLanguageSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("wizard_step"),
+    wizardStep: WizardStepIdSchema,
+    wizardDraft: WizardDraftSchema,
+  }),
+  z.object({
+    type: z.literal("wizard_complete"),
+    difficulty: FlowDifficultySchema,
+    ticketId: z.string().min(1),
+    hasFigma: z.boolean(),
+    ticketPlatform: TicketPlatformSchema.optional(),
+    designSource: DesignSourceSchema.optional(),
+    designRef: z.string().optional(),
+    supplementalPrompt: z.string().optional(),
+    userLanguage: UserLanguageSchema.optional(),
+  }),
   z.object({ type: z.literal("context_ready"), ticket: TicketContentSchema, branch: z.string().min(1), baseBranch: z.string().min(1), userLanguage: UserLanguageSchema.optional() }),
   z.object({ type: z.literal("intent_ready") }),
   z.object({ type: z.literal("explore_done"), atlasCache: z.string().optional() }),
@@ -253,11 +292,23 @@ export function canTransition(from: FlowState, to: FlowState["phase"]): boolean 
   return transitions[from.phase].includes(to);
 }
 
-function preservedRisk(state: FlowState): { userLanguage?: UserLanguage; lane?: RiskLane; riskReasons?: string[] } {
+function preservedRisk(state: FlowState): {
+  userLanguage?: UserLanguage;
+  lane?: RiskLane;
+  riskReasons?: string[];
+  ticketPlatform?: TicketPlatform;
+  designSource?: DesignSource;
+  designRef?: string;
+  supplementalPrompt?: string;
+} {
   return {
     ...(state.userLanguage === undefined ? {} : { userLanguage: state.userLanguage }),
     ...(state.lane === undefined ? {} : { lane: state.lane }),
     ...(state.riskReasons === undefined ? {} : { riskReasons: [...state.riskReasons] }),
+    ...(state.ticketPlatform === undefined ? {} : { ticketPlatform: state.ticketPlatform }),
+    ...(state.designSource === undefined ? {} : { designSource: state.designSource }),
+    ...(state.designRef === undefined ? {} : { designRef: state.designRef }),
+    ...(state.supplementalPrompt === undefined ? {} : { supplementalPrompt: state.supplementalPrompt }),
   };
 }
 
@@ -275,22 +326,33 @@ function approvedRisk(
 export function transition(state: FlowState, event: FlowEvent): FlowState {
   switch (state.phase) {
     case "init":
-      if (event.type === "start") {
+      if (event.type === "start" || event.type === "wizard_begin") {
         return {
           phase: "wizard",
           schemaVersion: 1,
           workspaceId: state.workspaceId,
           startedAt: state.startedAt,
-          difficulty: 3,
-          ticketId: "pending",
-          hasFigma: false,
+          wizardStep: "source",
+          wizardDraft: {},
           ...preservedRisk(state),
           ...(event.userLanguage === undefined ? {} : { userLanguage: event.userLanguage }),
         };
       }
       break;
     case "wizard":
+      if (event.type === "wizard_step") {
+        return {
+          ...state,
+          wizardStep: event.wizardStep,
+          wizardDraft: event.wizardDraft,
+        };
+      }
       if (event.type === "wizard_complete") {
+        const platform = event.ticketPlatform ?? "github";
+        const designSource = event.designSource ?? (event.hasFigma ? "figma" as const : "none" as const);
+        const designAttachments = event.designRef === undefined || event.designRef.trim() === ""
+          ? []
+          : [`design:${designSource}:${event.designRef.trim()}`];
         return {
           phase: "context",
           schemaVersion: 1,
@@ -299,16 +361,20 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           difficulty: event.difficulty,
           ticket: {
             schemaVersion: 1,
-            ref: { schemaVersion: 1, platform: "github", id: event.ticketId },
+            ref: { schemaVersion: 1, platform, id: event.ticketId },
             title: `Ticket ${event.ticketId}`,
-            description: "",
+            description: event.supplementalPrompt?.trim() ?? "",
             type: "feature",
-            attachments: [],
+            attachments: designAttachments,
             fetchedAt: new Date().toISOString(),
           },
           branch: `feature/${event.ticketId.toLowerCase().replace(/[^a-z0-9]+/gu, "-")}`,
           baseBranch: "develop",
           ...preservedRisk(state),
+          ticketPlatform: platform,
+          designSource,
+          ...(event.designRef === undefined ? {} : { designRef: event.designRef }),
+          ...(event.supplementalPrompt === undefined ? {} : { supplementalPrompt: event.supplementalPrompt }),
           ...(event.userLanguage === undefined ? {} : { userLanguage: event.userLanguage }),
         };
       }

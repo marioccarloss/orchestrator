@@ -87,7 +87,7 @@ test("applyEvent throws without existing flow for non-start events", async () =>
 
 test("isFlowActive returns true for active states", () => {
   assert.equal(isFlowActive({ phase: "init", schemaVersion: 1, workspaceId: "x", startedAt: "" } as FlowState), true);
-  assert.equal(isFlowActive({ phase: "wizard", schemaVersion: 1, workspaceId: "x", startedAt: "", difficulty: 3, ticketId: "1", hasFigma: false } as FlowState), true);
+  assert.equal(isFlowActive({ phase: "wizard", schemaVersion: 1, workspaceId: "x", startedAt: "", wizardStep: "source", wizardDraft: {} } as FlowState), true);
 });
 
 test("isFlowActive returns false for finish", () => {

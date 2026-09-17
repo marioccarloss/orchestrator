@@ -7,6 +7,7 @@ import type { MrPaths } from "./paths.js";
 import { runCommand } from "./process.js";
 import { loadRegistry } from "./workspace.js";
 import { AtlasIndexer, computeWorkspaceFileHashes, isGraphFresh, loadAtlasGraph } from "./atlas.js";
+import { assessFigmaSetup } from "./figma-setup.js";
 import { discoverRepositories } from "./rules/discover.js";
 import { profileRepository } from "./rules/profiler.js";
 import { loadWorkspaceRules, staleRuleRepositories } from "./rules/store.js";
@@ -74,7 +75,6 @@ export async function runDoctor(paths: MrPaths, env: NodeJS.ProcessEnv = process
   for (const [name, path, detail, capabilityId] of [
     ["i-have-adhd", capability.adhdSkill, "installed for Orchestrator presentation only", "i-have-adhd"],
     ["figma-live-mcp", capability.figmaLive, "server binary installed", "figma-live"],
-    ["Figma plugin manifest", capability.figmaPluginManifest, `import manually in Figma: ${capability.figmaPluginManifest}`, "figma-live"],
   ] as const) {
     if (!selected.has(capabilityId)) continue;
     try {
@@ -83,6 +83,21 @@ export async function runDoctor(paths: MrPaths, env: NodeJS.ProcessEnv = process
     } catch {
       checks.push({ name, ok: false, detail: `missing: ${path}` });
     }
+  }
+  if (selected.has("figma-live")) {
+    const figma = await assessFigmaSetup(paths);
+    checks.push({
+      name: "Figma Live MCP",
+      ok: figma.binaryInstalled,
+      detail: figma.detail,
+    });
+    checks.push({
+      name: "Figma plugin manifest",
+      ok: figma.manifestPublishedOk || figma.binaryInstalled,
+      detail: figma.manifestPublishedOk
+        ? `published at ${figma.manifestPublished}`
+        : `run mr figma setup — source ${figma.manifestSource}`,
+    });
   }
   for (const id of ["github", "jira"] as const) {
     if (!selected.has(id)) continue;

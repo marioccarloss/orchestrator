@@ -26,9 +26,8 @@ const baseWizard: FlowState = {
   schemaVersion: 1,
   workspaceId: "test-ws",
   startedAt: new Date().toISOString(),
-  difficulty: 3,
-  ticketId: "GH-123",
-  hasFigma: false,
+  wizardStep: "source",
+  wizardDraft: {},
 };
 
 const baseContext: FlowState = {
@@ -80,7 +79,7 @@ test("FlowStateSchema validates init state", () => {
 test("FlowStateSchema validates wizard state", () => {
   const parsed = FlowStateSchema.parse(baseWizard);
   assert.equal(parsed.phase, "wizard");
-  assert.equal(parsed.difficulty, 3);
+  assert.equal(parsed.wizardStep, "source");
 });
 
 test("FlowStateSchema validates context state", () => {
