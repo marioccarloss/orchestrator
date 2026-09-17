@@ -134,28 +134,30 @@ test("CAS SHA-256: getDiffHash produces 64-character hex digest and changes when
   const { runCommand } = await import("../src/core/process.js");
 
   const dir = await mkdtemp(join(tmpdir(), "mr-cas-test-"));
-  runCommand("git", ["init", dir]);
-  runCommand("git", ["-C", dir, "config", "user.email", "audit@orchestrator.local"]);
-  runCommand("git", ["-C", dir, "config", "user.name", "Auditor"]);
+  try {
+    runCommand("git", ["init", dir]);
+    runCommand("git", ["-C", dir, "config", "user.email", "audit@orchestrator.local"]);
+    runCommand("git", ["-C", dir, "config", "user.name", "Auditor"]);
 
-  await writeFile(join(dir, "file.txt"), "version 1\n");
-  runCommand("git", ["-C", dir, "add", "file.txt"]);
-  runCommand("git", ["-C", dir, "commit", "-m", "initial commit"]);
+    await writeFile(join(dir, "file.txt"), "version 1\n");
+    runCommand("git", ["-C", dir, "add", "file.txt"]);
+    runCommand("git", ["-C", dir, "commit", "-m", "initial commit"]);
 
-  // Initial diff against HEAD is empty
-  const hash1 = await getDiffHash(dir);
-  assert.equal(hash1.length, 64);
+    // Initial diff against HEAD is empty
+    const hash1 = await getDiffHash(dir);
+    assert.equal(hash1.length, 64);
 
-  // Modify file
-  await writeFile(join(dir, "file.txt"), "version 2 (mutated)\n");
-  const hash2 = await getDiffHash(dir);
-  assert.equal(hash2.length, 64);
-  assert.notEqual(hash1, hash2, "Modifying file bytes must change SHA-256 CAS digest");
+    // Modify file
+    await writeFile(join(dir, "file.txt"), "version 2 (mutated)\n");
+    const hash2 = await getDiffHash(dir);
+    assert.equal(hash2.length, 64);
+    assert.notEqual(hash1, hash2, "Modifying file bytes must change SHA-256 CAS digest");
 
-  // Single-byte alteration
-  await writeFile(join(dir, "file.txt"), "version 2 (mutated)!\n");
-  const hash3 = await getDiffHash(dir);
-  assert.notEqual(hash2, hash3, "Single byte change must invalidate previous digest");
-
-  await rm(dir, { recursive: true });
+    // Single-byte alteration
+    await writeFile(join(dir, "file.txt"), "version 2 (mutated)!\n");
+    const hash3 = await getDiffHash(dir);
+    assert.notEqual(hash2, hash3, "Single byte change must invalidate previous digest");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
