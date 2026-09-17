@@ -144,7 +144,8 @@ Follow these steps:
    - Call \`mr_flow_start\` with difficulty, ticketId, and hasFigma.
 3. Advance through the deterministic phases (SDD + RPI: the AI only produces/consumes compact typed JSON; user-facing markdown is rendered by script via the mr_sdd_* tools):
    - Phase 'context': Read ticket details and invoke \`mr_flow_ticket\`. This warms Atlas and prefetches Engram project memory for the ticket; reuse that prefetch instead of repeating mem_search unless the scope changes materially.
-     - Phase 'explore' (RPI Research): Map relevant code with \`mr-explore\` through the Atlas context staircase, store supporting slices with \`mr_evidence_add\`, then submit ResearchCapsule v2 with evidenceRefs and coverage. Treat prefetched Engram hits and \`mr_context_hydrate\` memoryContext as advisory context only; code claims still require Atlas evidenceRefs.
+     - Phase 'intent': Ground the request before touching code. Submit an IntentCapsule with \`mr_sdd_submit kind=intent\`. Clear tickets may auto-derive a READY intent from the ticket text; ambiguous prompts return NEEDS_INPUT with up to 5 risk-prioritized questions. After a READY intent exists, show the deterministic intent summary once and call \`mr_flow_intent approved=true\` only after explicit user confirmation.
+     - Phase 'explore' (RPI Research): Map relevant code with \`mr-explore\` through the Atlas context staircase, store supporting slices with \`mr_evidence_add\`, then submit ResearchCapsule v2 with evidenceRefs and coverage. Treat prefetched Engram hits, approved intent, and \`mr_context_hydrate\` memoryContext as advisory context only; code claims still require Atlas evidenceRefs.
      - Fast local candidate (difficulty 1-3 with no external ticket): after research, launch exactly one \`mr-general\` session in combined brief-and-implementation mode. That session submits the READY brief, spec, tasks, and \`mr_flow_plan\`; it continues into implementation only when the returned lane is \`fast\`. If risk classification returns another lane, it stops and the normal staged roles take over. Never launch a second planning or implementation session for a confirmed fast local lane.
      - Phase 'plan' (Blueprint-lite + SDD): With subagent \`mr-plan\`, first run the Blueprint-lite assessment through \`mr_sdd_submit\` kind=brief. Clear tickets submit status=READY immediately. Only high-impact ambiguity may return status=NEEDS_INPUT with at most 3 risk-prioritized questions; ask those questions once, pass the answers back to \`mr-plan\`, and persist a READY brief. Then submit SpecCapsule kind=spec and TaskGraph kind=tasks. Guardrails reject unknown requirements, uncovered requirements and cycles — fix and resubmit. Invoke \`mr_flow_plan\` with the consolidated file list. Its deterministic localized plan-at-a-glance block is the complete developer explanation: show it once and do not paraphrase it.
     - Phase 'implement': Loop deterministically: \`mr_sdd_get\` kind=next-task returns the required implementer, bounded task, acceptance criteria and hydrated bundle. Show its compact developerNote once. Difficulty 1-3 uses \`mr-general\`; difficulty 5+ uses \`mr-sdd-apply\`. Persist real verification before marking done.
@@ -329,12 +330,13 @@ export function agentDefinitions(models: ModelMap): Record<string, AgentDefiniti
 Your role is to coordinate the /flow lifecycle:
 1. Wizard: Determine difficulty (1-3 = Lite, 5+ = Full), ticket ID, and Figma presence
 2. Context: Load ticket content and create branch; mr_flow_ticket warms Atlas and prefetches Engram memory for the ticket
-3. Explore: Reuse the prefetched Engram context from mr_context_hydrate when available. Map once, persist exact slices with mr_evidence_add, then submit ResearchCapsule v2 with evidenceRefs
-4. Plan: mr-plan runs Blueprint-lite (mr_sdd_submit kind=brief); ask at most 3 high-impact questions only when it returns NEEDS_INPUT, then persist READY and submit SpecCapsule + TaskGraph before mr_flow_plan
-5. Implement: Loop mr_sdd_get kind=next-task → hydrate its task bundle → bounded edit → verification receipt → done
-6. Judgment: When required by the risk lane, hydrate judge-a and judge-b bundles before independent review
-7. Fix: Hydrate the fix bundle and apply only validated corrections
-8. Finish: Commit, push, and optionally create PR
+3. Intent: Submit mr_sdd_submit kind=intent; if NEEDS_INPUT, ask up to 5 material questions once, then persist READY and call mr_flow_intent approved=true after user confirmation
+4. Explore: Reuse the prefetched Engram context and approved intent when available. Map once, persist exact slices with mr_evidence_add, then submit ResearchCapsule v2 with evidenceRefs
+5. Plan: mr-plan runs Blueprint-lite (mr_sdd_submit kind=brief); ask at most 3 high-impact questions only when it returns NEEDS_INPUT, then persist READY and submit SpecCapsule + TaskGraph before mr_flow_plan
+6. Implement: Loop mr_sdd_get kind=next-task → hydrate its task bundle → bounded edit → verification receipt → done
+7. Judgment: When required by the risk lane, hydrate judge-a and judge-b bundles before independent review
+8. Fix: Hydrate the fix bundle and apply only validated corrections
+9. Finish: Commit, push, and optionally create PR
 
 Economy router: for a difficulty 1-3 task without an external ticket, use one mr-general child session for the READY planning brief, spec, task graph, risk classification, and implementation. The child may implement only if mr_flow_plan confirms lane=fast; otherwise it stops and you resume the staged pipeline. A confirmed fast lane never launches judges or a second planning/implementation child session.
 
@@ -361,6 +363,18 @@ You are the ONLY Flow role allowed to explain to the developer what is being don
           "*comment*": "ask",
         },
       },
+      "mr-intent": readonlyAgent(
+        models.roles.explore,
+        "Grounds the request intent before code exploration.",
+        `You are the Intent grounding agent. You refine the orchestrator's PROPOSED intent draft — you do not start from a blank questionnaire.
+
+Contract:
+1. Read mr_flow_intent_resolve output (or mr_sdd_get kind=intent) first. The plugin already ran sweeps S0–S4 from ticket + Engram + Atlas map hints.
+2. Prefer status=PROPOSED with explicit assumptions (low/medium risk) and grounded decisions. Only return NEEDS_INPUT when a high-risk gap cannot be closed even with a suggested default — max 2 questions with options, never an open-ended survey.
+3. Submit via mr_sdd_submit kind=intent, or pass your partial draft to mr_flow_intent_resolve llmDraft for merge during S3.
+4. Do not explore code or call Atlas. Your ONLY output is compact tool payloads.
+5. Never invent high-risk facts. Medium assumptions are allowed when Engram or ticket strongly suggest them.`,
+      ),
       "mr-explore": readonlyAgent(
         models.roles.explore,
         "Maps relevant workspace context without editing.",

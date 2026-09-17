@@ -51,7 +51,7 @@ void test("generated opencode config keeps normal development as default and exp
   assert.equal(orchestrator.temperature, 0);
   assert.equal(orchestrator.top_p, 1);
   assert.equal(orchestrator.permission?.["*"], "allow");
-  assert.equal(Object.keys(config.agent).length, 11);
+  assert.equal(Object.keys(config.agent).length, 12);
   assert.equal(config.command["flow"]?.agent, "orchestrator", "/flow must dispatch internally without a manual mode switch");
 
   const subagents = [

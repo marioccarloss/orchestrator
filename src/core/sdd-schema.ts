@@ -4,6 +4,13 @@ import { join } from "node:path";
 import { atomicWrite, canonicalJson, compactJson } from "./files.js";
 import type { MrPaths } from "./paths.js";
 import type { EvidenceStore, FreshnessResult } from "./evidence-store.js";
+import {
+  IntentAssessmentPayloadSchema,
+  IntentCapsuleSchema,
+  type IntentAssessmentPayload,
+  type IntentBrief,
+  type IntentCapsule,
+} from "./intent-schema.js";
 
 // ─── SDD + RPI Capsules ──────────────────────────────────────────────────────
 //
@@ -543,12 +550,13 @@ export function markTaskStatus(tasks: TaskGraph, taskId: string, status: SddTask
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
-export type SddKind = "research" | "brief" | "spec" | "tasks";
-export type SddArtifact = ResearchCapsule | PlanningBrief | SpecCapsule | TaskGraph;
-export type SddArtifactPayload = ResearchCapsulePayload | PlanningBriefPayload | SpecCapsulePayload | TaskGraphPayload;
+export type SddKind = "research" | "intent" | "brief" | "spec" | "tasks";
+export type SddArtifact = ResearchCapsule | IntentCapsule | PlanningBrief | SpecCapsule | TaskGraph;
+export type SddArtifactPayload = ResearchCapsulePayload | IntentAssessmentPayload | PlanningBriefPayload | SpecCapsulePayload | TaskGraphPayload;
 
 const SDD_FILES: Record<SddKind, string> = {
   research: "research.json",
+  intent: "intent.json",
   brief: "brief.json",
   spec: "spec.json",
   tasks: "tasks.json",
@@ -573,6 +581,7 @@ export async function saveSddArtifact(
   const persisted = (() => {
     switch (kind) {
       case "research": return ResearchCapsuleSchema.parse({ ...artifact, createdAt });
+      case "intent": return IntentCapsuleSchema.parse({ ...artifact, createdAt });
       case "brief": return PlanningBriefSchema.parse({ ...artifact, createdAt });
       case "spec": return SpecCapsuleSchema.parse({ ...artifact, createdAt });
       case "tasks": return TaskGraphSchema.parse({ ...artifact, createdAt });
@@ -586,6 +595,7 @@ export async function saveSddArtifact(
 export function toOperationalSddPayload(artifact: SddArtifact): SddArtifactPayload {
   const { createdAt: _createdAt, ...payload } = artifact;
   if ("objective" in payload) return ResearchCapsulePayloadSchema.parse(payload);
+  if ("status" in payload && "problem" in payload) return IntentAssessmentPayloadSchema.parse(payload);
   if ("status" in payload) return PlanningBriefPayloadSchema.parse(payload);
   if ("goal" in payload) return SpecCapsulePayloadSchema.parse(payload);
   return TaskGraphPayloadSchema.parse(payload);
@@ -609,6 +619,26 @@ export async function loadResearch(paths: MrPaths, workspaceId: string): Promise
   if (raw === undefined) return undefined;
   const parsed = ResearchCapsuleSchema.safeParse(raw);
   return parsed.success ? parsed.data : undefined;
+}
+
+export async function loadIntentCapsule(paths: MrPaths, workspaceId: string): Promise<IntentCapsule | undefined> {
+  const raw = await loadJson<unknown>(join(sddDir(paths, workspaceId), SDD_FILES.intent));
+  if (raw === undefined) return undefined;
+  const parsed = IntentCapsuleSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** Returns only a persisted READY capsule (research gate and legacy callers). */
+export async function loadIntentBrief(paths: MrPaths, workspaceId: string): Promise<(IntentBrief & { status: "READY" }) | undefined> {
+  const capsule = await loadIntentCapsule(paths, workspaceId);
+  return capsule?.status === "READY" ? capsule : undefined;
+}
+
+export async function loadIntentAssessment(paths: MrPaths, workspaceId: string): Promise<IntentAssessmentPayload | undefined> {
+  const capsule = await loadIntentCapsule(paths, workspaceId);
+  if (capsule === undefined) return undefined;
+  const { createdAt: _createdAt, ...payload } = capsule;
+  return IntentAssessmentPayloadSchema.parse(payload);
 }
 
 export async function loadPlanningBrief(paths: MrPaths, workspaceId: string): Promise<PlanningBrief | undefined> {

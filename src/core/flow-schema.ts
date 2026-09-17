@@ -112,6 +112,17 @@ export const FlowStateSchema = z.discriminatedUnion("phase", [
     ...RiskStateFields,
   }),
   z.object({
+    phase: z.literal("intent"),
+    schemaVersion: z.literal(1),
+    workspaceId: z.string().min(1),
+    startedAt: z.iso.datetime(),
+    difficulty: FlowDifficultySchema,
+    ticket: TicketContentSchema,
+    branch: z.string().min(1),
+    baseBranch: z.string().min(1),
+    ...RiskStateFields,
+  }),
+  z.object({
     phase: z.literal("explore"),
     schemaVersion: z.literal(1),
     workspaceId: z.string().min(1),
@@ -205,6 +216,7 @@ export const FlowEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("start"), workspaceId: z.string().min(1), userLanguage: UserLanguageSchema.optional() }),
   z.object({ type: z.literal("wizard_complete"), difficulty: FlowDifficultySchema, ticketId: z.string().min(1), hasFigma: z.boolean(), userLanguage: UserLanguageSchema.optional() }),
   z.object({ type: z.literal("context_ready"), ticket: TicketContentSchema, branch: z.string().min(1), baseBranch: z.string().min(1), userLanguage: UserLanguageSchema.optional() }),
+  z.object({ type: z.literal("intent_ready") }),
   z.object({ type: z.literal("explore_done"), atlasCache: z.string().optional() }),
   z.object({ type: z.literal("plan_approved"), plan: PlanCapsuleSchema, lane: RiskLaneSchema.optional(), riskReasons: z.array(z.string()).optional() }),
   z.object({ type: z.literal("plan_rejected") }),
@@ -227,7 +239,8 @@ type TransitionMap = Record<FlowState["phase"], readonly FlowState["phase"][]>;
 const transitions: TransitionMap = {
   init: ["wizard", "finish"],
   wizard: ["context", "finish"],
-  context: ["explore", "finish"],
+  context: ["intent", "finish"],
+  intent: ["explore", "finish"],
   explore: ["plan", "implement", "finish"],
   plan: ["implement", "plan", "finish"],
   implement: ["judgment", "finish", "implement", "finish"],
@@ -303,7 +316,7 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
     case "context":
       if (event.type === "context_ready") {
         return {
-          phase: "explore",
+          phase: "intent",
           schemaVersion: 1,
           workspaceId: state.workspaceId,
           startedAt: state.startedAt,
@@ -313,6 +326,21 @@ export function transition(state: FlowState, event: FlowEvent): FlowState {
           baseBranch: event.baseBranch,
           ...preservedRisk(state),
           ...(event.userLanguage === undefined ? {} : { userLanguage: event.userLanguage }),
+        };
+      }
+      break;
+    case "intent":
+      if (event.type === "intent_ready") {
+        return {
+          phase: "explore",
+          schemaVersion: 1,
+          workspaceId: state.workspaceId,
+          startedAt: state.startedAt,
+          difficulty: state.difficulty,
+          ticket: state.ticket,
+          branch: state.branch,
+          baseBranch: state.baseBranch,
+          ...preservedRisk(state),
         };
       }
       break;

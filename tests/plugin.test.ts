@@ -76,6 +76,37 @@ export function Widget() {
   return { home, workspaceRoot, paths, profile, mockContext, dummyToolContext, cleanup };
 }
 
+type PluginTools = NonNullable<Awaited<ReturnType<typeof createMrOrchestrator>>["tool"]>;
+
+async function approveFlowIntent(
+  tools: PluginTools,
+  ctx: ToolContext,
+  ticketId: string,
+  problem: string,
+  outcome: string,
+): Promise<void> {
+  const existing = await tools["mr_sdd_get"]!.execute({ kind: "intent" }, ctx) as { output: string };
+  if (existing.output === "No intent capsule found.") {
+    await tools["mr_sdd_submit"]!.execute({
+      kind: "intent",
+      payload: JSON.stringify({
+        schemaVersion: 1,
+        ticketId,
+        status: "READY",
+        mode: "guided",
+        problem,
+        outcome,
+        nonGoals: [],
+        acceptanceSignals: [outcome],
+        constraints: [],
+        decisions: [{ decision: outcome, source: "user" }],
+        assumptions: [],
+      }),
+    }, ctx);
+  }
+  await tools["mr_flow_intent"]!.execute({ approved: true }, ctx);
+}
+
 void test("MrOrchestrator plugin exports all required tools with argument schemas", async () => {
   const ctx = await createPluginContext();
   try {
@@ -87,6 +118,8 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
       "mr_flow_status",
       "mr_flow_start",
       "mr_flow_ticket",
+      "mr_flow_intent",
+      "mr_flow_intent_resolve",
       "mr_flow_memory_prefetch",
       "mr_flow_plan",
       "mr_flow_implement",
@@ -186,8 +219,8 @@ void test("mr_flow_start creates a synthetic local ticket when no external ticke
     }, ctx.dummyToolContext) as { title: string; output: string };
     assert.equal(started.title, "Flow Started");
     const state = await loadFlowState(ctx.paths, ctx.profile.id);
-    assert.equal(state?.phase, "explore");
-    if (state?.phase !== "explore") throw new Error("Expected explore state");
+    assert.equal(state?.phase, "intent");
+    if (state?.phase !== "intent") throw new Error("Expected intent state");
     assert.match(state.ticket.ref.id, /^LOCAL-\d{8}-01$/u);
     assert.equal(state.ticket.ref.platform, "local");
     assert.equal(state.ticket.source, "user");
@@ -195,6 +228,7 @@ void test("mr_flow_start creates a synthetic local ticket when no external ticke
     assert.equal(state.ticket.description, "Fix the broken login redirect");
     assert.equal(state.userLanguage, "en");
     assert.match(started.output, /LOCAL-/u);
+    await approveFlowIntent(hooks.tool!, ctx.dummyToolContext, state.ticket.ref.id, state.ticket.title, state.ticket.description);
     await hooks.tool!["mr_flow_plan"]!.execute({
       summary: "Fix auth redirect",
       files: [{ path: "src/Auth/Login.ts", action: "create", reason: "Implement the local task", risk: "high" }],
@@ -331,7 +365,7 @@ void test("Flow status tracks order-style progress and provider-reported usage a
 
     await tools["mr_flow_ticket"]!.execute({ title: "Track Flow usage", description: "Show progress and spend" }, ctx.dummyToolContext);
     const status = await tools["mr_flow_status"]!.execute({}, ctx.dummyToolContext) as { output: string };
-    assert.match(status.output, /✓ Ticket {2}→ {2}● Research/u);
+    assert.match(status.output, /✓ Ticket {2}→ {2}● Inten/u);
     assert.match(status.output, /\$0\.0320 USD/u);
     assert.match(status.output, /180\/35\/5/u);
     assert.match(status.output, /2 sessions/u);
@@ -467,6 +501,7 @@ void test("active Flow planning requires a READY Blueprint-lite brief before the
       description: "Exercise the adaptive planning gate",
       platform: "github",
     }, ctx.dummyToolContext);
+    await approveFlowIntent(tools, ctx.dummyToolContext, "GH-BRIEF", "Require planning brief", "Exercise the adaptive planning gate");
 
     const evidenceResult = await tools["mr_evidence_add"]!.execute({
       file: "src/helper.ts",
@@ -626,6 +661,7 @@ void test("MrOrchestrator flow tools execute state machine transitions", async (
       platform: "github",
     }, dummyCtx) as { title: string; output: string };
     assert.equal(ticketRes.title, "Ticket Loaded");
+    await approveFlowIntent(tools, dummyCtx, "GH-42", "Add awesome button", "Needs to be awesome");
 
     // Plan
     const planRes = await tools["mr_flow_plan"]!.execute({
@@ -673,6 +709,7 @@ void test("MrOrchestrator fail-closed CAS: mr_flow_finish aborts if code modifie
       type: "feature",
       platform: "github",
     }, dummyCtx);
+    await approveFlowIntent(tools, dummyCtx, "SEC-101", "Enforce CAS fail-closed", "Must abort on mismatch");
     const { runCommand } = await import("../src/core/process.js");
     runCommand("git", ["init", ctx.workspaceRoot]);
     runCommand("git", ["-C", ctx.workspaceRoot, "config", "user.email", "test@test.local"]);
@@ -730,6 +767,7 @@ void test("Pillar 7 Scope Enforcement: mr_flow_implement rejects mutations outsi
 
     await tools["mr_flow_start"]!.execute({ difficulty: 3, ticketId: "SEC-SCOPE", hasFigma: false }, dummyCtx);
     await tools["mr_flow_ticket"]!.execute({ title: "Scope test", description: "desc", type: "feature", platform: "github" }, dummyCtx);
+    await approveFlowIntent(tools, dummyCtx, "SEC-SCOPE", "Scope test", "desc");
     await tools["mr_flow_plan"]!.execute({
       summary: "Plan restricted to allowed.ts",
       files: [{ path: "src/allowed.ts", action: "create", reason: "allowed only" }],
@@ -766,6 +804,7 @@ void test("Pillar 7 Bounded Fix Loop: mr_flow_fix aborts after 3 attempts and es
 
     await tools["mr_flow_start"]!.execute({ difficulty: 5, ticketId: "SEC-LOOP", hasFigma: false }, dummyCtx);
     await tools["mr_flow_ticket"]!.execute({ title: "Loop test", description: "desc", type: "bugfix", platform: "github" }, dummyCtx);
+    await approveFlowIntent(tools, dummyCtx, "SEC-LOOP", "Loop test", "desc");
     await tools["mr_flow_plan"]!.execute({
       summary: "Bug fix plan",
       files: [{ path: "src/Widget.tsx", action: "modify", reason: "fix bug" }],
@@ -888,6 +927,7 @@ void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit 
 
     await tools["mr_flow_start"]!.execute({ difficulty: 5, ticketId: "SEC-ROLES", hasFigma: false }, dummyCtx);
     await tools["mr_flow_ticket"]!.execute({ title: "Role test", description: "desc", type: "feature", platform: "github" }, dummyCtx);
+    await approveFlowIntent(tools, dummyCtx, "SEC-ROLES", "Role test", "desc");
     await tools["mr_flow_plan"]!.execute({
       summary: "Role plan",
       files: [{ path: "src/Widget.tsx", action: "modify", reason: "role test" }],
@@ -963,6 +1003,7 @@ void test("Pillar 6 Structural AST Analysis: mr_flow_implement rejects files wit
 
     await tools["mr_flow_start"]!.execute({ difficulty: 3, ticketId: "SEC-AST", hasFigma: false }, dummyCtx);
     await tools["mr_flow_ticket"]!.execute({ title: "AST test", description: "desc", type: "feature", platform: "github" }, dummyCtx);
+    await approveFlowIntent(tools, dummyCtx, "SEC-AST", "AST test", "desc");
     await tools["mr_flow_plan"]!.execute({
       summary: "AST syntax check plan",
       files: [{ path: "src/broken.ts", action: "create", reason: "test ast" }],

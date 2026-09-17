@@ -99,7 +99,7 @@ test("renderFlowStatus produces markdown", () => {
   assert.ok(md.includes("root-abc123"));
   assert.ok(md.includes("GH-42"));
   assert.ok(md.includes("bugfix/GH-42-login-button"));
-  assert.ok(md.includes("✓ Ticket  →  ✓ Investigación  →  ● Planificación"));
+  assert.ok(md.includes("✓ Ticket  →  ✓ Intención  →  ✓ Investigación  →  ● Planificación"));
   assert.ok(md.includes("— Revisión"));
   assert.ok(md.includes("$0.0123 USD"));
   assert.ok(md.includes("120/30/10"));
