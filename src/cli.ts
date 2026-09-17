@@ -4,8 +4,9 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadModels, seedModels, syncWorkspace } from "./core/config.js";
-import { CAPABILITY_IDS, LOCAL_CAPABILITY_IDS, capabilityPaths, defaultCapabilitySelection, detectInstalledCapabilities, loadCapabilitySelection, saveCapabilitySelection, type CapabilitySelection } from "./core/capabilities.js";
+import { CAPABILITY_IDS, LOCAL_CAPABILITY_IDS, defaultCapabilitySelection, detectInstalledCapabilities, loadCapabilitySelection, saveCapabilitySelection, type CapabilitySelection } from "./core/capabilities.js";
 import { runDoctor } from "./core/doctor.js";
+import { assessFigmaSetup, figmaSetupInstructions, publishFigmaManifest } from "./core/figma-setup.js";
 import { install, planUninstall, uninstall } from "./core/install.js";
 import { launch } from "./core/launch.js";
 import { loadEffectiveModels, refreshHarnessCatalog, resetHarnessModels, setHarnessModelRole, setModelPreset, setModelRole, type ModelSlot } from "./core/models.js";
@@ -83,8 +84,16 @@ function capabilityReminder(selection: CapabilitySelection): void {
     warning(`Configuración de capacidades pendiente. Ejecuta \`mr capabilities install\` más tarde.${pendingCredentials.length > 0 ? ` Credenciales: ${pendingCredentials.join(", ")}.` : ""}`);
   }
   if (selection.selected.includes("figma-live")) {
-    info(`Figma: importa manualmente ${capabilityPaths(paths).figmaPluginManifest}`);
+    info("Ejecuta `mr figma setup` para publicar el manifiesto del plugin en una ruta fija.");
   }
+}
+
+async function commandFigmaSetup(): Promise<void> {
+  heading("Figma Live MCP");
+  const published = await publishFigmaManifest(paths);
+  const status = await assessFigmaSetup(paths);
+  success(`Manifiesto publicado en ${published}`);
+  info(figmaSetupInstructions(status, "es"));
 }
 
 async function chooseCapabilities(
@@ -382,6 +391,12 @@ async function main(): Promise<void> {
     case "atlas": await commandAtlas(arguments_); break;
     case "sync": await commandSync(arguments_[0]); break;
     case "doctor": await commandDoctor(); break;
+    case "figma": {
+      const sub = arguments_[0];
+      if (sub === "setup") await commandFigmaSetup();
+      else throw new Error("Usage: mr figma setup");
+      break;
+    }
     case "launch": process.exitCode = await launch(paths, process.cwd(), arguments_); break;
     case "help": case "--help": case "-h": case undefined: usage(); break;
     default: throw new Error(`Unknown command: ${command}`);

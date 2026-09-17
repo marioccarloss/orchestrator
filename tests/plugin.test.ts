@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createMrOrchestrator } from "../src/plugin.js";
+import { defaultCapabilitySelection, saveCapabilitySelection } from "../src/core/capabilities.js";
 import { resolvePaths } from "../src/core/paths.js";
 import { addWorkspace } from "../src/core/workspace.js";
 import { loadModels, seedModels } from "../src/core/config.js";
@@ -15,6 +16,7 @@ import { loadFlowState, saveFlowState } from "../src/core/flow-state.js";
 import type { PluginInput, ToolContext } from "@opencode-ai/plugin";
 
 const sourceRoot = process.cwd();
+const FLOW_TEST_TIMEOUT = { timeout: 20_000 } as const;
 
 async function createPluginContext() {
   const rawHome = await mkdtemp(join(tmpdir(), "mr-plugin-test-"));
@@ -46,6 +48,11 @@ export function Widget() {
 
   const paths = resolvePaths({ HOME: home });
   await seedModels(paths, sourceRoot);
+  const capabilities = defaultCapabilitySelection();
+  await saveCapabilitySelection(paths, {
+    ...capabilities,
+    selected: capabilities.selected.filter((id) => id !== "engram"),
+  });
   const profile = await addWorkspace(paths, workspaceRoot);
 
   const mockContext: PluginInput = {
@@ -107,7 +114,7 @@ async function approveFlowIntent(
   await tools["mr_flow_intent"]!.execute({ approved: true }, ctx);
 }
 
-void test("MrOrchestrator plugin exports all required tools with argument schemas", async () => {
+void test("MrOrchestrator plugin exports all required tools with argument schemas", { timeout: 15_000 }, async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
@@ -116,6 +123,9 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
 
     const expectedTools = [
       "mr_flow_status",
+      "mr_flow_platform_status",
+      "mr_flow_wizard_begin",
+      "mr_flow_wizard_step",
       "mr_flow_start",
       "mr_flow_ticket",
       "mr_flow_intent",
@@ -217,7 +227,7 @@ void test("mr_flow_start creates a synthetic local ticket when no external ticke
       taskText: "Fix the broken login redirect",
       hasFigma: false,
     }, ctx.dummyToolContext) as { title: string; output: string };
-    assert.equal(started.title, "Flow Started");
+    assert.match(started.title, /· orchestrator ·/u);
     const state = await loadFlowState(ctx.paths, ctx.profile.id);
     assert.equal(state?.phase, "intent");
     if (state?.phase !== "intent") throw new Error("Expected intent state");
@@ -330,7 +340,7 @@ void test("quota exhaustion promotes the role-specific alternative without repla
   }
 });
 
-void test("Flow status tracks order-style progress and provider-reported usage across child sessions", async () => {
+void test("Flow status tracks order-style progress and provider-reported usage across child sessions", FLOW_TEST_TIMEOUT, async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
@@ -374,7 +384,7 @@ void test("Flow status tracks order-style progress and provider-reported usage a
   }
 });
 
-void test("Flow status remains available through MCP facades that omit ToolContext", async () => {
+void test("Flow status remains available through MCP facades that omit ToolContext", FLOW_TEST_TIMEOUT, async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
@@ -488,7 +498,7 @@ void test("SDD tools keep audit timestamps on disk and out of model-facing JSON"
   }
 });
 
-void test("active Flow planning requires a READY Blueprint-lite brief before the spec", async () => {
+void test("active Flow planning requires a READY Blueprint-lite brief before the spec", FLOW_TEST_TIMEOUT, async () => {
   const ctx = await createPluginContext();
   const previousGateMode = process.env["MR_GATES_MODE"];
   try {
@@ -636,7 +646,34 @@ void test("active Flow planning requires a READY Blueprint-lite brief before the
   }
 });
 
-void test("MrOrchestrator flow tools execute state machine transitions", async () => {
+void test("MrOrchestrator wizard auto-starts a local flow when complete", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    assert.ok(hooks.tool);
+    const tools = hooks.tool;
+    const dummyCtx = ctx.dummyToolContext;
+
+    const begin = await tools["mr_flow_wizard_begin"]!.execute({}, dummyCtx) as { title: string; output: string };
+    assert.equal(begin.title, "🧭 Wizard");
+    assert.match(begin.output, /step: source/u);
+
+    const steps: readonly string[] = ["no_ticket", "3", "skip", "Add loading spinner to Widget"];
+    let last = begin;
+    for (const answer of steps) {
+      last = await tools["mr_flow_wizard_step"]!.execute({ answer }, dummyCtx) as { title: string; output: string };
+    }
+    assert.match(last.output, /autoStarted: true/u);
+    assert.match(last.title, /· orchestrator ·/u);
+
+    const status = await tools["mr_flow_status"]!.execute({}, dummyCtx) as { output: string };
+    assert.ok(status.output.includes("context") || status.output.includes("LOCAL"));
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("MrOrchestrator flow tools execute state machine transitions", FLOW_TEST_TIMEOUT, async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
@@ -646,12 +683,12 @@ void test("MrOrchestrator flow tools execute state machine transitions", async (
 
     // Start flow
     const startRes = await tools["mr_flow_start"]!.execute({ difficulty: 3, ticketId: "GH-42", hasFigma: false }, dummyCtx) as { title: string; output: string };
-    assert.equal(startRes.title, "Flow Started");
+    assert.match(startRes.title, /· orchestrator ·/u);
     assert.ok(startRes.output.includes("context") || startRes.output.includes("GH-42"));
 
     // Status
     const statusRes = await tools["mr_flow_status"]!.execute({}, dummyCtx) as { title: string; output: string };
-    assert.equal(statusRes.title, "Flow Status");
+    assert.match(statusRes.title, /· orchestrator ·/u);
 
     // Ticket
     const ticketRes = await tools["mr_flow_ticket"]!.execute({
@@ -693,7 +730,7 @@ void test("MrOrchestrator flow tools execute state machine transitions", async (
   }
 });
 
-void test("MrOrchestrator fail-closed CAS: mr_flow_finish aborts if code modified post-approval", async () => {
+void test("MrOrchestrator fail-closed CAS: mr_flow_finish aborts if code modified post-approval", FLOW_TEST_TIMEOUT, async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
@@ -787,7 +824,7 @@ void test("Pillar 7 Scope Enforcement: mr_flow_implement rejects mutations outsi
   }
 });
 
-void test("Pillar 7 Bounded Fix Loop: mr_flow_fix aborts after 3 attempts and escalates to human", async () => {
+void test("Pillar 7 Bounded Fix Loop: mr_flow_fix aborts after 3 attempts and escalates to human", FLOW_TEST_TIMEOUT, async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
@@ -910,7 +947,7 @@ void test("MrOrchestrator atlas and trace tools index and inspect codebase", asy
   }
 });
 
-void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit verdict", async () => {
+void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit verdict", FLOW_TEST_TIMEOUT, async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
@@ -986,7 +1023,7 @@ void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit 
   }
 });
 
-void test("Pillar 6 Structural AST Analysis: mr_flow_implement rejects files with syntax/parse errors", async () => {
+void test("Pillar 6 Structural AST Analysis: mr_flow_implement rejects files with syntax/parse errors", FLOW_TEST_TIMEOUT, async () => {
   const ctx = await createPluginContext();
   try {
     const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);

@@ -201,7 +201,12 @@ export function buildFlowCompletionMemory(input: {
   readonly prUrl?: string;
 }): { readonly title: string; readonly content: string; readonly topic: string } {
   const ticket = "ticket" in input.state ? input.state.ticket : undefined;
-  const ticketId = "ticketId" in input.state ? input.state.ticketId : ticket?.ref.id ?? "LOCAL";
+  const ticketId = ticket?.ref.id
+    ?? (input.state.phase === "wizard" ? input.state.wizardDraft.ticketId : undefined)
+    ?? "LOCAL";
+  const difficulty = input.state.phase === "wizard"
+    ? input.state.wizardDraft.difficulty
+    : ("difficulty" in input.state ? input.state.difficulty : undefined);
   const title = `Flow ${ticketId} completed`;
   const lines = [
     `**What**: Completed mr-orchestrator /flow for ${ticketId}.`,
@@ -209,7 +214,7 @@ export function buildFlowCompletionMemory(input: {
     input.spec === undefined ? undefined : `**Goal**: ${input.spec.goal}`,
     input.brief === undefined ? undefined : `**Decisions**: ${input.brief.decisions.map((row) => row.decision).join("; ") || "none recorded"}`,
     "lane" in input.state && input.state.lane !== undefined ? `**Lane**: ${input.state.lane}` : undefined,
-    "difficulty" in input.state ? `**Difficulty**: ${input.state.difficulty}` : undefined,
+    difficulty === undefined ? undefined : `**Difficulty**: ${String(difficulty)}`,
     input.commitHash === undefined ? undefined : `**Commit**: ${input.commitHash}`,
     input.prUrl === undefined ? undefined : `**PR**: ${input.prUrl}`,
     "**Why**: Preserve delivery context for future flows in this workspace.",

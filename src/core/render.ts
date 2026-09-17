@@ -1,4 +1,6 @@
+import { renderFlowHarnessBadge } from "./flow-wizard.js";
 import { requiresJudgment, type PlanCapsule, type FlowState, type MergedVerdict } from "./flow-schema.js";
+import type { EffectiveHarnessModels } from "./harness-models.js";
 import type {
   ResearchCapsulePayload,
   Requirement,
@@ -317,11 +319,19 @@ export function renderFlowUsage(usage: FlowUsageSummary, language: UserLanguage 
 export function renderFlowStatus(
   state: FlowState,
   usage?: FlowUsageSummary,
-  options: { readonly completed?: boolean; readonly language?: UserLanguage } = {},
+  options: {
+    readonly completed?: boolean;
+    readonly language?: UserLanguage;
+    readonly models?: EffectiveHarnessModels;
+    readonly harnessBadge?: string;
+  } = {},
 ): string {
   const language = options.language ?? normalizeUserLanguage(state.userLanguage);
   const m = messagesFor(language);
+  const badge = options.harnessBadge
+    ?? (options.models === undefined ? undefined : renderFlowHarnessBadge(state, options.models));
   const lines = [
+    ...(badge === undefined ? [] : [`\`${badge}\``, ""]),
     `# ${m.flow.title} — ${state.phase}`,
     "",
     `**${m.flow.progress}**: ${flowProgress(state, options.completed ?? false, language)}`,

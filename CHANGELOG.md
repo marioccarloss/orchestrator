@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Deterministic `/flow` wizard tools (`mr_flow_wizard_begin`, `mr_flow_wizard_step`) with auto-start on completion, platform/ticket/difficulty/design/instructions steps, and harness badges on tool titles.
+- `mr figma setup` plus doctor checks for Figma Live MCP manifest publishing.
+- Spanish `/flow` command description in OpenCode (`descriptionEn` keeps English for tests).
+
+### Changed
+
+- Flow orchestrator prompt prioritizes wizard tools over manual field collection.
+- Subagent tool titles show role badge from the active session agent (e.g. mr-explore).
+
 ## [0.10.0] - 2026-09-17
 
 ### Added
