@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-17
+
 ### Added
 
 - Deterministic `/flow` wizard tools (`mr_flow_wizard_begin`, `mr_flow_wizard_step`) with auto-start on completion, platform/ticket/difficulty/design/instructions steps, and harness badges on tool titles.
@@ -191,6 +193,7 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Bun-only runtime, package management, build, test, and CLI workflow using the public npm registry.
 - GitHub Actions verification for type checking, linting, and tests.
 
+[0.11.0]: https://github.com/marioccarloss/orchestrator/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/marioccarloss/orchestrator/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/marioccarloss/orchestrator/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/marioccarloss/orchestrator/compare/v0.9.0...v0.9.1
