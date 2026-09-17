@@ -3,8 +3,22 @@ import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { bridgeEntryPath } from "./facade.js";
-import { mergeAntigravityConfig, mergeClaudeConfig, mergeCodexConfig, mergeCursorConfig, mergeOpenCodeCatalogs, removeCodexBridge, removeJsonBridge, type McpServerConfig } from "./config.js";
+import {
+  mergeClaudeConfig,
+  mergeCodexConfig,
+  mergeCursorConfig,
+  mergeFxConfig,
+  mergeGeminiConfig,
+  mergeOpenCodeCatalogs,
+  removeCodexBridge,
+  removeOwnedFxBridge,
+  removeOwnedGeminiBridges,
+  removeOwnedJsonBridge,
+  removeOwnedJsonBridges,
+  type McpServerConfig,
+} from "./config.js";
 import { adapterArtifacts } from "./adapters.js";
+import type { HarnessId } from "./harness.js";
 
 export type InstallTarget =
   | "opencode-cli"
@@ -15,10 +29,13 @@ export type InstallTarget =
   | "cursor-desktop"
   | "claude-code"
   | "antigravity-desktop"
-  | "agy-cli";
+  | "agy-cli"
+  | "fx-cli";
 
-type ManagedTarget = "codex" | "cursor" | "claude" | "antigravity" | "agy";
-type ConfigTarget = Exclude<ManagedTarget, "agy">;
+type ArtifactTarget = "codex" | "cursor" | "claude" | "antigravity" | "agy" | "fx";
+type ConfigTarget = "codex" | "cursor" | "claude" | "gemini" | "fx";
+type LegacyConfigTarget = "antigravity" | "agy";
+type ManagedTarget = ArtifactTarget | ConfigTarget;
 
 interface OwnedEntry {
   kind?: "config" | "artifact";
@@ -46,6 +63,7 @@ function targetPath(target: ConfigTarget): string {
   if (target === "codex") return join(home, ".codex", "config.toml");
   if (target === "cursor") return join(home, ".cursor", "mcp.json");
   if (target === "claude") return join(home, ".claude.json");
+  if (target === "fx") return join(home, ".fx", "mcp.json");
   return join(home, ".gemini", "config", "mcp_config.json");
 }
 
@@ -66,8 +84,11 @@ async function sourceCatalog(): Promise<Record<string, McpServerConfig>> {
   return mergeOpenCodeCatalogs(await Promise.all(openCodePaths.map(readOptional)));
 }
 
-function bridgeConfig(): McpServerConfig {
-  return { command: [process.execPath, bridgeEntryPath(), "serve"], env: {} };
+function bridgeConfig(harness: HarnessId): McpServerConfig {
+  return {
+    command: [process.execPath, bridgeEntryPath(), "serve", "--harness", harness],
+    env: { MR_HARNESS_ID: harness },
+  };
 }
 
 function fingerprint(value: string): string {
@@ -87,19 +108,45 @@ async function saveManifest(manifest: Manifest): Promise<void> {
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function uniqueTargets(targets: InstallTarget[]): ConfigTarget[] {
-  return [...new Set(targets.flatMap((target): ConfigTarget[] => {
-    if (target.startsWith("opencode")) return [];
-    if (target.startsWith("codex")) return ["codex"];
-    if (target.startsWith("cursor")) return ["cursor"];
-    if (target === "claude-code") return ["claude"];
-    return ["antigravity"];
-  }))];
+interface ConfigPlan {
+  readonly target: ConfigTarget;
+  readonly bridges: Record<string, McpServerConfig>;
+}
+
+function configPlans(targets: InstallTarget[]): ConfigPlan[] {
+  const selected = new Set(targets);
+  const plans: ConfigPlan[] = [];
+  if (selected.has("codex-cli") || selected.has("codex-desktop")) plans.push({ target: "codex", bridges: { "mr-orchestrator": bridgeConfig("codex") } });
+  if (selected.has("cursor-cli") || selected.has("cursor-desktop")) plans.push({ target: "cursor", bridges: { "mr-orchestrator": bridgeConfig("cursor") } });
+  if (selected.has("claude-code")) plans.push({ target: "claude", bridges: { "mr-orchestrator": bridgeConfig("claude") } });
+  const geminiBridges: Record<string, McpServerConfig> = {};
+  if (selected.has("antigravity-desktop")) geminiBridges["mr-orchestrator-antigravity"] = bridgeConfig("antigravity");
+  if (selected.has("agy-cli")) geminiBridges["mr-orchestrator-agy"] = bridgeConfig("agy");
+  if (Object.keys(geminiBridges).length > 0) plans.push({ target: "gemini", bridges: geminiBridges });
+  if (selected.has("fx-cli")) plans.push({ target: "fx", bridges: { "mr-orchestrator": bridgeConfig("fx") } });
+  return plans;
+}
+
+function removeManagedBridges(content: string, target: ConfigTarget | LegacyConfigTarget): string {
+  if (target === "codex") return removeCodexBridge(content);
+  if (target === "fx") return removeOwnedFxBridge(content);
+  if (target === "gemini") return removeOwnedGeminiBridges(content);
+  return removeOwnedJsonBridge(content);
+}
+
+function removePlanBridges(content: string, plan: ConfigPlan): string {
+  if (plan.target !== "gemini") return removeManagedBridges(content, plan.target);
+  return removeOwnedJsonBridges(content, "mcpServers", ["mr-orchestrator", ...Object.keys(plan.bridges)]);
 }
 
 export async function install(targets: InstallTarget[]): Promise<string[]> {
   const catalog = await sourceCatalog();
   const manifest = await loadManifest();
+  const ownedConfigFingerprints = new Map(
+    manifest.entries
+      .filter((entry) => entry.kind !== "artifact")
+      .map((entry) => [entry.path, entry.fingerprint]),
+  );
   const ownedArtifactFingerprints = new Map(
     manifest.entries
       .filter((entry) => entry.kind === "artifact")
@@ -108,25 +155,37 @@ export async function install(targets: InstallTarget[]): Promise<string[]> {
   const messages = targets.filter((target) => target.startsWith("opencode")).map(
     (target) => `${target === "opencode-cli" ? "OpenCode CLI" : "OpenCode Desktop"} selected: no changes made; its integration is immutable.`,
   );
-  for (const target of uniqueTargets(targets)) {
+  for (const plan of configPlans(targets)) {
+    const { target } = plan;
     const path = targetPath(target);
     const before = await readOptional(path);
+    const ownedFingerprint = ownedConfigFingerprints.get(path);
+    const ownedUnchanged = ownedFingerprint !== undefined && fingerprint(before) === ownedFingerprint;
+    const base = ownedUnchanged
+      ? removePlanBridges(before, plan)
+      : before;
     const after = target === "codex"
-      ? mergeCodexConfig(before, catalog, bridgeConfig())
+      ? mergeCodexConfig(base, catalog, plan.bridges["mr-orchestrator"]!)
       : target === "cursor"
-        ? mergeCursorConfig(before, catalog, bridgeConfig())
+        ? mergeCursorConfig(base, catalog, plan.bridges["mr-orchestrator"]!)
         : target === "claude"
-          ? mergeClaudeConfig(before, catalog, bridgeConfig())
-          : mergeAntigravityConfig(before, catalog, bridgeConfig());
+          ? mergeClaudeConfig(base, catalog, plan.bridges["mr-orchestrator"]!)
+          : target === "fx"
+            ? mergeFxConfig(base, catalog, plan.bridges["mr-orchestrator"]!)
+            : mergeGeminiConfig(base, catalog, plan.bridges);
+    if (before === after && !ownedUnchanged) {
+      messages.push(`Preserved ${target} MCP configuration at ${path}: an existing bridge entry is not owned by mr-orchestrator.`);
+      continue;
+    }
     if (before !== after) {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, after);
     }
-    manifest.entries = manifest.entries.filter((entry) => entry.kind === "artifact" || entry.target !== target);
+    manifest.entries = manifest.entries.filter((entry) => entry.kind === "artifact" || entry.path !== path);
     manifest.entries.push({ kind: "config", target, path, fingerprint: fingerprint(after) });
     messages.push(`Installed ${target} MCP configuration at ${path}.`);
   }
-  const artifacts = adapterArtifacts(targets, home);
+  const artifacts = adapterArtifacts(targets, home, [process.execPath, bridgeEntryPath()]);
   for (const owner of new Set(artifacts.map((artifact) => artifact.owner))) {
     manifest.entries = manifest.entries.filter((entry) => entry.kind !== "artifact" || entry.target !== owner);
   }
@@ -183,9 +242,7 @@ export async function uninstall(dryRun: boolean): Promise<string[]> {
       if (!dryRun) await unlink(entry.path);
       continue;
     }
-    const after = entry.target === "codex"
-      ? removeCodexBridge(content)
-      : removeJsonBridge(content, bridgeConfig());
+    const after = removeManagedBridges(content, entry.target as ConfigTarget | LegacyConfigTarget);
     if (after === content) {
       remaining.push(entry);
       results.push(`Preserved ${entry.path}: its bridge entry no longer matches the owned configuration.`);
