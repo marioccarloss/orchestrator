@@ -38,7 +38,7 @@ test("loads the immutable compiled plugin as a tool facade", async () => {
 });
 
 test("rejects forwarded tools until a registered workspace is explicitly bound", async () => {
-  const bridge = createBridge(async () => registry);
+  const bridge = createBridge(async () => registry, "cursor");
 
   await expect(bridge.call("mr_echo", { message: "hello" })).rejects.toThrow(
     "Bind a registered workspace first",
@@ -46,7 +46,7 @@ test("rejects forwarded tools until a registered workspace is explicitly bound",
 });
 
 test("forwards calls through the facade after binding by workspace id", async () => {
-  const bridge = createBridge(async () => registry, [{ id: "workspace-a", path: "/tmp/workspace-a" }]);
+  const bridge = createBridge(async () => registry, "cursor", [{ id: "workspace-a", path: "/tmp/workspace-a" }]);
 
   await bridge.call("mr_bind_workspace", { workspaceId: "workspace-a" });
 
@@ -54,4 +54,26 @@ test("forwards calls through the facade after binding by workspace id", async ()
     title: "Echo",
     output: "hello",
   });
+  expect(bridge.harness()).toBe("cursor");
+});
+
+test("injects the trusted bridge harness into model operations", async () => {
+  const received: Record<string, unknown>[] = [];
+  const bridge = createBridge(async () => ({
+    mr_models: {
+      description: "Models",
+      args: {},
+      execute: async (args: Record<string, unknown>) => {
+        received.push(args);
+        return { title: "Models", output: "ok" };
+      },
+    },
+  }), "codex", [{ id: "workspace-a", path: "/tmp/workspace-a" }]);
+  await bridge.call("mr_bind_workspace", { workspaceId: "workspace-a" });
+  await bridge.call("mr_models", { action: "status" });
+  await bridge.call("mr_models", { action: "status", harness: "cursor" });
+  expect(received).toEqual([
+    { action: "status", harness: "codex" },
+    { action: "status", harness: "codex" },
+  ]);
 });

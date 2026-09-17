@@ -12,6 +12,7 @@ interface PluginModule {
 const pluginUrl = new URL("../../dist/src/plugin.js", import.meta.url);
 const workspaceUrl = new URL("../../dist/src/core/workspace.js", import.meta.url);
 const pathsUrl = new URL("../../dist/src/core/paths.js", import.meta.url);
+const modelsUrl = new URL("../../dist/src/core/models.js", import.meta.url);
 
 export async function loadPluginFacade(workspacePath: string): Promise<ToolRegistry> {
   const plugin = await import(pluginUrl.href) as PluginModule;
@@ -33,6 +34,10 @@ interface PathsModule {
   resolvePaths: () => unknown;
 }
 
+interface ModelsModule {
+  loadEffectiveModels: (paths: unknown, harness: string) => Promise<unknown>;
+}
+
 export async function loadRegisteredWorkspaces(): Promise<RegisteredWorkspace[]> {
   const [{ loadRegistry }, { resolvePaths }] = await Promise.all([
     import(workspaceUrl.href) as Promise<WorkspaceModule>,
@@ -40,6 +45,14 @@ export async function loadRegisteredWorkspaces(): Promise<RegisteredWorkspace[]>
   ]);
   const registry = await loadRegistry(resolvePaths());
   return registry.workspaces.map((workspace) => ({ id: workspace.id, path: workspace.root }));
+}
+
+export async function loadEffectiveHarnessModels(harness: string): Promise<unknown> {
+  const [{ loadEffectiveModels }, { resolvePaths }] = await Promise.all([
+    import(modelsUrl.href) as Promise<ModelsModule>,
+    import(pathsUrl.href) as Promise<PathsModule>,
+  ]);
+  return loadEffectiveModels(resolvePaths(), harness);
 }
 
 export const facadeLoader: FacadeLoader = loadPluginFacade;

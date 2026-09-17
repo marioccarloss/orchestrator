@@ -93,13 +93,13 @@ mr capabilities all
 2. Abre el selector de capacidades. Instala el skill `i-have-adhd`, `codebase-memory`, CodeGraph, Engram y `figma-live-mcp` elegidos desde revisiones fijadas y valida cada descarga por SHA-256.
 3. Registra también Context7, GitHub y Jira como MCP remotos. GitHub/Jira conservan su autenticación oficial y nunca reciben secretos desde el instalador.
 4. Ejecuta `bun install --frozen-lockfile` y compila el código TypeScript (`bun run build`).
-5. Si hay una terminal interactiva, abre `flow-models` para revisar o elegir el modelo disponible de cada proceso/step. Los cambios solo se persisten al seleccionar **Guardar y salir**.
+5. Si hay una terminal interactiva, abre `flow-models` para revisar o elegir el baseline global de cada proceso/step. Los cambios solo se persisten al seleccionar **Guardar y salir**.
 6. Crea los launchers ejecutables en `~/.local/bin/`:
    - `~/.local/bin/mr`: CLI administrativo de mr-orchestrator.
    - `~/.local/bin/mrcode`: Wrapper inteligente que detecta el workspace actual y lanza OpenCode con la configuración compilada.
    - `~/.local/bin/bun`: Shim que apunta al runtime aislado de Bun.
 7. Escribe el manifest en `~/.config/mr-orchestrator/install-manifest.json` y el catálogo portable en `~/.config/mr-orchestrator/recommended-mcps.json`.
-8. Inicializa `~/.config/mr-orchestrator/models.json` con los modelos por rol elegidos.
+8. Inicializa `~/.config/mr-orchestrator/models.json` con los modelos globales por rol elegidos. Los overrides de clientes externos se guardan aparte en `~/.config/mr-orchestrator/harnesses/<harness-id>/models.json`; nunca dentro de un workspace.
 9. Si se pasó `--workspace`, registra el workspace en `~/.config/mr-orchestrator/workspaces.json` y compila su configuración en `~/.config/mr-orchestrator/generated/<workspace-id>/opencode.mr.json`.
 10. **Instala las dependencias del plugin generado** (`bun install` en `~/.config/mr-orchestrator/generated/<workspace-id>/`). Esto es necesario para que el plugin pueda importar `@opencode-ai/plugin`, `zod`, `tree-sitter`, etc. Sin este paso, el plugin falla silenciosamente al cargar.
 
@@ -116,6 +116,15 @@ El skill ADHD queda instalado y registrado, pero `/flow` lo aplica automáticame
 GitHub y Jira pueden quedar como `pending` sin abortar nada. El instalador continúa con las capacidades listas y muestra `mr capabilities install` como siguiente acción. Después de completar el OAuth en el cliente, ejecuta ese comando, marca **Ya está credencializado** y la configuración de todos los workspaces se regenera.
 
 En automatizaciones sin TTY el selector se omite automáticamente. También puede omitirse de forma explícita con `./install.sh --no-models`; después se abre con `mr flow-models`.
+
+Después de instalar un bridge externo, crea su catálogo explícito y valida el roster antes del primer despacho:
+
+```bash
+mr models validate --harness cursor
+mr flow-models --harness cursor
+```
+
+El refresco automático funciona para OpenCode y fx (`mr models catalog --harness <opencode|fx> --refresh`). Si un adaptador no ofrece descubrimiento, escribe un `catalog.json` explícito con el identificador nativo, variantes y `applicationMode`. La ausencia o incompatibilidad del catálogo falla de forma cerrada y no altera el baseline global.
 
 ---
 

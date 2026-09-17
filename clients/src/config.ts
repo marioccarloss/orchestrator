@@ -59,10 +59,17 @@ export function mergeOpenCodeCatalogs(contents: string[]): Record<string, McpSer
   return Object.assign({}, ...contents.filter((content) => content.length > 0).map(parseOpenCodeCatalog));
 }
 
-type JsonHost = "cursor" | "antigravity" | "claude";
+type JsonHost = "cursor" | "antigravity" | "claude" | "fx";
 
 function toHostServer(config: McpServerConfig, host: JsonHost | "codex"): JsonRecord {
   if (config.url !== undefined) {
+    if (host === "fx") {
+      return {
+        type: "http",
+        url: config.url,
+        ...(config.headers === undefined || Object.keys(config.headers).length === 0 ? {} : { headers: config.headers }),
+      };
+    }
     const urlProperty = host === "antigravity" ? "serverUrl" : "url";
     const headersProperty = host === "codex" ? "http_headers" : "headers";
     return {
@@ -72,6 +79,13 @@ function toHostServer(config: McpServerConfig, host: JsonHost | "codex"): JsonRe
     };
   }
   const command = config.command ?? [];
+  if (host === "fx") {
+    return {
+      type: "stdio",
+      command,
+      ...(config.env !== undefined && Object.keys(config.env).length > 0 ? { environment: config.env } : {}),
+    };
+  }
   return {
     command: command[0] ?? "",
     ...(command.length > 1 ? { args: command.slice(1) } : {}),
@@ -80,11 +94,23 @@ function toHostServer(config: McpServerConfig, host: JsonHost | "codex"): JsonRe
   };
 }
 
-function mergeJsonConfig(content: string, property: "mcpServers" | "mcp", host: JsonHost, servers: Record<string, McpServerConfig>, bridge: McpServerConfig): string {
+function mergeJsonConfig(
+  content: string,
+  property: "mcpServers" | "mcp",
+  host: JsonHost,
+  servers: Record<string, McpServerConfig>,
+  bridges: Record<string, McpServerConfig>,
+): string {
   let next = content.trim().length === 0 ? "{}\n" : content;
   const existing = asRecord(parse(next));
   const current = asRecord(existing[property]);
-  const additions = { ...servers, "mr-orchestrator": { ...bridge, instructions: bindingInstruction } };
+  const importedServers = Object.fromEntries(
+    Object.entries(servers).filter(([name]) => name !== "mr-orchestrator" && !name.startsWith("mr-orchestrator-")),
+  );
+  const additions = {
+    ...importedServers,
+    ...Object.fromEntries(Object.entries(bridges).map(([name, bridge]) => [name, { ...bridge, instructions: bindingInstruction }])),
+  };
   for (const [name, server] of Object.entries(additions)) {
     if (current[name] !== undefined) continue;
     const edits = modify(next, [property, name], toHostServer(server, host), {
@@ -96,15 +122,23 @@ function mergeJsonConfig(content: string, property: "mcpServers" | "mcp", host: 
 }
 
 export function mergeCursorConfig(content: string, servers: Record<string, McpServerConfig>, bridge: McpServerConfig): string {
-  return mergeJsonConfig(content, "mcpServers", "cursor", servers, bridge);
+  return mergeJsonConfig(content, "mcpServers", "cursor", servers, { "mr-orchestrator": bridge });
 }
 
 export function mergeAntigravityConfig(content: string, servers: Record<string, McpServerConfig>, bridge: McpServerConfig): string {
-  return mergeJsonConfig(content, "mcpServers", "antigravity", servers, bridge);
+  return mergeJsonConfig(content, "mcpServers", "antigravity", servers, { "mr-orchestrator": bridge });
+}
+
+export function mergeGeminiConfig(content: string, servers: Record<string, McpServerConfig>, bridges: Record<string, McpServerConfig>): string {
+  return mergeJsonConfig(content, "mcpServers", "antigravity", servers, bridges);
 }
 
 export function mergeClaudeConfig(content: string, servers: Record<string, McpServerConfig>, bridge: McpServerConfig): string {
-  return mergeJsonConfig(content, "mcpServers", "claude", servers, bridge);
+  return mergeJsonConfig(content, "mcpServers", "claude", servers, { "mr-orchestrator": bridge });
+}
+
+export function mergeFxConfig(content: string, servers: Record<string, McpServerConfig>, bridge: McpServerConfig): string {
+  return mergeJsonConfig(content, "mcp", "fx", servers, { "mr-orchestrator": bridge });
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
@@ -122,6 +156,40 @@ export function removeJsonBridge(content: string, bridge: McpServerConfig): stri
   });
   const next = applyEdits(content, edits);
   return next.endsWith("\n") ? next : `${next}\n`;
+}
+
+export function removeOwnedJsonBridge(content: string): string {
+  return removeOwnedJsonBridges(content, "mcpServers", ["mr-orchestrator"]);
+}
+
+export function removeOwnedJsonBridges(
+  content: string,
+  property: "mcpServers" | "mcp",
+  names: readonly string[],
+): string {
+  let next = content;
+  for (const name of names) {
+    const root = asRecord(parse(next));
+    const servers = asRecord(root[property]);
+    if (servers[name] === undefined) continue;
+    const edits = modify(next, [property, name], undefined, {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+    });
+    next = applyEdits(next, edits);
+  }
+  return next.endsWith("\n") ? next : `${next}\n`;
+}
+
+export function removeOwnedFxBridge(content: string): string {
+  return removeOwnedJsonBridges(content, "mcp", ["mr-orchestrator"]);
+}
+
+export function removeOwnedGeminiBridges(content: string): string {
+  return removeOwnedJsonBridges(content, "mcpServers", [
+    "mr-orchestrator",
+    "mr-orchestrator-antigravity",
+    "mr-orchestrator-agy",
+  ]);
 }
 
 export function removeCodexBridge(content: string): string {

@@ -3,6 +3,8 @@ import * as p from "@clack/prompts";
 import { serveStdio } from "./bridge.js";
 import { facadeLoader, loadRegisteredWorkspaces } from "./facade.js";
 import { doctor, install, type InstallTarget, uninstall } from "./installer.js";
+import { resolveHarnessIdentity } from "./harness.js";
+import { ModelRoleSchema, RunnerHarnessSchema, runRole } from "./role-runner.js";
 
 const targets: Array<{ value: InstallTarget; label: string; hint: string }> = [
   { value: "opencode-cli", label: "OpenCode CLI", hint: "Informational only: immutable integration" },
@@ -14,6 +16,7 @@ const targets: Array<{ value: InstallTarget; label: string; hint: string }> = [
   { value: "claude-code", label: "Claude Code", hint: "MCP + /flow, /blueprint, and /flow-models commands" },
   { value: "antigravity-desktop", label: "Antigravity Desktop", hint: "MCP + flow, blueprint, and flow-models skills" },
   { value: "agy-cli", label: "AGY CLI", hint: "MCP + /flow, /blueprint, and /flow-models commands" },
+  { value: "fx-cli", label: "fx CLI", hint: "MCP + $flow, $blueprint, and $flow-models skills" },
 ];
 
 const knownTargets = new Set(targets.map((target) => target.value));
@@ -47,7 +50,19 @@ async function selectedTargets(): Promise<InstallTarget[]> {
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === "serve") {
-    await serveStdio(facadeLoader, await loadRegisteredWorkspaces());
+    const harnessIndex = args.indexOf("--harness");
+    if (harnessIndex >= 0 && args[harnessIndex + 1] === undefined) throw new Error("--harness requires an id");
+    const harness = resolveHarnessIdentity(harnessIndex >= 0 ? args[harnessIndex + 1] : undefined, process.env["MR_HARNESS_ID"]);
+    await serveStdio(facadeLoader, await loadRegisteredWorkspaces(), harness);
+    return;
+  }
+  if (command === "run-role") {
+    if (args[0] === undefined || args[1] === undefined) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx> <role> -- <prompt>");
+    const separator = args.indexOf("--");
+    if (separator < 0) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx> <role> -- <prompt>");
+    const harness = RunnerHarnessSchema.parse(args[0]);
+    const role = ModelRoleSchema.parse(args[1]);
+    process.exitCode = await runRole(harness, role, args.slice(separator + 1).join(" "));
     return;
   }
   if (command === "install") {
@@ -65,7 +80,7 @@ async function main(): Promise<void> {
     for (const message of await uninstall(dryRun)) p.log.info(message);
     return;
   }
-  console.error("Usage: mr-clients <install [targets...]|doctor|uninstall --dry-run|serve>");
+  console.error("Usage: mr-clients <install [targets...]|doctor|uninstall --dry-run|serve --harness ID|run-role HARNESS ROLE -- PROMPT>");
   process.exitCode = 1;
 }
 

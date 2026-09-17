@@ -5,6 +5,8 @@ import {
   mergeClaudeConfig,
   mergeCodexConfig,
   mergeCursorConfig,
+  mergeFxConfig,
+  mergeGeminiConfig,
   mergeOpenCodeCatalogs,
   parseOpenCodeCatalog,
 } from "../src/config.js";
@@ -56,6 +58,18 @@ test("merges selected host configurations without replacing user servers", () =>
   const claude = JSON.parse(mergeClaudeConfig('{"mcpServers":{"user":{"command":"user-mcp"}}}', servers, bridge));
   expect(claude.mcpServers.user).toEqual({ command: "user-mcp" });
   expect(claude.mcpServers["mr-orchestrator"].args).toEqual(["/clients/src/cli.ts", "serve"]);
+  const gemini = JSON.parse(mergeGeminiConfig("{}", servers, {
+    "mr-orchestrator-antigravity": { command: ["bun", "bridge", "serve", "--harness", "antigravity"] },
+    "mr-orchestrator-agy": { command: ["bun", "bridge", "serve", "--harness", "agy"] },
+  }));
+  expect(gemini.mcpServers["mr-orchestrator-antigravity"].args.slice(-2)).toEqual(["--harness", "antigravity"]);
+  expect(gemini.mcpServers["mr-orchestrator-agy"].args.slice(-2)).toEqual(["--harness", "agy"]);
+  const fx = JSON.parse(mergeFxConfig("{}", servers, bridge));
+  expect(fx.mcp["mr-orchestrator"]).toEqual({
+    type: "stdio",
+    command: ["bun", "/clients/src/cli.ts", "serve"],
+  });
+  expect(fx.mcp.context7).toEqual({ type: "http", url: "https://mcp.context7.com/mcp" });
 });
 
 test("rejects a change set containing files outside clients", () => {

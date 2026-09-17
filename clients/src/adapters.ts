@@ -1,8 +1,9 @@
 import { join } from "node:path";
 import type { InstallTarget } from "./installer.js";
+import type { HarnessId } from "./harness.js";
 
 export interface AdapterArtifact {
-  readonly owner: "codex" | "cursor" | "claude" | "antigravity" | "agy";
+  readonly owner: "codex" | "cursor" | "claude" | "antigravity" | "agy" | "fx";
   readonly path: string;
   readonly content: string;
   readonly invocation: string;
@@ -18,8 +19,14 @@ const descriptions: Record<Workflow, string> = {
 
 const grounding = `Grounding contract (mandatory): use only supplied tickets, typed capsules, tool results, specifications, and inspected source/diffs. Never invent files, behavior, requirements, or command results. When essential evidence is missing, stop with {"status":"INSUFFICIENT_EVIDENCE","missing":["<specific missing evidence>"],"nextAction":"<smallest action that can obtain it>"}.`;
 
-function workflowBody(workflow: Workflow, input: string): string {
-  const binding = `First call \`mr_bind_workspace\` with exactly one registered workspaceId or workspacePath. Use the current project root only when it is registered; if binding fails, ask the user which registered workspace to use.`;
+function workflowBody(workflow: Workflow, input: string, harness: HarnessId, runnerCommand: readonly string[]): string {
+  const server = harness === "antigravity" || harness === "agy" ? `mr-orchestrator-${harness}` : "mr-orchestrator";
+  const binding = `Use only the \`${server}\` MCP server for mr-orchestrator tools. First call \`mr_bind_workspace\` with exactly one registered workspaceId or workspacePath. Use the current project root only when it is registered; if binding fails, ask the user which registered workspace to use. Then call \`mr_models\` with action=validate and harness=${harness}; stop before role dispatch if validation fails.`;
+  const runner = runnerCommand.map((part) => JSON.stringify(part)).join(" ");
+  const usesRunner = harness === "codex" || harness === "cursor" || harness === "claude" || harness === "agy" || harness === "fx";
+  const roleDispatch = usesRunner
+    ? `${harness} application contract: this host is per-invocation. Execute every isolated role pass through \`${runner} run-role ${harness} <role> -- <bounded role prompt>\`. That owned runner resolves and validates the current source configuration, then launches the host CLI with the role's native model and variant; never execute a role pass with the parent session model.`
+    : "";
   if (workflow === "flow") {
     return `${grounding}
 
@@ -30,15 +37,15 @@ ${binding}
 1. Call \`mr_flow_status\` and resume the active phase rather than starting over.
 2. If no flow exists, obtain ticketId, Fibonacci difficulty (1, 3, 5, 8, 13, or 21), and whether a Figma design exists, then call \`mr_flow_start\`. Dificultad >= 5 enforces mandatory Judgment Day.
 3. Advance only through the phase reported by the state machine:
-   - context: inspect the ticket and call \`mr_flow_ticket\`.
-   - explore: gather file:line evidence with \`mr_atlas_query\` / \`mr_atlas_skeleton\` and submit a valid ResearchCapsule with \`mr_sdd_submit(kind: "research")\`.
+   - context: inspect the ticket and call \`mr_flow_ticket\`. Reuse its Atlas warm-up and Engram prefetch; only call \`mr_flow_memory_prefetch\` if the task scope changed materially.
+   - explore: reuse prefetched Engram memory from \`mr_context_hydrate\` before any new mem_search. Gather file:line evidence with \`mr_atlas_query\` / \`mr_atlas_skeleton\` and submit a valid ResearchCapsule with \`mr_sdd_submit(kind: "research")\`.
    - plan: first run Blueprint-lite with \`mr_sdd_submit(kind: "brief")\`. Clear tickets submit READY immediately. Only material ambiguity may return NEEDS_INPUT with at most 3 risk-prioritized questions; ask once, pass answers back to planning, and persist READY. Then submit SpecCapsule and TaskGraph with kinds spec and tasks. Verify acyclic DAG, full Rn -> Tn coverage, and research evidence for every modified file in Full flows. Call \`mr_flow_plan\` with the consolidated files. Show its deterministic "Plan, en breve" once without paraphrasing it.
    - implement: repeatedly call \`mr_sdd_get(kind: "next-task")\` for the next task ("pase gol"). Show its ultra-compact developerNote (what/why/touch/prove) once without expanding it. Respect its required implementer: Fibonacci 1-3 uses only general; 5+ uses only sdd-apply. Implement within declared task files, run its verification commands, mark it done with \`mr_sdd_task_status\`, then call \`mr_flow_implement\` when no actionable task remains.
    - judgment: for difficulty >= 5, perform two independent blind adversarial reviews in parallel and submit both through \`mr_flow_judge\`. Each finding must provide severity, claim, file, line, side=new|old, source=diff, and an exact evidence snippet; unsupported citations are rejected mechanically.
    - fix: address validated critical findings and call \`mr_flow_fix\`. Bounded loop of max 3 attempts.
    - gate: execute the authoritative test/verification command (e.g. \`npm run verify\` in code/ for frontend or \`mvn clean verify\` for backend). Fail-closed: exit code 0 required before any commit/push/PR.
-   - finish: call \`mr_flow_finish\` only after the user confirms the closing action via interactive prompt.
-4. Preserve role isolation even when this host has no native mr-orchestrator subagents. Run each phase as an independent role pass with only its required evidence. Resolve models from the host configuration; never embed a model snapshot in this prompt:
+   - finish: call \`mr_flow_finish\` only after the user confirms the closing action via interactive prompt. The plugin saves a compact delivery summary to Engram automatically.
+4. Preserve role isolation even when this host has no native mr-orchestrator subagents. Run each phase as an independent role pass with only its required evidence. Resolve models from the host configuration; never embed a model snapshot in this prompt. ${roleDispatch}
    - explore role: read-only research and file:line evidence (edit: deny, bash: deny);
    - plan role: Blueprint-lite ambiguity assessment, specification, and dependency-ordered task graph without editing code; ask only high-impact questions, enforce Gherkin acceptance criteria and an acyclic DAG;
     - general role: sole implementer for Fibonacci 1-3; implement only the active task with minimal diff and run declared verification commands;
@@ -84,11 +91,11 @@ You are executing the mr-orchestrator /flow-models workflow.
 
 ${binding}
 
-1. Call \`mr_models\` with action=status and show each role's primary model and configured alternative.
-2. If the input identifies a role after a quota failure, call \`mr_models\` with action=candidates, that role, and failedModel when known. Otherwise call action=providers, ask which provider to inspect, then call action=models for that provider.
+1. Call \`mr_models\` with action=status and harness=${harness}, then show each role's primary model, native target, origin, and configured alternative.
+2. If the input identifies a role after a quota failure, call \`mr_models\` with action=candidates, harness=${harness}, that role, and failedModel when known. Otherwise call action=providers with harness=${harness}, ask which provider to inspect, then call action=models for that provider and harness.
 3. Present the alternatives and state that catalog presence does not prove available quota. Never claim that a candidate has available quota.
 4. Ask for explicit confirmation naming the role, target slot (model or alternative), and exact provider/model value. Cancellation or ambiguity means do not mutate anything.
-5. Only after explicit confirmation, call \`mr_models\` with action=set, role, model, and target. Then call action=status to verify that only the requested slot changed.
+5. Only after explicit confirmation, call \`mr_models\` with action=set, harness=${harness}, role, model, and target. Then call action=status with the same harness to verify that only the requested slot changed.
 6. A non-recoverable quota error automatically promotes that role's configured alternative and preserves the failed primary as the next alternative. The interrupted Flow/SDD unit remains persisted; never replay it automatically because it may contain side effects.
 
 ---
@@ -96,7 +103,7 @@ ${binding}
 ${input}`;
 }
 
-function markdownCommand(workflow: Workflow): string {
+function markdownCommand(workflow: Workflow, harness: HarnessId, runnerCommand: readonly string[]): string {
   return `---
 description: ${descriptions[workflow]}
 argument-hint: "[request, ticket, or idea]"
@@ -104,11 +111,11 @@ argument-hint: "[request, ticket, or idea]"
 
 # mr-orchestrator ${workflow}
 
-${workflowBody(workflow, "$ARGUMENTS")}
+${workflowBody(workflow, "$ARGUMENTS", harness, runnerCommand)}
 `;
 }
 
-function skill(workflow: Workflow, invocation: string, explicitOnly = false): string {
+function skill(workflow: Workflow, invocation: string, harness: HarnessId, runnerCommand: readonly string[], explicitOnly = false): string {
   return `---
 name: ${workflow}
 description: ${descriptions[workflow]}. Use when the user explicitly invokes ${invocation} or asks for this workflow.
@@ -118,19 +125,19 @@ ${explicitOnly ? "disable-model-invocation: true\n" : ""}---
 
 Treat any text following ${invocation} as the workflow input.
 
-${workflowBody(workflow, "the text supplied with the invocation")}
+${workflowBody(workflow, "the text supplied with the invocation", harness, runnerCommand)}
 `;
 }
 
-function geminiCommand(workflow: Workflow): string {
-  return `description = ${JSON.stringify(descriptions[workflow])}\nprompt = ${JSON.stringify(workflowBody(workflow, "{{args}}"))}\n`;
+function geminiCommand(workflow: Workflow, harness: HarnessId, runnerCommand: readonly string[]): string {
+  return `description = ${JSON.stringify(descriptions[workflow])}\nprompt = ${JSON.stringify(workflowBody(workflow, "{{args}}", harness, runnerCommand))}\n`;
 }
 
 function workflows<T>(factory: (workflow: Workflow) => T): T[] {
   return [factory("flow"), factory("blueprint"), factory("flow-models")];
 }
 
-export function adapterArtifacts(targets: InstallTarget[], home: string): AdapterArtifact[] {
+export function adapterArtifacts(targets: InstallTarget[], home: string, runnerCommand: readonly string[] = ["mr-clients"]): AdapterArtifact[] {
   const selected = new Set(targets);
   const artifacts: AdapterArtifact[] = [];
 
@@ -138,7 +145,7 @@ export function adapterArtifacts(targets: InstallTarget[], home: string): Adapte
     artifacts.push(...workflows((workflow) => ({
       owner: "codex" as const,
       path: join(home, ".codex", "skills", workflow, "SKILL.md"),
-      content: skill(workflow, `$${workflow}`),
+      content: skill(workflow, `$${workflow}`, "codex", runnerCommand),
       invocation: `$${workflow}`,
     })));
   }
@@ -146,7 +153,7 @@ export function adapterArtifacts(targets: InstallTarget[], home: string): Adapte
     artifacts.push(...workflows((workflow) => ({
       owner: "cursor" as const,
       path: join(home, ".cursor", "skills", workflow, "SKILL.md"),
-      content: skill(workflow, `/${workflow}`, true),
+      content: skill(workflow, `/${workflow}`, "cursor", runnerCommand, true),
       invocation: `/${workflow}`,
     })));
   }
@@ -154,7 +161,7 @@ export function adapterArtifacts(targets: InstallTarget[], home: string): Adapte
     artifacts.push(...workflows((workflow) => ({
       owner: "claude" as const,
       path: join(home, ".claude", "commands", `${workflow}.md`),
-      content: markdownCommand(workflow),
+      content: markdownCommand(workflow, "claude", runnerCommand),
       invocation: `/${workflow}`,
     })));
   }
@@ -162,7 +169,7 @@ export function adapterArtifacts(targets: InstallTarget[], home: string): Adapte
     artifacts.push(...workflows((workflow) => ({
       owner: "antigravity" as const,
       path: join(home, ".gemini", "config", "skills", workflow, "SKILL.md"),
-      content: skill(workflow, workflow),
+      content: skill(workflow, workflow, "antigravity", runnerCommand),
       invocation: workflow,
     })));
   }
@@ -170,8 +177,16 @@ export function adapterArtifacts(targets: InstallTarget[], home: string): Adapte
     artifacts.push(...workflows((workflow) => ({
       owner: "agy" as const,
       path: join(home, ".gemini", "commands", `${workflow}.toml`),
-      content: geminiCommand(workflow),
+      content: geminiCommand(workflow, "agy", runnerCommand),
       invocation: `/${workflow}`,
+    })));
+  }
+  if (selected.has("fx-cli")) {
+    artifacts.push(...workflows((workflow) => ({
+      owner: "fx" as const,
+      path: join(home, ".fx", "skills", workflow, "SKILL.md"),
+      content: skill(workflow, `$${workflow}`, "fx", runnerCommand, true),
+      invocation: `$${workflow}`,
     })));
   }
 
