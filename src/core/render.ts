@@ -7,6 +7,7 @@ import type {
   TaskGraphPayload,
   SddValidationIssue,
 } from "./sdd-schema.js";
+import type { IntentAssessmentPayload, IntentBriefPayload, IntentDisplayPayload, IntentNeedsInputPayload, IntentProposedPayload } from "./intent-schema.js";
 import type { FlowUsageSummary } from "./flow-metrics.js";
 import type { AtlasGraph } from "./atlas.js";
 import { normalizeUserLanguage, type UserLanguage } from "./language.js";
@@ -28,7 +29,14 @@ interface RenderMessages {
     readonly noSpecificTests: string; readonly verification: string; readonly file: string; readonly action: string;
     readonly risk: string; readonly reason: string; readonly test: string; readonly type: string; readonly description: string;
   };
-  readonly progress: readonly [string, string, string, string, string, string, string];
+  readonly progress: readonly [string, string, string, string, string, string, string, string];
+  readonly intent: {
+    readonly title: string; readonly problem: string; readonly outcome: string; readonly signals: string;
+    readonly constraints: string; readonly next: string; readonly nextDetail: string;
+    readonly proposedTitle: string; readonly sweeps: string; readonly assumptions: string; readonly unresolved: string;
+    readonly suggestedDefault: string; readonly sources: string; readonly confirmProposed: string;
+    readonly needsInputTitle: string;
+  };
   readonly flow: {
     readonly title: string; readonly progress: string; readonly estimatedCost: string; readonly tokens: string;
     readonly cache: string; readonly sessions: string; readonly workspace: string; readonly started: string;
@@ -83,7 +91,8 @@ export const MESSAGES = {
     coverage: { heading: "cobertura", fresh: "fresca", reindexed: "no (reindexada)", unsupported: "no soportados", unresolvedImports: "imports sin resolver", parseErrors: "errores de parseo" },
     workspace: { title: "Mapa del Workspace de Atlas", repositories: "repositorios", languages: "lenguajes", nodes: "nodos" },
     plan: { title: "Plan de Implementación", summary: "Resumen", rootCause: "Causa Raíz", affectedFiles: "Archivos Afectados", noSpecificTests: "Sin tests específicos planificados.", verification: "Verificación", file: "Archivo", action: "Acción", risk: "Riesgo", reason: "Razón", test: "Test", type: "Tipo", description: "Descripción" },
-    progress: ["Ticket", "Investigación", "Planificación", "Implementación", "Revisión", "Revisión/Corrección", "Entrega"],
+    progress: ["Ticket", "Intención", "Investigación", "Planificación", "Implementación", "Revisión", "Revisión/Corrección", "Entrega"],
+    intent: { title: "Intención, en breve", problem: "Problema", outcome: "Resultado", signals: "Señales de aceptación", constraints: "Restricciones", next: "Siguiente paso", nextDetail: "Confirma esta intención antes de explorar código.", proposedTitle: "Borrador de intención (revisar antes de explorar)", sweeps: "Barridos ejecutados", assumptions: "Supuestos inferidos", unresolved: "Huecos pendientes", suggestedDefault: "Default sugerido", sources: "Fuentes por campo", confirmProposed: "Confirma el borrador con mr_flow_intent o refínalo con mr_sdd_submit kind=intent." , needsInputTitle: "Intención incompleta — aclaración excepcional" },
     flow: { title: "Estado del Flujo", progress: "Progreso", estimatedCost: "Coste estimado por OpenCode", tokens: "tokens entrada/salida/razonamiento", cache: "caché", sessions: "sesiones", workspace: "Workspace", started: "Iniciado", difficulty: "Dificultad", riskLane: "Carril de riesgo", laneReason: "Motivo del carril", ticket: "Ticket", titleLabel: "Título", branch: "Rama", base: "base", plan: "Plan", contextBudget: "Contexto hidratado", hydrations: "hidrataciones", truncated: "recortados" },
     explanation: { title: "Plan, en breve", what: "Qué", why: "Por qué", how: "Cómo", proof: "Prueba", defaultWhy: "Cumplir los criterios de aceptación con el menor cambio seguro.", taskVerification: "verificación específica de cada tarea" },
     verdict: { title: "Veredicto del Día del Juicio", approved: "APROBADO", rejected: "RECHAZADO", summary: "Resumen", judge: "Juez", critical: "Hallazgos Críticos", warnings: "Advertencias", suggestions: "Sugerencias", verifiedEvidence: "Evidencia Verificada", severity: "Severidad", finding: "Hallazgo", location: "Ubicación", evidence: "Evidencia", merged: "Fusionado el" },
@@ -99,7 +108,8 @@ export const MESSAGES = {
     coverage: { heading: "coverage", fresh: "fresh", reindexed: "no (reindexed)", unsupported: "unsupported", unresolvedImports: "unresolved imports", parseErrors: "parse errors" },
     workspace: { title: "Atlas Workspace Map", repositories: "repositories", languages: "languages", nodes: "nodes" },
     plan: { title: "Implementation Plan", summary: "Summary", rootCause: "Root Cause", affectedFiles: "Affected Files", noSpecificTests: "No specific tests planned.", verification: "Verification", file: "File", action: "Action", risk: "Risk", reason: "Reason", test: "Test", type: "Type", description: "Description" },
-    progress: ["Ticket", "Research", "Planning", "Implementation", "Review", "Review/Fix", "Delivery"],
+    progress: ["Ticket", "Intent", "Research", "Planning", "Implementation", "Review", "Review/Fix", "Delivery"],
+    intent: { title: "Intent at a glance", problem: "Problem", outcome: "Outcome", signals: "Acceptance signals", constraints: "Constraints", next: "Next step", nextDetail: "Confirm this intent before exploring code.", proposedTitle: "Intent draft (review before explore)", sweeps: "Sweeps completed", assumptions: "Inferred assumptions", unresolved: "Remaining gaps", suggestedDefault: "Suggested default", sources: "Field sources", confirmProposed: "Confirm the draft with mr_flow_intent or refine via mr_sdd_submit kind=intent.", needsInputTitle: "Intent incomplete — exceptional clarification" },
     flow: { title: "Flow Status", progress: "Progress", estimatedCost: "OpenCode estimated cost", tokens: "input/output/reasoning tokens", cache: "cache", sessions: "sessions", workspace: "Workspace", started: "Started", difficulty: "Difficulty", riskLane: "Risk lane", laneReason: "Lane reason", ticket: "Ticket", titleLabel: "Title", branch: "Branch", base: "base", plan: "Plan", contextBudget: "Hydrated context", hydrations: "hydrations", truncated: "truncated" },
     explanation: { title: "Plan at a glance", what: "What", why: "Why", how: "How", proof: "Proof", defaultWhy: "Meet the acceptance criteria with the smallest safe change.", taskVerification: "task-specific verification" },
     verdict: { title: "Judgment Day Verdict", approved: "APPROVED", rejected: "REJECTED", summary: "Summary", judge: "Judge", critical: "Critical Findings", warnings: "Warnings", suggestions: "Suggestions", verifiedEvidence: "Verified Evidence", severity: "Severity", finding: "Finding", location: "Location", evidence: "Evidence", merged: "Merged at" },
@@ -115,7 +125,8 @@ export const MESSAGES = {
     coverage: { heading: "cobertura", fresh: "atualizada", reindexed: "não (reindexada)", unsupported: "não suportados", unresolvedImports: "imports não resolvidos", parseErrors: "erros de análise" },
     workspace: { title: "Mapa do Workspace Atlas", repositories: "repositórios", languages: "linguagens", nodes: "nós" },
     plan: { title: "Plano de Implementação", summary: "Resumo", rootCause: "Causa Raiz", affectedFiles: "Arquivos Afetados", noSpecificTests: "Nenhum teste específico planejado.", verification: "Verificação", file: "Arquivo", action: "Ação", risk: "Risco", reason: "Motivo", test: "Teste", type: "Tipo", description: "Descrição" },
-    progress: ["Ticket", "Pesquisa", "Planejamento", "Implementação", "Revisão", "Revisão/Correção", "Entrega"],
+    progress: ["Ticket", "Intenção", "Pesquisa", "Planejamento", "Implementação", "Revisão", "Revisão/Correção", "Entrega"],
+    intent: { title: "Intenção, em resumo", problem: "Problema", outcome: "Resultado", signals: "Sinais de aceitação", constraints: "Restrições", next: "Próximo passo", nextDetail: "Confirme esta intenção antes de explorar o código.", proposedTitle: "Rascunho de intenção (revisar antes de explorar)", sweeps: "Varreduras executadas", assumptions: "Suposições inferidas", unresolved: "Lacunas pendentes", suggestedDefault: "Padrão sugerido", sources: "Fontes por campo", confirmProposed: "Confirme o rascunho com mr_flow_intent ou refine via mr_sdd_submit kind=intent.", needsInputTitle: "Intenção incompleta — esclarecimento excepcional" },
     flow: { title: "Status do Fluxo", progress: "Progresso", estimatedCost: "Custo estimado pelo OpenCode", tokens: "tokens entrada/saída/raciocínio", cache: "cache", sessions: "sessões", workspace: "Workspace", started: "Iniciado", difficulty: "Dificuldade", riskLane: "Faixa de risco", laneReason: "Motivo da faixa", ticket: "Ticket", titleLabel: "Título", branch: "Branch", base: "base", plan: "Plano", contextBudget: "Contexto hidratado", hydrations: "hidratações", truncated: "cortados" },
     explanation: { title: "Plano em resumo", what: "O quê", why: "Por quê", how: "Como", proof: "Prova", defaultWhy: "Cumprir os critérios de aceitação com a menor mudança segura.", taskVerification: "verificação específica de cada tarefa" },
     verdict: { title: "Veredito do Dia do Julgamento", approved: "APROVADO", rejected: "REJEITADO", summary: "Resumo", judge: "Juiz", critical: "Achados Críticos", warnings: "Avisos", suggestions: "Sugestões", verifiedEvidence: "Evidência Verificada", severity: "Severidade", finding: "Achado", location: "Local", evidence: "Evidência", merged: "Consolidado em" },
@@ -131,7 +142,8 @@ export const MESSAGES = {
     coverage: { heading: "cobertura", fresh: "actualitzada", reindexed: "no (reindexada)", unsupported: "no compatibles", unresolvedImports: "imports sense resoldre", parseErrors: "errors d'anàlisi" },
     workspace: { title: "Mapa de l'Espai de Treball Atlas", repositories: "repositoris", languages: "llenguatges", nodes: "nodes" },
     plan: { title: "Pla d'Implementació", summary: "Resum", rootCause: "Causa Arrel", affectedFiles: "Fitxers Afectats", noSpecificTests: "No hi ha proves específiques planificades.", verification: "Verificació", file: "Fitxer", action: "Acció", risk: "Risc", reason: "Motiu", test: "Prova", type: "Tipus", description: "Descripció" },
-    progress: ["Ticket", "Recerca", "Planificació", "Implementació", "Revisió", "Revisió/Correcció", "Lliurament"],
+    progress: ["Ticket", "Intenció", "Recerca", "Planificació", "Implementació", "Revisió", "Revisió/Correcció", "Lliurament"],
+    intent: { title: "Intenció, en breu", problem: "Problema", outcome: "Resultat", signals: "Senyals d'acceptació", constraints: "Restriccions", next: "Següent pas", nextDetail: "Confirma aquesta intenció abans d'explorar codi.", proposedTitle: "Esborrany d'intenció (revisar abans d'explorar)", sweeps: "Barrides executades", assumptions: "Supòsits inferits", unresolved: "Buits pendents", suggestedDefault: "Valor per defecte suggerit", sources: "Fonts per camp", confirmProposed: "Confirma l'esborrany amb mr_flow_intent o refina amb mr_sdd_submit kind=intent.", needsInputTitle: "Intenció incompleta — aclariment excepcional" },
     flow: { title: "Estat del Flux", progress: "Progrés", estimatedCost: "Cost estimat per OpenCode", tokens: "tokens entrada/sortida/raonament", cache: "memòria cau", sessions: "sessions", workspace: "Espai de treball", started: "Iniciat", difficulty: "Dificultat", riskLane: "Carril de risc", laneReason: "Motiu del carril", ticket: "Ticket", titleLabel: "Títol", branch: "Branca", base: "base", plan: "Pla", contextBudget: "Context hidratat", hydrations: "hidratacions", truncated: "retallats" },
     explanation: { title: "Pla, en breu", what: "Què", why: "Per què", how: "Com", proof: "Prova", defaultWhy: "Complir els criteris d'acceptació amb el canvi segur més petit.", taskVerification: "verificació específica de cada tasca" },
     verdict: { title: "Veredicte del Dia del Judici", approved: "APROVAT", rejected: "REBUTJAT", summary: "Resum", judge: "Jutge", critical: "Troballes Crítiques", warnings: "Advertiments", suggestions: "Suggeriments", verifiedEvidence: "Evidència Verificada", severity: "Severitat", finding: "Troballa", location: "Ubicació", evidence: "Evidència", merged: "Fusionat el" },
@@ -147,7 +159,8 @@ export const MESSAGES = {
     coverage: { heading: "couverture", fresh: "à jour", reindexed: "non (réindexée)", unsupported: "non pris en charge", unresolvedImports: "imports non résolus", parseErrors: "erreurs d'analyse" },
     workspace: { title: "Carte de l'Espace de Travail Atlas", repositories: "dépôts", languages: "langages", nodes: "nœuds" },
     plan: { title: "Plan d'Implémentation", summary: "Résumé", rootCause: "Cause Racine", affectedFiles: "Fichiers Affectés", noSpecificTests: "Aucun test spécifique planifié.", verification: "Vérification", file: "Fichier", action: "Action", risk: "Risque", reason: "Raison", test: "Test", type: "Type", description: "Description" },
-    progress: ["Ticket", "Recherche", "Planification", "Implémentation", "Revue", "Revue/Correction", "Livraison"],
+    progress: ["Ticket", "Intention", "Recherche", "Planification", "Implémentation", "Revue", "Revue/Correction", "Livraison"],
+    intent: { title: "Intention, en bref", problem: "Problème", outcome: "Résultat", signals: "Signaux d'acceptation", constraints: "Contraintes", next: "Étape suivante", nextDetail: "Confirmez cette intention avant d'explorer le code.", proposedTitle: "Brouillon d'intention (à revoir avant l'exploration)", sweeps: "Balayages exécutés", assumptions: "Hypothèses inférées", unresolved: "Lacunes restantes", suggestedDefault: "Valeur par défaut suggérée", sources: "Sources par champ", confirmProposed: "Confirmez le brouillon avec mr_flow_intent ou affinez via mr_sdd_submit kind=intent.", needsInputTitle: "Intention incomplète — clarification exceptionnelle" },
     flow: { title: "État du Flux", progress: "Progression", estimatedCost: "Coût estimé par OpenCode", tokens: "tokens entrée/sortie/raisonnement", cache: "cache", sessions: "sessions", workspace: "Espace de travail", started: "Démarré", difficulty: "Difficulté", riskLane: "Niveau de risque", laneReason: "Motif du niveau", ticket: "Ticket", titleLabel: "Titre", branch: "Branche", base: "base", plan: "Plan", contextBudget: "Contexte hydraté", hydrations: "hydratations", truncated: "tronqués" },
     explanation: { title: "Plan en bref", what: "Quoi", why: "Pourquoi", how: "Comment", proof: "Preuve", defaultWhy: "Respecter les critères d'acceptation avec le plus petit changement sûr.", taskVerification: "vérification propre à chaque tâche" },
     verdict: { title: "Verdict du Jour du Jugement", approved: "APPROUVÉ", rejected: "REJETÉ", summary: "Résumé", judge: "Juge", critical: "Constats Critiques", warnings: "Avertissements", suggestions: "Suggestions", verifiedEvidence: "Preuves Vérifiées", severity: "Sévérité", finding: "Constat", location: "Emplacement", evidence: "Preuve", merged: "Fusionné le" },
@@ -272,17 +285,21 @@ function flowProgress(state: FlowState, completed: boolean, language: UserLangua
     init: 0,
     wizard: 0,
     context: 0,
-    explore: 1,
-    plan: 2,
-    implement: 3,
-    judgment: 4,
-    fix: 4,
-    finish: 5,
+    intent: 1,
+    explore: 2,
+    plan: 3,
+    implement: 4,
+    judgment: 5,
+    fix: 5,
+    finish: 6,
   };
-  const labels = [m.progress[0], m.progress[1], m.progress[2], m.progress[3], state.phase === "fix" ? m.progress[5] : m.progress[4], m.progress[6]];
+  const labels = [
+    m.progress[0], m.progress[1], m.progress[2], m.progress[3], m.progress[4],
+    state.phase === "fix" ? m.progress[6] : m.progress[5], m.progress[7],
+  ];
   return labels.map((label, index) => {
-    if (index === 4 && "difficulty" in state && !requiresJudgment(state.lane ?? state.difficulty)) return `— ${label}`;
-    if (index < rank[state.phase] || (index === 5 && completed)) return `✓ ${label}`;
+    if (index === 5 && "difficulty" in state && !requiresJudgment(state.lane ?? state.difficulty)) return `— ${label}`;
+    if (index < rank[state.phase] || (index === 6 && completed)) return `✓ ${label}`;
     if (index === rank[state.phase]) return `● ${label}`;
     return `○ ${label}`;
   }).join("  →  ");
@@ -346,6 +363,70 @@ export function renderFlowStatus(
 function compactText(value: string, max = 180): string {
   const normalized = value.replace(/\s+/gu, " ").trim();
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
+}
+
+export function renderIntentExplanation(intent: IntentBriefPayload | IntentDisplayPayload, language: UserLanguage = "es"): string {
+  const m = messagesFor(language);
+  const signals = intent.acceptanceSignals.slice(0, 3).map((signal) => `- ${signal}`).join("\n");
+  const extraSignals = Math.max(0, intent.acceptanceSignals.length - 3);
+  return [
+    `## ${m.intent.title}`,
+    `- **${m.intent.problem}**: ${intent.problem}`,
+    `- **${m.intent.outcome}**: ${intent.outcome}`,
+    `- **${m.intent.signals}**:\n${signals}${extraSignals > 0 ? `\n- … +${String(extraSignals)}` : ""}`,
+    `- **${m.intent.constraints}**: ${intent.constraints.length > 0 ? intent.constraints.join("; ") : m.common.none}`,
+    `- **${m.intent.next}**: ${m.intent.nextDetail}`,
+  ].join("\n");
+}
+
+export function renderIntentProposal(intent: IntentProposedPayload, sweepLog: readonly string[] = [], language: UserLanguage = "es"): string {
+  const m = messagesFor(language);
+  const core = renderIntentExplanation(intent, language).replace(`## ${m.intent.title}`, `## ${m.intent.proposedTitle}`);
+  const sourceLines = Object.entries(intent.resolution.fields)
+    .slice(0, 6)
+    .map(([field, meta]) => `- \`${field}\`: ${meta.source} (${meta.confidence})`)
+    .join("\n");
+  const assumptionLines = intent.assumptions.length > 0
+    ? intent.assumptions.map((assumption) => `- [${assumption.risk}] ${assumption.statement}`).join("\n")
+    : `- ${m.common.noneFeminine}`;
+  const unresolvedLines = intent.unresolved.length > 0
+    ? intent.unresolved.map((gap) => {
+      const defaultLine = gap.suggestedDefault === undefined ? "" : `\n  - ${m.intent.suggestedDefault}: ${gap.suggestedDefault}`;
+      return `- **${gap.field}** (${gap.risk}): ${gap.reason}${defaultLine}`;
+    }).join("\n")
+    : `- ${m.common.noneFeminine}`;
+  const sweepLines = sweepLog.map((line) => `- ${line}`).join("\n");
+  return [
+    core,
+    `- **${m.intent.sources}**:\n${sourceLines}`,
+    `- **${m.intent.assumptions}**:\n${assumptionLines}`,
+    `- **${m.intent.unresolved}**:\n${unresolvedLines}`,
+    sweepLines.length > 0 ? `- **${m.intent.sweeps}**:\n${sweepLines}` : "",
+    `- **${m.intent.next}**: ${m.intent.confirmProposed}`,
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+export function renderIntentNeedsInput(intent: IntentNeedsInputPayload, sweepLog: readonly string[] = [], language: UserLanguage = "es"): string {
+  const m = messagesFor(language);
+  const questions = intent.questions.map((question) => {
+    const options = question.options.length > 0
+      ? `\n  - ${question.options.map((option) => `[${option}]`).join(" | ")}`
+      : "";
+    return `- **${question.id}** (${question.risk}): ${question.question}\n  - ${question.reason}${options}`;
+  }).join("\n");
+  const sweepLines = sweepLog.map((line) => `- ${line}`).join("\n");
+  return [
+    `## ${m.intent.needsInputTitle}`,
+    questions,
+    sweepLines.length > 0 ? `- **${m.intent.sweeps}**:\n${sweepLines}` : "",
+    `- **${m.intent.next}**: Responde con mr_sdd_submit kind=intent (status=READY o PROPOSED) o vuelve a ejecutar mr_flow_intent_resolve tras aclarar.`,
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+export function renderIntentAssessment(assessment: IntentAssessmentPayload, sweepLog: readonly string[] = [], language: UserLanguage = "es"): string {
+  if (assessment.status === "NEEDS_INPUT") return renderIntentNeedsInput(assessment, sweepLog, language);
+  if (assessment.status === "PROPOSED") return renderIntentProposal(assessment, sweepLog, language);
+  return renderIntentExplanation(assessment, language);
 }
 
 export function renderPlanExplanation(plan: PlanCapsule, taskCount?: number, language: UserLanguage = "es"): string {

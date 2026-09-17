@@ -2,13 +2,13 @@ import { tool, type Plugin, type PluginInput } from "@opencode-ai/plugin";
 import { loadFlowState, clearFlowState, applyEvent } from "./core/flow-state.js";
 import { loadRegistry, detectWorkspace } from "./core/workspace.js";
 import { resolvePaths } from "./core/paths.js";
-import { buildTaskDeveloperNote, messagesFor, renderCoverageReceipt, renderFlowStatus, renderFlowUsage, renderPlanExplanation, renderVerdict, renderWorkspaceMap } from "./core/render.js";
+import { buildTaskDeveloperNote, messagesFor, renderCoverageReceipt, renderFlowStatus, renderFlowUsage, renderIntentAssessment, renderIntentExplanation, renderPlanExplanation, renderVerdict, renderWorkspaceMap } from "./core/render.js";
 import { loadModels } from "./core/config.js";
 import { buildModelCandidates, discoverAvailableModels, formatModelTarget, loadEffectiveModels, promoteAlternativeModel, refreshHarnessCatalog, resetHarnessModels, ROLES, setHarnessModelRole, setModelRole, type ModelRole } from "./core/models.js";
 import { harnessCatalogPath, loadHarnessCatalog, parseHarnessId, writeEffectiveHarnessModels } from "./core/harness-models.js";
 import { writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { implementationAgentForDifficulty, JudgeFindingsSchema, JudgeVerdictSchema, requiresJudgment, type FlowState, type FlowEvent, type PlanCapsule } from "./core/flow-schema.js";
+import { implementationAgentForDifficulty, JudgeFindingsSchema, JudgeVerdictSchema, requiresJudgment, type FlowState, type FlowEvent, type PlanCapsule, type TicketContent } from "./core/flow-schema.js";
 import { getDiffHash, getFullDiff, mergeVerdicts, validateJudgeFindings } from "./core/judgment.js";
 import { canonicalJson, compactJson, sha256 } from "./core/files.js";
 import {
@@ -49,6 +49,9 @@ import {
   markTaskStatus,
   saveSddArtifact,
   loadResearch,
+  loadIntentBrief,
+  loadIntentAssessment,
+  loadIntentCapsule,
   loadPlanningBrief,
   loadSpec,
   loadTasks,
@@ -59,6 +62,11 @@ import {
   type SddTask,
   type SddKind,
 } from "./core/sdd-schema.js";
+import {
+  IntentAssessmentPayloadSchema,
+} from "./core/intent-schema.js";
+import { validateIntentApproval } from "./core/intent-gates.js";
+import { runIntentSweeps, type IntentResolveInput } from "./core/intent-resolver.js";
 import {
   renderResearchCapsule,
   renderSpecCapsule,
@@ -216,6 +224,31 @@ export async function createMrOrchestrator(
     return result.graph;
   }
 
+  async function resolveAndPersistIntent(ticket: TicketContent, difficulty?: number, llmDraft?: IntentResolveInput["llmDraft"]): Promise<{ output: string; assessment: ReturnType<typeof runIntentSweeps>["assessment"] }> {
+    const prefetch = await loadFlowEngramPrefetch(paths, workspaceId);
+    const engramHits = prefetch?.ticketId === ticket.ref.id ? prefetch.hits : [];
+    const graph = await getOrIndexGraph();
+    const result = runIntentSweeps({
+      ticket,
+      engramHits,
+      atlasGraph: graph,
+      ...(difficulty === undefined ? {} : { difficulty }),
+      ...(llmDraft === undefined ? {} : { llmDraft }),
+    });
+    if (result.assessment.status !== "NEEDS_INPUT") {
+      await saveSddArtifact(paths, workspaceId, "intent", result.assessment);
+    }
+    const headline = result.assessment.status === "READY"
+      ? `Intent auto-ready (${result.assessment.mode}). Confirm with mr_flow_intent.`
+      : result.assessment.status === "PROPOSED"
+        ? "Intent draft proposed after sweeps S0–S4. Review sources and assumptions, then confirm."
+        : "Intent resolution blocked after sweeps S0–S4. Human clarification is exceptional — answer the suggested defaults.";
+    return {
+      assessment: result.assessment,
+      output: `${headline}\n\n${renderIntentAssessment(result.assessment, result.sweepLog, outputLanguage)}`,
+    };
+  }
+
   async function warmTicketContext(ticketId: string, title: string, description: string, extra?: string): Promise<string> {
     try {
       const prefetch = await warmFlowContext({
@@ -334,7 +367,7 @@ export async function createMrOrchestrator(
     return { ok: !violations.some((violation) => violation.severity === "block"), violations };
   }
 
-  async function writeSddMarkdown(kind: Exclude<SddKind, "brief">, ticketId: string, markdown: string): Promise<string> {
+  async function writeSddMarkdown(kind: Exclude<SddKind, "brief" | "intent">, ticketId: string, markdown: string): Promise<string> {
     const dir = workspace?.root !== undefined
       ? join(workspace.root, ".aicontext", "deliverables", "mr", "sdd")
       : join(paths.dataRoot, workspaceId, "sdd");
@@ -470,10 +503,13 @@ export async function createMrOrchestrator(
           const warmNote = "ticket" in state
             ? await warmTicketContext(state.ticket.ref.id, state.ticket.title, state.ticket.description, args.taskText)
             : "";
+          const intentNote = "ticket" in state
+            ? (await resolveAndPersistIntent(state.ticket, "difficulty" in state ? state.difficulty : undefined)).output
+            : "";
           const status = await renderStatus(state, sessionID);
           return {
             title: "Flow Started",
-            output: warmNote.length === 0 ? status : `${status}\n\n${warmNote}`,
+            output: [status, warmNote, intentNote].filter((part) => part.length > 0).join("\n\n"),
           };
         },
       }),
@@ -518,10 +554,81 @@ export async function createMrOrchestrator(
           };
           const next = await applyEvent(paths, workspaceId, event);
           const warmNote = await warmTicketContext(ticketId, title, description);
+          const intentNote = (await resolveAndPersistIntent(event.ticket, "difficulty" in next ? next.difficulty : undefined)).output;
           const status = await renderStatus(next, toolSessionID(context));
           return {
             title: "Ticket Loaded",
-            output: warmNote.length === 0 ? status : `${status}\n\n${warmNote}`,
+            output: [status, warmNote, intentNote].filter((part) => part.length > 0).join("\n\n"),
+          };
+        },
+      }),
+
+      mr_flow_intent: tool({
+        description: "Approve a PROPOSED or READY intent capsule and advance from intent grounding to code exploration",
+        args: {
+          approved: tool.schema.boolean().describe("Whether the user confirmed the grounded intent"),
+          confirmMediumAssumptions: tool.schema.boolean().optional().describe("Required on full/critical lanes when medium-risk assumptions exist"),
+        },
+        execute: async (args, context) => {
+          const state = await ensureFlowState();
+          if (state.phase !== "intent") {
+            return { title: "Flow Intent Rejected", output: `Cannot approve intent in phase ${state.phase}. Expected 'intent'.` };
+          }
+          if (!args.approved) {
+            return { title: "Flow Intent Pending", output: "Intent approval required before explore. Refine with mr_sdd_submit kind=intent, mr_flow_intent_resolve, or confirm the proposed draft." };
+          }
+          const assessment = await loadIntentAssessment(paths, workspaceId);
+          if (assessment === undefined || assessment.ticketId !== state.ticket.ref.id) {
+            return { title: "Flow Intent Rejected", output: "No intent capsule found for the active ticket. Run mr_flow_intent_resolve or submit mr_sdd_submit kind=intent first." };
+          }
+          const approval = validateIntentApproval({
+            assessment,
+            lane: effectiveLane(state),
+            approved: args.approved,
+            ...(args.confirmMediumAssumptions === undefined ? {} : { confirmMediumAssumptions: args.confirmMediumAssumptions }),
+          });
+          if (!approval.ok || approval.ready === undefined) {
+            return { title: "Flow Intent Rejected", output: approval.reason };
+          }
+          await saveSddArtifact(paths, workspaceId, "intent", approval.ready);
+          const explanation = renderIntentExplanation(approval.ready, outputLanguage);
+          const next = await applyEvent(paths, workspaceId, { type: "intent_ready" });
+          return {
+            title: "Intent Approved",
+            output: `${explanation}\n\n${await renderStatus(next, toolSessionID(context))}`,
+          };
+        },
+      }),
+
+      mr_flow_intent_resolve: tool({
+        description: "Re-run deterministic intent resolution sweeps (S0–S4) for the active ticket. Uses ticket text, Engram prefetch, and Atlas map hints. Optionally merges an mr-intent JSON draft.",
+        args: {
+          llmDraft: tool.schema.string().optional().describe("Optional JSON partial intent draft from mr-intent to merge during S3"),
+        },
+        execute: async (args, context) => {
+          const state = await ensureFlowState();
+          if (state.phase !== "intent" && state.phase !== "context") {
+            return { title: "Flow Intent Resolve Rejected", output: `Cannot resolve intent in phase ${state.phase}. Expected 'intent' or 'context'.` };
+          }
+          if (!("ticket" in state)) {
+            return { title: "Flow Intent Resolve Rejected", output: "Ticket context is required before intent resolution." };
+          }
+          let llmDraft: IntentResolveInput["llmDraft"];
+          if (args.llmDraft !== undefined) {
+            try {
+              llmDraft = JSON.parse(args.llmDraft) as IntentResolveInput["llmDraft"];
+            } catch (error: unknown) {
+              return { title: "Flow Intent Resolve Rejected", output: `Invalid llmDraft JSON: ${error instanceof Error ? error.message : String(error)}` };
+            }
+          }
+          const resolved = await resolveAndPersistIntent(
+            state.ticket,
+            "difficulty" in state ? state.difficulty : undefined,
+            llmDraft,
+          );
+          return {
+            title: resolved.assessment.status === "NEEDS_INPUT" ? "Flow Intent Needs Input" : "Flow Intent Resolved",
+            output: `${resolved.output}\n\n${await renderStatus(state, toolSessionID(context))}`,
           };
         },
       }),
@@ -1602,7 +1709,7 @@ export async function createMrOrchestrator(
       mr_sdd_submit: tool({
         description: "Submit a typed SDD/RPI capsule as compact JSON (kind: research|brief|spec|tasks). brief is the Blueprint-lite planning assessment: NEEDS_INPUT returns up to 3 risk-prioritized questions without persistence; READY persists JSON only. Other kinds render user-facing markdown BY SCRIPT. Validation failures return exact issues.",
         args: {
-          kind: tool.schema.enum(["research", "brief", "spec", "tasks"]).describe("Capsule kind: research (evidence), brief (Blueprint-lite), spec (requirements and criteria), or tasks (task graph)"),
+          kind: tool.schema.enum(["research", "intent", "brief", "spec", "tasks"]).describe("Capsule kind: research (evidence), intent (grounded request), brief (Blueprint-lite), spec (requirements and criteria), or tasks (task graph)"),
           payload: tool.schema.string().describe("JSON matching the capsule's operational schema, without prose or audit timestamps such as createdAt"),
         },
         execute: async (args, _context) => {
@@ -1623,6 +1730,14 @@ export async function createMrOrchestrator(
           }
 
           if (kind === "research") {
+            const flow = await loadFlowState(paths, workspaceId);
+            const intent = await loadIntentBrief(paths, workspaceId);
+            if (flow !== undefined && flow.phase !== "intent" && flow.phase !== "wizard" && flow.phase !== "context") {
+              const ticketId = "ticket" in flow ? flow.ticket.ref.id : ("ticketId" in flow ? flow.ticketId : undefined);
+              if (intent === undefined || (ticketId !== undefined && intent.ticketId !== ticketId)) {
+                return { title: "SDD Research Rejected", output: "❌ No READY intent capsule found. Complete intent grounding with mr_flow_intent before research." };
+              }
+            }
             const parsed = ResearchCapsulePayloadInputSchema.safeParse(raw);
             if (!parsed.success) {
               return { title: "SDD Research Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
@@ -1661,6 +1776,29 @@ export async function createMrOrchestrator(
             return {
               title: "SDD Research Saved",
               output: `✅ research: ${migrated.evidenceRefs.length} evidence refs, ${migrated.unknowns.length} unknowns\njson: ${savedPath}\nmd: ${renderedPath}`,
+            };
+          }
+
+          if (kind === "intent") {
+            const parsed = IntentAssessmentPayloadSchema.safeParse(raw);
+            if (!parsed.success) {
+              return { title: "SDD Intent Rejected", output: `❌ schema: ${formatZodIssues(parsed.error)}` };
+            }
+            const flow = await loadFlowState(paths, workspaceId);
+            if (flow !== undefined && "ticket" in flow && flow.ticket.ref.id !== parsed.data.ticketId) {
+              return { title: "SDD Intent Rejected", output: `❌ Flow ticket '${flow.ticket.ref.id}' != intent ticket '${parsed.data.ticketId}'` };
+            }
+            if (parsed.data.status === "NEEDS_INPUT") {
+              await rm(join(paths.generatedRoot, workspaceId, "sdd", "intent.json"), { force: true });
+              return {
+                title: "SDD Intent Input Required",
+                output: compactJson(parsed.data),
+              };
+            }
+            const savedPath = await saveSddArtifact(paths, workspaceId, kind, parsed.data);
+            return {
+              title: "SDD Intent Saved",
+              output: `✅ intent: ${parsed.data.status} / ${parsed.data.mode}, ${parsed.data.acceptanceSignals.length} signals\njson: ${savedPath}\n\n${renderIntentAssessment(parsed.data, [], outputLanguage)}`,
             };
           }
 
@@ -1769,13 +1907,18 @@ export async function createMrOrchestrator(
       mr_sdd_get: tool({
         description: "Read SDD/RPI capsules as compact JSON (token-cheap). kind=brief returns the persisted READY Blueprint-lite assessment. kind=next-task returns the next actionable task with acceptance criteria pre-joined.",
         args: {
-          kind: tool.schema.enum(["research", "brief", "spec", "tasks", "next-task"]).describe("Capsule to read, or next-task for the next actionable task"),
+          kind: tool.schema.enum(["research", "intent", "brief", "spec", "tasks", "next-task"]).describe("Capsule to read, or next-task for the next actionable task"),
         },
         execute: async (args, _context) => {
           if (args.kind === "research") {
             const research = await loadResearch(paths, workspaceId);
             if (research === undefined) return { title: "SDD Research", output: "No research capsule found." };
             return { title: "SDD Research", output: canonicalSddPayload(research) };
+          }
+          if (args.kind === "intent") {
+            const intent = await loadIntentCapsule(paths, workspaceId);
+            if (intent === undefined) return { title: "SDD Intent", output: "No intent capsule found." };
+            return { title: "SDD Intent", output: canonicalSddPayload(intent) };
           }
           if (args.kind === "brief") {
             const brief = await loadPlanningBrief(paths, workspaceId);

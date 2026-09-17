@@ -141,8 +141,12 @@ Ejecuta el ciclo de vida completo de un requerimiento o ticket de forma controla
 2. **Descarga y Sincronización:**
    - Realiza un `git pull` de la rama base más reciente (`develop` o la default branch).
    - Genera la rama correspondiente siguiendo la receta de convención del workspace (ej: `feature/GH-123-slug` o `bugfix/GH-123-slug`) con una **única confirmación** del usuario.
-3. **Exploración y Planificación (SDD + RPI):**
-    - `mr-explore` mapea dependencias con Atlas y Engram.
+3. **Aterrizaje de intención (INTENT):**
+    - Tras cargar el ticket, el plugin ejecuta barridos **S0–S4** (ticket → Engram → Atlas mapa → validación) y persiste un borrador `PROPOSED` o `READY`. Ver [INTENT-RESOLUTION.md](./INTENT-RESOLUTION.md).
+    - Preguntas al humano son **excepcionales** (`NEEDS_INPUT`, máx. 2 con default sugerido). El agente `mr-intent` refina el borrador; no parte de un cuestionario en blanco.
+    - Muestra el resumen determinista una sola vez y llama `mr_flow_intent approved=true` tras confirmación explícita. En carriles `full`/`critical` con supuestos medium, pasa también `confirmMediumAssumptions=true`.
+4. **Exploración y Planificación (SDD + RPI):**
+    - `mr-explore` mapea dependencias con Atlas y reutiliza el intent aprobado + prefetch Engram.
     - `mr-plan` ejecuta primero un Blueprint-lite en JSON. Si el ticket ya está claro, continúa sin preguntar. Si existe una ambigüedad que cambia comportamiento, contrato, seguridad, alcance o aceptación, devuelve como máximo tres preguntas ordenadas por riesgo.
     - Las respuestas se convierten en un `PlanningBrief` `READY`; los supuestos solo pueden ser de riesgo bajo o medio. Este artefacto no genera Markdown.
     - Después genera `SpecCapsule` y `TaskGraph`; su Markdown visible se renderiza por script con cero tokens de autoría LLM.
@@ -216,6 +220,8 @@ Estas herramientas son invocadas internamente por los comandos y agentes, pero p
 | `mr_flow_status` | Obtiene el estado actual del flujo activo |
 | `mr_flow_start` | Inicia un nuevo flujo (dificultad, ticketId, hasFigma) |
 | `mr_flow_ticket` | Carga el contenido del ticket, precalienta Atlas y prefetch de Engram para el ticket |
+| `mr_flow_intent` | Aprueba un `IntentCapsule` PROPOSED/READY y avanza de aterrizaje a exploración |
+| `mr_flow_intent_resolve` | Re-ejecuta barridos S0–S4; opcional `llmDraft` JSON de mr-intent |
 | `mr_flow_memory_prefetch` | Refresca prefetch Engram + warm Atlas (automático tras `mr_flow_ticket`; manual solo si cambia el alcance) |
 | `mr_flow_plan` | Somete el plan de implementación para aprobación |
 | `mr_flow_implement` | Marca la implementación como completada |
@@ -238,8 +244,8 @@ Pipeline determinista de especificación y ejecución de tareas:
 
 | Tool | Propósito |
 |---|---|
-| `mr_sdd_submit` | Sube una cápsula tipada (`research`, `brief`, `spec`, `tasks`) como JSON compacto. `brief=NEEDS_INPUT` devuelve 1-3 preguntas sin persistir; `brief=READY` persiste solo JSON. Las demás cápsulas renderizan Markdown por script sin coste de tokens. |
-| `mr_sdd_get` | Lee cápsulas SDD como JSON compacto. `kind=brief` lee el Blueprint-lite aprobado; `kind=next-task` devuelve la siguiente tarea accionable, criterios de aceptación y `developerNote` ultracondensada. |
+| `mr_sdd_submit` | Sube una cápsula tipada (`research`, `intent`, `brief`, `spec`, `tasks`) como JSON compacto. `intent`/`brief=NEEDS_INPUT` devuelven preguntas sin persistir; `READY` persiste solo JSON. Las demás cápsulas renderizan Markdown por script sin coste de tokens. |
+| `mr_sdd_get` | Lee cápsulas SDD como JSON compacto. `kind=intent` lee el aterrizaje aprobado; `kind=brief` lee el Blueprint-lite; `kind=next-task` devuelve la siguiente tarea accionable, criterios de aceptación y `developerNote` ultracondensada. |
 | `mr_sdd_task_status` | Marca el estado de una tarea (`pending`, `in_progress`, `done`, `blocked`). Solo marca `done` tras pasar los comandos de verificación. |
 | `mr_sdd_verify` | Registra los resultados exigidos y guarda un recibo ligado al hash actual del diff. |
 | `mr_evidence_add` / `mr_evidence_list` | Guarda slices direccionados por contenido y comparte sus referencias sin duplicar el archivo en cada prompt. |

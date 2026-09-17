@@ -104,7 +104,7 @@ test("PlanCapsuleSchema validates minimal plan", () => {
 test("canTransition allows valid transitions", () => {
   assert.equal(canTransition(baseInit, "wizard"), true);
   assert.equal(canTransition(baseWizard, "context"), true);
-  assert.equal(canTransition(baseContext, "explore"), true);
+  assert.equal(canTransition(baseContext, "intent"), true);
   assert.equal(canTransition(basePlan, "implement"), true);
   assert.equal(canTransition(basePlan, "plan"), true);
 });
@@ -120,6 +120,33 @@ test("transition from init to wizard", () => {
   const next = transition(baseInit, event);
   assert.equal(next.phase, "wizard");
   assert.equal(next.userLanguage, "en");
+});
+
+const baseIntent: FlowState = {
+  phase: "intent",
+  schemaVersion: 1,
+  workspaceId: "test-ws",
+  startedAt: new Date().toISOString(),
+  difficulty: 3,
+  ticket: baseContext.ticket,
+  branch: "feature/GH-123-test",
+  baseBranch: "develop",
+};
+
+test("transition from context to intent", () => {
+  const event: FlowEvent = {
+    type: "context_ready",
+    ticket: baseContext.ticket,
+    branch: baseContext.branch,
+    baseBranch: baseContext.baseBranch,
+  };
+  const next = transition(baseContext, event);
+  assert.equal(next.phase, "intent");
+});
+
+test("transition from intent to explore", () => {
+  const next = transition(baseIntent, { type: "intent_ready" });
+  assert.equal(next.phase, "explore");
 });
 
 test("transition from wizard to context", () => {
