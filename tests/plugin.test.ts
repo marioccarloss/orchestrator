@@ -123,6 +123,8 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
     const tools = hooks.tool;
 
     const expectedTools = [
+      "mr_work_route",
+      "mr_work_track",
       "mr_decision_evaluate",
       "mr_flow_status",
       "mr_flow_platform_status",
@@ -135,6 +137,7 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
       "mr_flow_memory_prefetch",
       "mr_flow_plan",
       "mr_flow_implement",
+      "mr_judgment_candidate",
       "mr_flow_judge",
       "mr_flow_fix",
       "mr_flow_finish",
@@ -220,6 +223,45 @@ void test("Jev decision tool stays advisory and uses bounded fixed profiles", as
     assert.equal(report.status, "accepted");
     assert.equal(report.authority, "deterministic-fsm");
     assert.equal(report.recommendations[0]?.value, "balanced");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("ODD-lite tools route and persist recoverable everyday work without starting Flow", async () => {
+  const ctx = await createPluginContext();
+  try {
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    const tools = hooks.tool!;
+    const routed = await tools["mr_work_route"]!.execute({
+      intent: "implement",
+      writeAuthorized: true,
+      observedReadFiles: 4,
+      expectedWriteFiles: 2,
+      meaningfulSteps: 2,
+      incident: false,
+    }, ctx.dummyToolContext) as { output: string };
+    const decision = JSON.parse(routed.output) as { route: string; flowSelected: boolean };
+    assert.equal(decision.route, "tracked");
+    assert.equal(decision.flowSelected, false);
+
+    const tracked = await tools["mr_work_track"]!.execute({
+      slug: "adapter-security",
+      title: "Add adapter security boundary",
+      objective: "Keep native workflows credential-safe.",
+      scope: ["clients/src/adapters.ts"],
+      tasks: [
+        { id: "W1", title: "Add contract", status: "done" },
+        { id: "W2", title: "Run tests", status: "in_progress" },
+      ],
+      evidence: [],
+      nextStep: "Run focused tests.",
+      status: "active",
+    }, ctx.dummyToolContext) as { output: string };
+    const record = JSON.parse(tracked.output) as { path: string; status: string };
+    assert.equal(record.path, join(ctx.workspaceRoot, ".mr", "odd", "tasks", "adapter-security.md"));
+    assert.match(await readFile(record.path, "utf8"), /W2: Run tests/u);
+    assert.equal(await loadFlowState(ctx.paths, ctx.profile.id), undefined);
   } finally {
     ctx.cleanup();
   }
@@ -1024,7 +1066,21 @@ void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit 
       tests: [],
     }, dummyCtx);
 
+    await writeFile(join(ctx.workspaceRoot, "src", "Widget.tsx"), `
+import { add } from "./helper";
+export function Widget() {
+  return <div data-reviewed>{add(1, 2)}</div>;
+}
+`);
     await tools["mr_flow_implement"]!.execute({ completedFiles: ["src/Widget.tsx"] }, dummyCtx);
+
+    const judgeACtx = { ...dummyCtx, agent: "mr-judge-a" };
+    const firstChunk = await tools["mr_judgment_candidate"]!.execute({ offset: 0, limit: 10 }, judgeACtx) as { output: string };
+    const chunk = JSON.parse(firstChunk.output) as { diffChunk: string; nextOffset: number; done: boolean; totalChars: number };
+    assert.equal(chunk.diffChunk.length, 10);
+    assert.equal(chunk.nextOffset, 10);
+    assert.equal(chunk.done, false);
+    assert.ok(chunk.totalChars > chunk.nextOffset);
 
     // Orchestrator or worker trying to vote as Judge A MUST throw Role Segregation Violation
     const orchestratorCtx = { ...dummyCtx, agent: "orchestrator" };
@@ -1041,7 +1097,6 @@ void test("Pillar 4 Role Segregation: orchestrator or wrong judge cannot submit 
     );
 
     // Authorized Judge A succeeds
-    const judgeACtx = { ...dummyCtx, agent: "mr-judge-a" };
     const blocked = await tools["mr_flow_judge"]!.execute({
       judge: "a",
       status: "INSUFFICIENT_EVIDENCE",

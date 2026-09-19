@@ -161,3 +161,40 @@ test("CAS SHA-256: getDiffHash produces 64-character hex digest and changes when
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("frozen Judgment candidate preserves exact review bytes and rejects persisted tampering", async () => {
+  const { freezeJudgmentCandidate, frozenJudgmentCandidatePath, getDiffHash, loadFrozenJudgmentCandidate } = await import("../src/core/judgment.js");
+  const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { runCommand } = await import("../src/core/process.js");
+
+  const dir = await mkdtemp(join(tmpdir(), "mr-frozen-candidate-"));
+  const candidateDir = join(dir, ".mr", "generated");
+  try {
+    runCommand("git", ["init", dir]);
+    runCommand("git", ["-C", dir, "config", "user.email", "audit@orchestrator.local"]);
+    runCommand("git", ["-C", dir, "config", "user.name", "Auditor"]);
+    await writeFile(join(dir, "file.txt"), "version 1\n");
+    runCommand("git", ["-C", dir, "add", "file.txt"]);
+    runCommand("git", ["-C", dir, "commit", "-m", "initial commit"]);
+
+    await writeFile(join(dir, "file.txt"), "version 2\n");
+    const frozen = await freezeJudgmentCandidate(dir, candidateDir);
+    await writeFile(join(dir, "file.txt"), "version 3\n");
+    const loaded = await loadFrozenJudgmentCandidate(candidateDir, frozen.diffHash);
+    assert.equal(loaded.diff, frozen.diff);
+    assert.notEqual(await getDiffHash(dir), frozen.diffHash, "live mutations must not change the frozen review subject");
+
+    const path = frozenJudgmentCandidatePath(candidateDir);
+    const persisted = JSON.parse(await readFile(path, "utf8")) as { diff: string };
+    persisted.diff += "tampered";
+    await writeFile(path, `${JSON.stringify(persisted)}\n`);
+    await assert.rejects(
+      loadFrozenJudgmentCandidate(candidateDir, frozen.diffHash),
+      /persisted diff bytes do not match their digest/u,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

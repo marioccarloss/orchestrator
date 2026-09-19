@@ -1,3 +1,6 @@
+import { join } from "node:path";
+import { z } from "zod";
+import { atomicWrite, canonicalJson, readJson, sha256 } from "./files.js";
 import type { JudgeFinding, JudgeVerdict, MergedVerdict } from "./flow-schema.js";
 import { runCommand } from "./process.js";
 
@@ -155,28 +158,60 @@ export function validateJudgeFindings(
   return issues;
 }
 
-import { sha256 } from "./files.js";
-
 // ─── Diff Utilities (CAS with SHA-256) ─────────────────────────────────────────
 
 export async function getDiffHash(root: string): Promise<string> {
-  // Ensure untracked files are staged as intent-to-add so they appear in diff
-  runCommand("git", ["-C", root, "add", "-N", "."]);
-  const result = runCommand("git", ["-C", root, "diff", "HEAD"]);
-  if (!result.ok) {
-    // If not in a git repo with HEAD, try unstaged diff or empty
-    const unstaged = runCommand("git", ["-C", root, "diff"]);
-    if (!unstaged.ok || unstaged.stdout.length === 0) return sha256("");
-    return sha256(unstaged.stdout);
-  }
-  return sha256(result.stdout);
+  return sha256(await getFullDiff(root));
 }
 
 export async function getFullDiff(root: string): Promise<string> {
+  // Ensure untracked files are staged as intent-to-add so they appear in diff.
   runCommand("git", ["-C", root, "add", "-N", "."]);
   const result = runCommand("git", ["-C", root, "diff", "HEAD"]);
-  if (!result.ok) return "";
-  return result.stdout;
+  if (result.ok) return result.stdout;
+  const unstaged = runCommand("git", ["-C", root, "diff"]);
+  return unstaged.ok ? unstaged.stdout : "";
+}
+
+export const FrozenJudgmentCandidateSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  diffHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  frozenAt: z.iso.datetime(),
+  diff: z.string(),
+});
+export type FrozenJudgmentCandidate = z.infer<typeof FrozenJudgmentCandidateSchema>;
+
+export function frozenJudgmentCandidatePath(directory: string): string {
+  return join(directory, "judgment-candidate.json");
+}
+
+/** Freeze the exact bytes that every judge in this round must inspect. */
+export async function freezeJudgmentCandidate(root: string, directory: string): Promise<FrozenJudgmentCandidate> {
+  const diff = await getFullDiff(root);
+  const candidate = FrozenJudgmentCandidateSchema.parse({
+    schemaVersion: 1,
+    diffHash: sha256(diff),
+    frozenAt: new Date().toISOString(),
+    diff,
+  });
+  await atomicWrite(frozenJudgmentCandidatePath(directory), canonicalJson(candidate));
+  return candidate;
+}
+
+/** Load and verify the persisted immutable review subject. */
+export async function loadFrozenJudgmentCandidate(
+  directory: string,
+  expectedHash?: string,
+): Promise<FrozenJudgmentCandidate> {
+  const candidate = await readJson(frozenJudgmentCandidatePath(directory), FrozenJudgmentCandidateSchema);
+  const actualHash = sha256(candidate.diff);
+  if (actualHash !== candidate.diffHash) {
+    throw new Error("Frozen Judgment Candidate Integrity Violation: persisted diff bytes do not match their digest.");
+  }
+  if (expectedHash !== undefined && candidate.diffHash !== expectedHash) {
+    throw new Error("Frozen Judgment Candidate Integrity Violation: candidate does not match the active judgment round.");
+  }
+  return candidate;
 }
 
 // ─── Fix Loop (Bounded Correction) ───────────────────────────────────────────

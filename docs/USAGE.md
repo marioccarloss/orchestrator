@@ -10,7 +10,8 @@ Esta guía explica cómo operar `mr-orchestrator` desde el modo normal de desarr
 - **`mrcode` (Lanzador de OpenCode):** Wrapper inteligente que detecta en qué workspace te encuentras (inspeccionando el directorio de trabajo actual y sus ancestros) y arranca `opencode` inyectando la configuración compilada adecuada.
 - **Agentes internos:**
   - `build` es el agente predeterminado para desarrollo y asistencia.
-  - `/flow` declara `agent: orchestrator`, por lo que OpenCode despacha automáticamente ese comando al coordinador primario sin pedir un cambio de modo.
+  - `/work` y `/flow` declaran `agent: orchestrator`, por lo que OpenCode los despacha automáticamente al coordinador primario sin pedir un cambio de modo.
+  - `/work` adapta el rigor cotidiano; nunca activa `/flow` de forma implícita.
 
 ---
 
@@ -84,6 +85,8 @@ La autenticación se toma del entorno (`AI_GATEWAY_API_KEY` o `VERCEL_OIDC_TOKEN
 
 Consulta [`docs/DECISION-PLANE.md`](DECISION-PLANE.md) para la configuración de OpenCode y fx, los perfiles disponibles y el modelo de autoridad.
 
+La poda literal de historiales voluminosos es independiente del Decision Plane. Consulta [`docs/CONTEXT-COMPACTION.md`](CONTEXT-COMPACTION.md) para activar el interceptor Jev, ajustar umbrales y revisar su fallback determinista.
+
 ### `mr atlas index | init | rules`
 
 ```bash
@@ -117,7 +120,7 @@ cd ~/Projects/my-workspace/apps/api
 mrcode
 ```
 
-`mrcode` detectará automáticamente el workspace registrado y lanzará la interfaz TUI de OpenCode en el agente normal `build`. Al ejecutar `/flow`, OpenCode usa automáticamente el coordinador interno.
+`mrcode` detectará automáticamente el workspace registrado y lanzará la interfaz TUI de OpenCode en el agente normal `build`. Al ejecutar `/work` o `/flow`, OpenCode usa automáticamente el coordinador interno.
 
 ---
 
@@ -125,7 +128,7 @@ mrcode
 
 | Agente / Rol | Modo | Permisos | Propósito |
 |---|---|---|---|
-| `orchestrator` | Primary interno | Control de flujo y preguntas | Coordinador de `/flow`; el comando lo selecciona automáticamente. |
+| `orchestrator` | Primary interno | Trabajo adaptativo, control de flujo y preguntas | Coordinador de `/work` y `/flow`; los comandos lo seleccionan automáticamente. |
 | `mr-explore` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Mapeo rápido de archivos, lectura de código y consultas al grafo de Atlas. |
 | `mr-plan` | Subagent | Solo lectura (`edit: deny`, `bash: deny`) | Blueprint-lite, especificación y tareas en JSON tipado combinando SDD + RPI. |
 | `mr-general` | Subagent | Edición y bash controlados | Único implementador en dificultad 1-3; modelo potente porque el flujo Lite no ejecuta juicio ni fix. |
@@ -137,6 +140,16 @@ mrcode
 ---
 
 ## 5. Comandos de Trabajo
+
+### `/work + [prompt]`
+
+Ejecuta trabajo cotidiano con ODD-lite, sin imponer el coste ceremonial de un Flow formal:
+
+- `read-only`: explicación, investigación, revisión, propuesta o ausencia de autorización de escritura;
+- `direct`: cambio pequeño, entendido y verificable de forma enfocada;
+- `tracked`: trabajo multiarchivo/multipaso o recuperación tras un incidente; mantiene `.mr/odd/tasks/<slug>.md` antes de escribir código.
+
+El router es determinista y devuelve siempre `flowSelected=false`. Si quieres el pipeline SDD/RPI completo debes invocar `/flow` explícitamente. Consulta [ODD-LITE.md](ODD-LITE.md) para umbrales, persistencia y límites de seguridad.
 
 ### `/flow` desde el modo normal:
 
@@ -170,9 +183,10 @@ Ejecuta el ciclo de vida completo de un requerimiento o ticket de forma controla
     - Carriles `full`/`critical`: `mr-sdd-apply` ejecuta cada tarea con criterios SDD estrictos.
     - Cada `next-task` incorpora una nota ultracondensada `what/why/touch/prove` para que el developer entienda la intención, el alcance y cómo se demostrará sin añadir una explicación libre del modelo.
 5. **Día del Juicio (solo carriles `full` y `critical`):**
-    - `mr-judge-a` y `mr-judge-b` evalúan el diff en paralelo.
+    - Al cerrar implementación se persiste un candidato inmutable con los bytes exactos del diff y su SHA-256.
+    - `mr-judge-a` y `mr-judge-b` recuperan ese mismo candidato mediante `mr_judgment_candidate`, siguiendo `nextOffset` hasta `done=true`, y lo evalúan en paralelo.
     - Cada hallazgo debe declarar severidad, archivo, línea, lado (`new`/`old`) y un fragmento textual exacto del diff. El plugin rechaza mecánicamente citas inexistentes o requisitos desconocidos.
-    - Los dos veredictos quedan ligados al hash CAS del mismo diff; un cambio posterior invalida el juicio y los veredictos de rondas anteriores no se reutilizan.
+    - Los dos veredictos quedan ligados al hash CAS del candidato congelado; una alteración del artefacto o del diff vivo invalida el juicio y los veredictos de rondas anteriores no se reutilizan.
     - Se fusiona el veredicto y `mr-fix` aplica únicamente hallazgos críticos validados.
 6. **Compuerta de Finalización:**
    - Pregunta en la terminal: *"¿Damos por finalizada la tarea? (sí / no / otra)"*.
@@ -227,6 +241,13 @@ Abre un flujo guiado dentro de la TUI de OpenCode mediante sus preguntas interac
 
 Estas herramientas son invocadas internamente por los comandos y agentes, pero puedes llamarlas directamente desde la interfaz de OpenCode si necesitas operaciones atómicas.
 
+### Herramientas de trabajo cotidiano
+
+| Tool | Propósito |
+|---|---|
+| `mr_work_route` | Decide `read-only`, `direct` o `tracked` con umbrales deterministas; nunca inicia Flow. |
+| `mr_work_track` | Crea o sincroniza el registro Markdown recuperable de una ruta `tracked`. |
+
 ### Herramientas de Flujo (`mr_flow_*`)
 
 | Tool | Propósito |
@@ -239,6 +260,7 @@ Estas herramientas son invocadas internamente por los comandos y agentes, pero p
 | `mr_flow_memory_prefetch` | Refresca prefetch Engram + warm Atlas (automático tras `mr_flow_ticket`; manual solo si cambia el alcance) |
 | `mr_flow_plan` | Somete el plan de implementación para aprobación |
 | `mr_flow_implement` | Marca la implementación como completada |
+| `mr_judgment_candidate` | Devuelve un fragmento acotado del diff inmutable tras verificar artefacto, hash CAS y diff vivo; se pagina con `nextOffset` hasta `done=true` |
 | `mr_flow_judge` | Somete hallazgos estructurados; verifica archivo, línea, lado, snippet, requisito y hash del diff antes de aceptar el veredicto |
 | `mr_flow_fix` | Marca las correcciones como aplicadas |
 | `mr_flow_finish` | Finaliza el flujo con commit y PR opcional; persiste resumen compacto en Engram (`flow/<ticket>`) |
@@ -279,6 +301,13 @@ Pipeline determinista de especificación y ejecución de tareas:
 - Cuando falta evidencia esencial deben detenerse con `{"status":"INSUFFICIENT_EVIDENCE","missing":[...],"nextAction":"..."}`. `mr_sdd_submit` y `mr_flow_judge` reconocen este resultado sin persistir datos inventados ni avanzar la FSM.
 - En carriles `full`/`critical`, una tarea que modifica un archivo sin evidencia previa en ResearchCapsule es un error bloqueante. En `fast`/`standard` permanece como advertencia.
 - Los agentes generados usan `temperature: 0` y `top_p: 1`. Esto reduce variabilidad, pero no promete repetibilidad absoluta entre proveedores.
+
+### Límite de seguridad transversal
+
+- OpenCode deniega lectura y edición de `.env`, claves SSH, keychains, credenciales cloud/GitHub, certificados y rutas de secretos.
+- Todos los adaptadores reciben el mismo contrato de no descubrir, copiar, imprimir ni transmitir credenciales ambientales.
+- `ssh`, `scp`, `sftp` y transferencias remotas con `rsync` requieren autorización explícita del destino y la operación.
+- Un permiso de desarrollo local no equivale a permiso de ejecución remota.
 
 ### Presupuestos por carril
 

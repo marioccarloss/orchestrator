@@ -9,27 +9,55 @@ export interface AdapterArtifact {
   readonly invocation: string;
 }
 
-type Workflow = "flow" | "blueprint" | "flow-models";
+type Workflow = "work" | "flow" | "blueprint" | "flow-models";
 
 const descriptions: Record<Workflow, string> = {
+  work: "Route everyday repository work adaptively without starting a formal Flow",
   flow: "Start or continue the deterministic mr-orchestrator delivery workflow",
   blueprint: "Develop a product idea or analyze and dispatch a GitHub ticket with mr-orchestrator",
   "flow-models": "Inspect and change mr-orchestrator role model assignments with explicit confirmation",
 };
 
 const grounding = `Grounding contract (mandatory): use only supplied tickets, typed capsules, tool results, specifications, and inspected source/diffs. Never invent files, behavior, requirements, or command results. When essential evidence is missing, stop with {"status":"INSUFFICIENT_EVIDENCE","missing":["<specific missing evidence>"],"nextAction":"<smallest action that can obtain it>"}.`;
+const security = `Security boundary (mandatory): never read, edit, copy, print, summarize, or transmit credential material from .env files, SSH keys, keychains, cloud credentials, provider auth files, certificates, or secrets directories. Do not discover or reuse ambient credentials or sessions. Remote execution or transfer requires explicit authorization naming the destination and operation; local development access is not remote authorization.`;
 
 function workflowBody(workflow: Workflow, input: string, harness: HarnessId, runnerCommand: readonly string[]): string {
   const server = harness === "antigravity" || harness === "agy" ? `mr-orchestrator-${harness}` : "mr-orchestrator";
-  const binding = `Use only the \`${server}\` MCP server for mr-orchestrator tools. First call \`mr_bind_workspace\` with exactly one registered workspaceId or workspacePath. Use the current project root only when it is registered; if binding fails, ask the user which registered workspace to use. Then call \`mr_models\` with action=validate and harness=${harness}; stop before role dispatch if validation fails.`;
+  const binding = `Use only the \`${server}\` MCP server for mr-orchestrator tools. Before calling \`mr_bind_workspace\`, determine the host's current working directory from runtime context or by running \`pwd\`, then run \`mr workspace list\` and choose the registered workspace whose root is the longest path prefix of that directory. Call \`mr_bind_workspace\` with exactly one argument: \`workspaceId\` for that match, or \`workspacePath\` equal to its exact registered root. Never call it with empty arguments or both fields. If no registered workspace contains the current directory, ask the user to choose one and do not call the bind tool until they answer. Then call \`mr_models\` with action=validate and harness=${harness}; stop before role dispatch if validation fails.`;
   const decisionPlane = "When deterministic evidence leaves material ambiguity, call `mr_decision_evaluate` with one bounded profile and compact evidence. Jev is shadow-only: its probability can recommend but never override the FSM, gates, explicit denies, or human confirmation.";
   const runner = runnerCommand.map((part) => JSON.stringify(part)).join(" ");
   const usesRunner = harness === "codex" || harness === "cursor" || harness === "claude" || harness === "agy" || harness === "fx";
   const roleDispatch = usesRunner
     ? `${harness} application contract: this host is per-invocation. Execute every isolated role pass through \`${runner} run-role ${harness} <role> -- <bounded role prompt>\`. That owned runner resolves and validates the current source configuration, then launches the host CLI with the role's native model and variant; never execute a role pass with the parent session model.`
     : "";
+  if (workflow === "work") {
+    return `${grounding}
+
+${security}
+
+You are executing mr-orchestrator ODD-lite everyday work.
+
+${binding}
+
+1. Establish authorization first. Explanation, investigation, review, and proposal-only requests remain read-only.
+2. Explore only enough to understand the bounded request, then call \`mr_work_route\` with observed file counts and honest expected scope.
+3. Follow the returned route exactly:
+   - read-only: do not mutate files, repository state, external services, or configuration;
+   - direct: make the small understood change and run focused verification;
+   - tracked: call \`mr_work_track\` before the first source write, keep its tasks/evidence/nextStep synchronized after material progress, and mark it completed only after observed verification.
+4. Never start /flow automatically because work is large, risky, or uncertain. Formal Flow starts only when the user explicitly invokes or accepts it.
+5. Preserve unrelated changes and named scope boundaries. Findings do not authorize scope expansion.
+6. After a git/worktree/cwd incident, confusing command, or environment workaround, route again with incident=true and obtain fresh review evidence before completion.
+7. Report failed, blocked, and unobserved checks honestly. Never claim success from inference.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+${input}`;
+  }
   if (workflow === "flow") {
     return `${grounding}
+
+${security}
 
 You are executing the mr-orchestrator /flow workflow.
 
@@ -45,7 +73,7 @@ ${decisionPlane}
    - explore: reuse approved intent and prefetched Engram memory from \`mr_context_hydrate\` before any new mem_search. Gather file:line evidence with \`mr_atlas_query\` / \`mr_atlas_skeleton\` and submit a valid ResearchCapsule with \`mr_sdd_submit(kind: "research")\`.
    - plan: first run Blueprint-lite with \`mr_sdd_submit(kind: "brief")\`. Clear tickets submit READY immediately. Only material ambiguity may return NEEDS_INPUT with at most 3 risk-prioritized questions; ask once, pass answers back to planning, and persist READY. Then submit SpecCapsule and TaskGraph with kinds spec and tasks. Verify acyclic DAG, full Rn -> Tn coverage, and research evidence for every modified file in Full flows. Call \`mr_flow_plan\` with the consolidated files. Show its deterministic "Plan, en breve" once without paraphrasing it.
    - implement: repeatedly call \`mr_sdd_get(kind: "next-task")\` for the next task ("pase gol"). Show its ultra-compact developerNote (what/why/touch/prove) once without expanding it. Respect its required implementer: Fibonacci 1-3 uses only general; 5+ uses only sdd-apply. Implement within declared task files, run its verification commands, mark it done with \`mr_sdd_task_status\`, then call \`mr_flow_implement\` when no actionable task remains.
-   - judgment: for difficulty >= 5, perform two independent blind adversarial reviews in parallel and submit both through \`mr_flow_judge\`. Each finding must provide severity, claim, file, line, side=new|old, source=diff, and an exact evidence snippet; unsupported citations are rejected mechanically.
+   - judgment: for difficulty >= 5, perform two independent blind adversarial reviews in parallel. Each judge retrieves the same integrity-checked frozen diff with \`mr_judgment_candidate\`, starting at offset=0 and following nextOffset until done=true, then submits through \`mr_flow_judge\`. Each finding must provide severity, claim, file, line, side=new|old, source=diff, and an exact evidence snippet; unsupported citations are rejected mechanically.
    - fix: address validated critical findings and call \`mr_flow_fix\`. Bounded loop of max 3 attempts.
    - gate: execute the authoritative test/verification command (e.g. \`npm run verify\` in code/ for frontend or \`mvn clean verify\` for backend). Fail-closed: exit code 0 required before any commit/push/PR.
    - finish: call \`mr_flow_finish\` only after the user confirms the closing action via interactive prompt. The plugin saves a compact delivery summary to Engram automatically.
@@ -56,7 +84,7 @@ ${decisionPlane}
     - sdd-apply role: specialized implementer for Fibonacci 5+; satisfy every acceptance criterion and run strict verification;
    - judge-a role: independent adversarial review as Hardened Security & Contract Auditor; penalize ambiguous types, leaks, concurrency bugs, and side effects outside the diff;
    - judge-b role: independent adversarial review as QA & Regression Specialist; penalize missing tests, edge cases, backwards compatibility, and Gherkin non-compliance;
-   - Both judges receive ONLY CAS diff (git diff HEAD) and ticket/spec in isolated blind context. Strict consensus: approval requires both approve; any critical issue rejects and triggers fix role.
+   - Both judges receive ONLY the same frozen CAS candidate and ticket/spec in isolated blind context. Strict consensus: approval requires both approve; any critical issue rejects and triggers fix role.
    - fix role: apply only validated critical findings, with a maximum of 3 attempts before human escalation.
 5. Treat tool validation errors as authoritative, correct the payload, and retry. Never skip or invent state transitions or provider cost. Flow status is the authoritative progress/spend display. Never generate raw prose markdown for SDD capsules; payloads must validate against Zod schemas. Ask for explicit confirmation before destructive mutations, commits, pull requests, aborts, or closing actions.
 
@@ -66,6 +94,8 @@ ${input}`;
   }
 
   if (workflow === "blueprint") return `${grounding}
+
+${security}
 
 You are executing the mr-orchestrator /blueprint workflow.
 
@@ -90,6 +120,8 @@ ${binding}
 ${input}`;
 
   return `${grounding}
+
+${security}
 
 You are executing the mr-orchestrator /flow-models workflow.
 
@@ -138,7 +170,7 @@ function geminiCommand(workflow: Workflow, harness: HarnessId, runnerCommand: re
 }
 
 function workflows<T>(factory: (workflow: Workflow) => T): T[] {
-  return [factory("flow"), factory("blueprint"), factory("flow-models")];
+  return [factory("work"), factory("flow"), factory("blueprint"), factory("flow-models")];
 }
 
 export function adapterArtifacts(targets: InstallTarget[], home: string, runnerCommand: readonly string[] = ["mr-clients"]): AdapterArtifact[] {
@@ -157,7 +189,7 @@ export function adapterArtifacts(targets: InstallTarget[], home: string, runnerC
     artifacts.push(...workflows((workflow) => ({
       owner: "cursor" as const,
       path: join(home, ".cursor", "skills", workflow, "SKILL.md"),
-      content: skill(workflow, `/${workflow}`, "cursor", runnerCommand, true),
+      content: skill(workflow, `/${workflow}`, "cursor", runnerCommand, workflow !== "work"),
       invocation: `/${workflow}`,
     })));
   }
@@ -189,7 +221,7 @@ export function adapterArtifacts(targets: InstallTarget[], home: string, runnerC
     artifacts.push(...workflows((workflow) => ({
       owner: "fx" as const,
       path: join(home, ".fx", "skills", workflow, "SKILL.md"),
-      content: skill(workflow, `$${workflow}`, "fx", runnerCommand, true),
+      content: skill(workflow, `$${workflow}`, "fx", runnerCommand, workflow !== "work"),
       invocation: `$${workflow}`,
     })));
   }

@@ -39,6 +39,7 @@ void test("generated opencode config keeps normal development as default and exp
   const config = buildOpenCodeConfig(profile, models, "/generated") as {
     default_agent: string;
     disabled_providers?: string[];
+    permission?: Record<string, string | Record<string, string>>;
     command: Record<string, { description?: string; agent?: string; template?: string }>;
     agent: Record<string, { mode: string; variant?: string; temperature?: number; top_p?: number; permission?: Record<string, string | Record<string, string>> }>;
   };
@@ -46,12 +47,17 @@ void test("generated opencode config keeps normal development as default and exp
   assert.ok(orchestrator);
   assert.equal(config.default_agent, "build");
   assert.deepEqual(config.disabled_providers, ["openrouter"]);
+  const globalRead = config.permission?.["read"] as Record<string, string>;
+  const globalBash = config.permission?.["bash"] as Record<string, string>;
+  assert.equal(globalRead["**/.env*"], "deny", "built-in build must inherit sensitive-path guards");
+  assert.equal(globalBash["ssh *"], "ask", "built-in build must ask before remote execution");
   assert.equal(orchestrator.mode, "primary");
   assert.equal(orchestrator.variant, "high");
   assert.equal(orchestrator.temperature, 0);
   assert.equal(orchestrator.top_p, 1);
   assert.equal(orchestrator.permission?.["*"], "allow");
   assert.equal(Object.keys(config.agent).length, 12);
+  assert.equal(config.command["work"]?.agent, "orchestrator", "/work must use adaptive everyday routing");
   assert.equal(config.command["flow"]?.agent, "orchestrator", "/flow must dispatch internally without a manual mode switch");
 
   const subagents = [
@@ -90,14 +96,22 @@ void test("orchestrator has full autonomy except push and ticket commenting", ()
   assert.equal(bash["git push*"], "ask");
   assert.equal(bash["gh pr comment*"], "ask");
   assert.equal(bash["gh issue comment*"], "ask");
+  assert.equal(bash["ssh *"], "ask");
+  assert.equal(bash["*~/.ssh/*"], "deny");
+
+  const read = permission["read"] as Record<string, string>;
+  const edit = permission["edit"] as Record<string, string>;
+  assert.equal(read["**/.env*"], "deny");
+  assert.equal(edit["~/.ssh/**/*"], "deny");
 });
 
-void test("generated opencode config registers all 7 commands with correct agent assignments", () => {
+void test("generated opencode config registers all 8 commands with correct agent assignments", () => {
   const config = buildOpenCodeConfig(profile, models, "/generated") as {
     command: Record<string, { description?: string; agent?: string; template?: string }>;
   };
 
   const expectedCommands: Record<string, string> = {
+    "work": "orchestrator",
     "flow": "orchestrator",
     "blueprint": "bp-architect",
     "atlas": "build",
@@ -182,6 +196,10 @@ void test("flow agent prompts are defined and invariant across model assignments
     assert.ok(agents[name]?.prompt?.includes("exactly the minified JSON"), `${name} must not add prose to its receipt`);
   }
   assert.ok(commandDefinitions(models)["flow"]?.template.includes("developerNote"));
+  assert.ok(commandDefinitions(models)["work"]?.template.includes("mr_work_route"));
+  assert.ok(commandDefinitions(models)["work"]?.template.includes("Do not start /flow unless the user explicitly asks"));
+  assert.ok(agents["mr-judge-a"]?.prompt?.includes("mr_judgment_candidate"));
+  assert.ok(agents["mr-judge-b"]?.prompt?.includes("mr_judgment_candidate"));
   assert.ok(agents["mr-judge-a"]?.prompt?.includes("Controlled verdict examples"));
   assert.ok(agents["mr-judge-b"]?.prompt?.includes("Controlled verdict examples"));
   assert.ok(agents["bp-extractor"]?.prompt?.includes("mr_atlas_profile"));

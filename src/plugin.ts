@@ -9,7 +9,7 @@ import { harnessCatalogPath, loadHarnessCatalog, parseHarnessId, writeEffectiveH
 import { writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { implementationAgentForDifficulty, JudgeFindingsSchema, JudgeVerdictSchema, requiresJudgment, type FlowState, type FlowEvent, type PlanCapsule, type TicketContent } from "./core/flow-schema.js";
-import { getDiffHash, getFullDiff, mergeVerdicts, validateJudgeFindings } from "./core/judgment.js";
+import { freezeJudgmentCandidate, getDiffHash, loadFrozenJudgmentCandidate, mergeVerdicts, validateJudgeFindings } from "./core/judgment.js";
 import { canonicalJson, compactJson, sha256 } from "./core/files.js";
 import {
   AtlasIndexer,
@@ -139,6 +139,9 @@ import {
   type DecisionState,
 } from "./core/decision.js";
 import { JevDecisionEngine } from "./adapters/decision/jev.js";
+import { JevCompactor, estimateContextTokens, loadJevCompactorConfig } from "./core/jev-compactor.js";
+import { SECURITY_BOUNDARY_CONTRACT } from "./core/security-policy.js";
+import { classifyWork, saveWorkDocument, WORK_ROUTING_CONTRACT } from "./core/work-routing.js";
 
 interface PluginMessages {
   readonly noActiveFlow: string;
@@ -180,6 +183,16 @@ export async function createMrOrchestrator(
     decisionConfigError = error instanceof Error ? error.message : String(error);
   }
   const decisionEngine = decisionEngineOverride ?? new JevDecisionEngine(decisionConfig.model);
+  let contextCompactor: JevCompactor;
+  try {
+    contextCompactor = new JevCompactor(loadJevCompactorConfig());
+  } catch (error: unknown) {
+    console.warn(
+      `[mr-orchestrator] Context compaction disabled because its configuration is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    contextCompactor = new JevCompactor({ enabled: false });
+  }
+  const sessionContextLimits = new Map<string, number>();
   let outputLanguage = normalizeUserLanguage(persistedFlow?.userLanguage);
   const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string; readonly agent: string }>();
   const atlasFreshness = new WeakMap<AtlasGraph, boolean>();
@@ -677,12 +690,48 @@ export async function createMrOrchestrator(
         );
       }
     },
+    "experimental.chat.system.transform": async (_input, output) => {
+      output.system.push(`${WORK_ROUTING_CONTRACT}\n\n${SECURITY_BOUNDARY_CONTRACT}`);
+    },
+    "experimental.chat.messages.transform": async (_input, output) => {
+      const firstMessage = output.messages[0];
+      if (firstMessage === undefined) return;
+      const sessionID = firstMessage.info.sessionID;
+      const contextWindowTokens = sessionContextLimits.get(sessionID) ?? contextCompactor.config.contextWindowTokens;
+      const tokenCount = estimateContextTokens(output.messages);
+      const compactionContext = {
+        messages: output.messages,
+        tokenCount,
+        contextWindowTokens,
+      };
+      if (!contextCompactor.shouldCompact(compactionContext)) return;
+      try {
+        const flow = await loadFlowState(paths, workspaceId);
+        const compacted = await contextCompactor.compact({
+          ...compactionContext,
+          state: {
+            flowStatus: flow === undefined ? "inactive" : `${flow.phase}:${flowTicketId(flow)}`,
+          },
+        });
+        if ((compacted.lastCompaction?.droppedChunks ?? 0) > 0) {
+          output.messages.splice(0, output.messages.length, ...compacted.messages);
+        }
+      } catch (error: unknown) {
+        console.warn(
+          `[mr-orchestrator] Context compaction skipped: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    },
     "command.execute.before": async (input, _output) => {
       if (input.command !== "flow") return;
       const state = await loadFlowState(paths, workspaceId);
       if (state !== undefined) await ensureFlowUsage(state, input.sessionID);
     },
     "chat.params": async (input, _output) => {
+      const contextLimit = input.model.limit?.context;
+      if (typeof contextLimit === "number" && Number.isFinite(contextLimit) && contextLimit > 0) {
+        sessionContextLimits.set(input.sessionID, contextLimit);
+      }
       const role = resolveModelRole(input.agent);
       if (role === undefined) return;
       sessionModels.set(input.sessionID, {
@@ -692,6 +741,44 @@ export async function createMrOrchestrator(
       });
     },
     tool: {
+      mr_work_route: tool({
+        description: "Deterministically choose read-only, direct, or recoverable tracked execution for everyday work; never starts /flow",
+        args: {
+          intent: tool.schema.enum(["explain", "investigate", "propose", "implement"]),
+          writeAuthorized: tool.schema.boolean().describe("True only when the user explicitly asked for repository changes"),
+          observedReadFiles: tool.schema.number().int().min(0).describe("Distinct files inspected before routing"),
+          expectedWriteFiles: tool.schema.number().int().min(0).describe("Files currently expected to change"),
+          meaningfulSteps: tool.schema.number().int().min(0).describe("Independent implementation and verification steps expected"),
+          incident: tool.schema.boolean().optional().describe("True after a worktree, cwd, command, or environment incident"),
+        },
+        execute: async (args) => ({
+          title: "Everyday Work Route",
+          output: compactJson(classifyWork({ ...args, incident: args.incident ?? false })),
+        }),
+      }),
+
+      mr_work_track: tool({
+        description: "Create or synchronize the resumable Markdown task record required by an ODD-lite tracked route",
+        args: {
+          slug: tool.schema.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
+          title: tool.schema.string().min(1).max(200),
+          objective: tool.schema.string().min(1).max(1_000),
+          scope: tool.schema.array(tool.schema.string().min(1).max(300)).max(20),
+          tasks: tool.schema.array(tool.schema.object({
+            id: tool.schema.string().regex(/^W\d+$/u),
+            title: tool.schema.string().min(1).max(200),
+            status: tool.schema.enum(["pending", "in_progress", "done", "blocked"]),
+          })).min(2).max(30),
+          evidence: tool.schema.array(tool.schema.string().min(1).max(500)).max(30),
+          nextStep: tool.schema.string().min(1).max(500),
+          status: tool.schema.enum(["active", "blocked", "completed"]),
+        },
+        execute: async (args) => {
+          const path = await saveWorkDocument(workspaceRoot, args);
+          return { title: "Tracked Work Synchronized", output: compactJson({ path, status: args.status }) };
+        },
+      }),
+
       mr_decision_evaluate: tool({
         description: "Evaluate compact evidence with the advisory Jev decision plane; deterministic FSM rules remain authoritative",
         args: {
@@ -1133,9 +1220,12 @@ export async function createMrOrchestrator(
           }
 
           const completedFiles = args.completedFiles ?? [];
-          const diffHash = requiresJudgment(state.lane ?? state.difficulty) ? await getDiffHash(workspaceRoot) : undefined;
-          if (diffHash !== undefined) {
-            const verdictDir = join(paths.generatedRoot, workspaceId);
+          const verdictDir = join(paths.generatedRoot, workspaceId);
+          const candidate = requiresJudgment(state.lane ?? state.difficulty)
+            ? await freezeJudgmentCandidate(workspaceRoot, verdictDir)
+            : undefined;
+          const diffHash = candidate?.diffHash;
+          if (candidate !== undefined) {
             await Promise.all([
               rm(join(verdictDir, "verdict-a.json"), { force: true }),
               rm(join(verdictDir, "verdict-b.json"), { force: true }),
@@ -1152,6 +1242,52 @@ export async function createMrOrchestrator(
             return { title: "Judgment Required", output: `${PLUGIN_MESSAGES[outputLanguage].implementationJudgment}${gateWarnings}\n\n${await renderStatus(next, toolSessionID(context), false, toolAgent(context))}` };
           }
           return { title: "Implementation Complete", output: `${PLUGIN_MESSAGES[outputLanguage].implementationFast}\n\n${await renderStatus(next, toolSessionID(context), false, toolAgent(context))}` };
+        },
+      }),
+
+      mr_judgment_candidate: tool({
+        description: "Retrieve one bounded chunk of the integrity-checked immutable diff frozen for the active Judgment round",
+        args: {
+          offset: tool.schema.number().int().min(0).optional().describe("Character offset; start at 0 and continue with nextOffset"),
+          limit: tool.schema.number().int().min(1).max(12_000).optional().describe("Maximum characters to return; defaults to 12000"),
+        },
+        execute: async (args, context) => {
+          const state = await ensureFlowState();
+          if (state.phase !== "judgment") {
+            throw new Error(`Fail-Closed Error: Cannot read a Judgment candidate in phase ${state.phase}.`);
+          }
+          if (state.diffHash === "legacy-unbound") {
+            throw new Error("Legacy judgment state has no bound candidate. Abort and restart the Full flow before judging.");
+          }
+          const caller = toolAgent(context);
+          const allowed = new Set(["orchestrator", "mr-judge-a", "mr-judge-b", "test-runner"]);
+          if (caller !== undefined && !allowed.has(caller)) {
+            throw new Error(`Role Segregation Violation: Caller '${caller}' cannot retrieve the frozen Judgment candidate.`);
+          }
+          const candidate = await loadFrozenJudgmentCandidate(join(paths.generatedRoot, workspaceId), state.diffHash);
+          const liveHash = await getDiffHash(workspaceRoot);
+          if (liveHash !== candidate.diffHash) {
+            throw new Error("CAS Integrity Violation: Code changed after the Judgment candidate was frozen. Re-run implementation verification.");
+          }
+          const offset = args.offset ?? 0;
+          const limit = args.limit ?? 12_000;
+          if (offset > candidate.diff.length) {
+            throw new Error(`Frozen Judgment Candidate Range Violation: offset ${String(offset)} exceeds diff length ${String(candidate.diff.length)}.`);
+          }
+          const nextOffset = Math.min(offset + limit, candidate.diff.length);
+          return {
+            title: "Frozen Judgment Candidate",
+            output: compactJson({
+              schemaVersion: candidate.schemaVersion,
+              diffHash: candidate.diffHash,
+              frozenAt: candidate.frozenAt,
+              totalChars: candidate.diff.length,
+              offset,
+              nextOffset,
+              done: nextOffset === candidate.diff.length,
+              diffChunk: candidate.diff.slice(offset, nextOffset),
+            }),
+          };
         },
       }),
 
@@ -1220,7 +1356,8 @@ export async function createMrOrchestrator(
           if (diffHash !== state.diffHash) {
             throw new Error("CAS Integrity Violation: Code changed after judgment began. Re-run implementation verification before judging.");
           }
-          const diff = await getFullDiff(workspaceRoot);
+          const candidate = await loadFrozenJudgmentCandidate(join(paths.generatedRoot, workspaceId), state.diffHash);
+          const diff = candidate.diff;
           const spec = await loadSpec(paths, workspaceId);
           const requirementIds = spec === undefined
             ? undefined
@@ -1241,7 +1378,7 @@ export async function createMrOrchestrator(
             judge: args.judge,
             status: "SUPPORTED",
             approved: args.approved,
-            diffHash,
+            diffHash: candidate.diffHash,
             findings: parsedFindings.data,
             reviewedAt: new Date().toISOString(),
           });

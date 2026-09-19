@@ -22,8 +22,8 @@ void test("install is idempotent and uninstall preserves modified owned files", 
 
   const first = await install(paths, sourceRoot, "0.1.0");
   const second = await install(paths, sourceRoot, "0.1.0");
-  // 3 launchers + 1 loader + 1 MCP catalog + 12 agent md + 7 command md
-  assert.equal(first.changedFiles.length, 24);
+  // 3 launchers + 1 loader + 1 MCP catalog + 12 agent md + 8 command md
+  assert.equal(first.changedFiles.length, 25);
   assert.equal(second.changedFiles.length, 0);
   assert.match(await readFile(join(paths.binRoot, "mrcode"), "utf8"), /bun' '.+cli\.js' launch "\$@"/u);
   const loader = await readFile(join(paths.opencodePluginsRoot, "mr-orchestrator-loader.ts"), "utf8");
@@ -34,6 +34,8 @@ void test("install is idempotent and uninstall preserves modified owned files", 
   assert.match(orchestratorMd, /variant: high/u);
   const flowMd = await readFile(join(paths.opencodeCommandsRoot, "flow.md"), "utf8");
   assert.match(flowMd, /agent: orchestrator/u);
+  const workMd = await readFile(join(paths.opencodeCommandsRoot, "work.md"), "utf8");
+  assert.match(workMd, /mr_work_route/u);
   const catalog = await readFile(join(paths.configRoot, "recommended-mcps.json"), "utf8");
   assert.match(catalog, /figma-live/u);
   assert.match(catalog, /codebase-memory/u);

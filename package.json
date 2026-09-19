@@ -25,6 +25,7 @@
     "check": "bun run typecheck && bun run lint && bun run test"
   },
   "dependencies": {
+    "@ai-sdk/gateway": "4.0.87",
     "@clack/prompts": "1.7.0",
     "@opencode-ai/plugin": "^1.18.25",
     "ai": "^7.0.107",

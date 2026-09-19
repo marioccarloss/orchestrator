@@ -66,6 +66,7 @@ test("installs and uninstalls only owned unchanged adapters", async () => {
 
   expect(await readFile(join(sandbox, ".cursor", "skills", "flow", "SKILL.md"), "utf8")).toBe(customCursorFlow);
   expect(await readFile(join(sandbox, ".cursor", "skills", "blueprint", "SKILL.md"), "utf8")).toContain("/blueprint");
+  expect(await readFile(join(sandbox, ".cursor", "skills", "work", "SKILL.md"), "utf8")).toContain("mr_work_route");
   expect(await readFile(join(sandbox, ".claude", "commands", "flow.md"), "utf8")).toContain("mr_flow_status");
   expect(await readFile(join(sandbox, ".codex", "skills", "blueprint", "SKILL.md"), "utf8")).toContain("$blueprint");
   expect(await readFile(join(sandbox, ".codex", "skills", "flow", "SKILL.md"), "utf8")).toContain("$flow");
@@ -105,7 +106,7 @@ test("installs and uninstalls only owned unchanged adapters", async () => {
     entries: Array<{ kind?: string; path: string }>;
   };
   expect(manifest.entries.filter((entry) => entry.kind === "config")).toHaveLength(6);
-  expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(17);
+  expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(23);
 
   await runInstaller("await uninstall(false);");
 

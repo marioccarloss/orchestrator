@@ -12,8 +12,9 @@ test("creates native workflow adapters for every selected client without duplica
     "fx-cli",
   ], "/home/tester");
 
-  expect(artifacts).toHaveLength(18);
-  expect(new Set(artifacts.map((artifact) => artifact.path)).size).toBe(18);
+  expect(artifacts).toHaveLength(24);
+  expect(new Set(artifacts.map((artifact) => artifact.path)).size).toBe(24);
+  expect(artifacts.map((artifact) => artifact.invocation)).toContain("$work");
   expect(artifacts.map((artifact) => artifact.invocation)).toContain("$flow");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.cursor/skills/flow/SKILL.md");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.codex/skills/flow/SKILL.md");
@@ -34,9 +35,15 @@ test("all adapters bind a workspace and delegate state to mr-orchestrator tools"
 
   for (const artifact of artifacts) {
     expect(artifact.content).toContain("mr_bind_workspace");
+    expect(artifact.content).toContain("mr workspace list");
+    expect(artifact.content).toContain("Never call it with empty arguments or both fields");
     expect(artifact.content).toContain("action=validate");
     if (artifact.path.includes("flow-models")) {
       expect(artifact.content).toContain("mr_models");
+    } else if (artifact.path.includes("/work/") || artifact.path.endsWith("/work.md") || artifact.path.endsWith("/work.toml")) {
+      expect(artifact.content).toContain("mr_work_route");
+      expect(artifact.content).toContain("mr_work_track");
+      expect(artifact.content).toContain("Never start /flow automatically");
     } else if (artifact.path.includes("flow")) {
       expect(artifact.content).toContain("mr_flow_status");
       expect(artifact.content).toContain("mr_sdd_submit");
@@ -44,6 +51,7 @@ test("all adapters bind a workspace and delegate state to mr-orchestrator tools"
       expect(artifact.content).toContain("shadow-only");
       expect(artifact.content).toContain("developerNote");
       expect(artifact.content).toContain("authoritative progress/spend display");
+      expect(artifact.content).toContain("mr_judgment_candidate");
     } else {
       expect(artifact.content).toContain("mr_blueprint_save");
       expect(artifact.content).toContain("mr_blueprint_safety_gate");
@@ -54,10 +62,12 @@ test("all adapters bind a workspace and delegate state to mr-orchestrator tools"
 test("uses each host's native argument placeholder", () => {
   const artifacts = adapterArtifacts(["cursor-cli", "claude-code", "agy-cli"], "/home/tester");
   const cursorFlow = artifacts.find((artifact) => artifact.path === "/home/tester/.cursor/skills/flow/SKILL.md");
+  const cursorWork = artifacts.find((artifact) => artifact.path === "/home/tester/.cursor/skills/work/SKILL.md");
   const claudeFlow = artifacts.find((artifact) => artifact.path === "/home/tester/.claude/commands/flow.md");
   const agyFlow = artifacts.find((artifact) => artifact.path === "/home/tester/.gemini/commands/flow.toml");
 
   expect(cursorFlow?.content).toContain("disable-model-invocation: true");
+  expect(cursorWork?.content).not.toContain("disable-model-invocation: true");
   expect(cursorFlow?.invocation).toBe("/flow");
   expect(claudeFlow?.content).toContain("$ARGUMENTS");
   expect(agyFlow?.content).toContain("{{args}}");
@@ -100,6 +110,14 @@ test("creates an explicit model recovery workflow for every host", () => {
     expect(artifact.content).toContain("Never claim that a candidate has available quota");
     const expectedHarness = artifact.owner;
     expect(artifact.content).toContain(`harness=${expectedHarness}`);
+  }
+});
+
+test("every native workflow carries the credential and remote-execution boundary", () => {
+  const artifacts = adapterArtifacts(["codex-cli", "cursor-cli", "claude-code", "antigravity-desktop", "agy-cli", "fx-cli"], "/home/tester");
+  for (const artifact of artifacts) {
+    expect(artifact.content).toContain("never read, edit, copy, print, summarize, or transmit credential material");
+    expect(artifact.content).toContain("Remote execution or transfer requires explicit authorization");
   }
 });
 

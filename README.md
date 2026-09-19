@@ -25,9 +25,9 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
 
 3. 🚀 **[Manual de Uso y Referencia de Comandos (`docs/USAGE.md`)](docs/USAGE.md):**
    - Uso de `mr` (CLI de administración) y `mrcode` (lanzador inteligente de OpenCode).
-   - Experiencia unificada: desarrollo normal en `build` y despacho automático de `/flow` al coordinador interno.
+   - Experiencia unificada: desarrollo normal en `build` y despacho automático de `/work` o `/flow` al coordinador interno.
    - Roster completo de agentes (`orchestrator`, `mr-explore`, `mr-plan`, `mr-general`, `mr-sdd-apply`, `mr-judge-a`, `mr-judge-b`, `mr-fix`).
-   - Guía detallada de comandos: `/flow`, `/propose`, `/prompt`, `/atlas`, `/trace` y `/flow-models`.
+   - Guía detallada de comandos: `/work`, `/flow`, `/propose`, `/prompt`, `/atlas`, `/trace` y `/flow-models`.
    - Pipeline SDD/RPI con Blueprint-lite (`research → brief → spec → tasks → implement`).
    - Configuración de modelos de IA por rol.
    - Troubleshooting y preguntas frecuentes.
@@ -37,6 +37,16 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
    - Configuración nativa y reversible de fx.
    - Activación segura en modo shadow, métricas y límites de autoridad.
 
+5. ✂️ **[Context Pruning & Compaction (`docs/CONTEXT-COMPACTION.md`)](docs/CONTEXT-COMPACTION.md):**
+   - Poda verbatim por líneas y bloques con Jev.
+   - Interceptor de presupuesto, invariantes de seguridad y fallback FIFO.
+   - Variables de entorno y activación opt-in.
+
+6. 🧩 **[ODD-lite, seguridad y Judgment inmutable (`docs/ODD-LITE.md`)](docs/ODD-LITE.md):**
+   - Enrutado cotidiano `read-only`, `direct` o `tracked` sin activar Flow implícitamente.
+   - Tareas recuperables en `.mr/odd/tasks/` y límites de credenciales/ejecución remota.
+   - Diff congelado y verificado por hash para ambos jueces.
+
 ---
 
 ## ⚡ Estado del Proyecto
@@ -44,6 +54,8 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
 **Runtime principal y programa de fiabilidad F0–F6 implementados; la aceptación cuantitativa depende de journeys reales capturados.**
 - Suite automatizada de pruebas unitarias y de integración en Bun
 - Plugin nativo de OpenCode con despacho por agente y herramientas FSM fail-closed
+- ODD-lite para trabajo cotidiano: `/work` adapta el rigor sin convertir cada cambio en un Flow formal
+- Guardas transversales contra lectura de credenciales y ejecución/transferencia remota no autorizada
 - Atlas v2 incremental y honesto sobre cobertura para TypeScript/TSX, JavaScript/JSX, Java, PHP, Astro, CSS/SCSS y JSON/YAML
 - EvidenceStore compartido, bundles mínimos por rol, reglas observadas y resolución de contratos entre repositorios
 - Pipeline SDD/RPI determinista: cápsulas JSON tipadas, límites quirúrgicos, recibos de verificación y gates bloqueantes por defecto
@@ -53,7 +65,7 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
 - Progreso tipo pedido, coste/tokens estimados por Flow y explicaciones técnicas ultracondensadas
 - Skill `i-have-adhd` aplicado solo por Orchestrator y catálogo MCP gestionado (`codebase-memory`, CodeGraph, Context7, Engram, GitHub, Jira y `figma-live-mcp`)
 - Diagnóstico React `/trace`, propuestas técnicas `/propose` y generador `/prompt` con `pbcopy`
-- Sistema de juicio ciego con jueces A/B y bucle de corrección acotado
+- Sistema de juicio ciego con candidato inmutable compartido, jueces A/B y bucle de corrección acotado
 - Gestión de ciclo de vida con backup, restore, plan de update y rollback automático
 - Selector interactivo `flow-models` durante la instalación y flujo guiado dentro de OpenCode
 - Skeletons de código con `mr_atlas_skeleton` (~85-90% menos tokens que lectura completa)

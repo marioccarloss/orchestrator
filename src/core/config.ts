@@ -8,7 +8,9 @@ import { FLOW_WIZARD_STEPS } from "./flow-wizard.js";
 import { GROUNDING_CONTRACT } from "./grounding.js";
 import { nativeModelMap, resolveStoredHarnessModels, writeEffectiveHarnessModels } from "./harness-models.js";
 import type { MrPaths } from "./paths.js";
+import { REMOTE_SHELL_RULES, SECURITY_BOUNDARY_CONTRACT, SENSITIVE_PATH_RULES, SENSITIVE_SHELL_RULES } from "./security-policy.js";
 import { ModelMapSchema, type ModelAssignment, type ModelMap, type ModelTarget, type WorkspaceProfile } from "./schema.js";
+import { WORK_ROUTING_CONTRACT } from "./work-routing.js";
 
 const DEFAULT_ROLES: ModelMap["roles"] = {
   orchestrator: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" } },
@@ -131,9 +133,47 @@ interface AgentDefinition {
   readonly permission?: Record<string, PermissionValue>;
 }
 
+function guardedRules(
+  current: PermissionValue | undefined,
+  guards: Readonly<Record<string, string>>,
+): PermissionValue {
+  if (current === "deny") return current;
+  if (typeof current === "string") return { "*": current, ...guards };
+  if (current?.["*"] === "deny") return current;
+  return { ...(current ?? {}), ...guards };
+}
+
+function securedPermissions(permission: Record<string, PermissionValue> | undefined): Record<string, PermissionValue> {
+  const current = permission ?? {};
+  return {
+    ...current,
+    read: guardedRules(current["read"], SENSITIVE_PATH_RULES),
+    edit: guardedRules(current["edit"], SENSITIVE_PATH_RULES),
+    glob: guardedRules(current["glob"], SENSITIVE_PATH_RULES),
+    list: guardedRules(current["list"], SENSITIVE_PATH_RULES),
+    bash: guardedRules(current["bash"], { ...REMOTE_SHELL_RULES, ...SENSITIVE_SHELL_RULES }),
+  };
+}
+
 export function commandDefinitions(_models: ModelMap): Record<string, CommandDefinition> {
   const commands: Record<string, CommandDefinition> = {
-    flow: {
+      work: {
+        description: "Trabajo cotidiano adaptativo: solo lectura, cambio directo o tarea recuperable",
+        descriptionEn: "Adaptive everyday work: read-only, direct change, or recoverable tracked task",
+        agent: "orchestrator",
+        template: `You are executing mr-orchestrator ODD-lite everyday work.
+
+${WORK_ROUTING_CONTRACT}
+
+${SECURITY_BOUNDARY_CONTRACT}
+
+Use the request below as the desired outcome. Do not start /flow unless the user explicitly asks for it. After proportional exploration, call mr_work_route. For a tracked route, call mr_work_track before the first source write and synchronize it after material progress and at completion.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
+      },
+      flow: {
         description: "Wizard: ticket/tarea → dificultad → diseño → arranque del flujo",
         descriptionEn: "Guided wizard: ticket/task → difficulty → design → start deterministic delivery flow",
         agent: "orchestrator",
@@ -152,7 +192,7 @@ Follow these steps:
      - Fast local candidate (difficulty 1-3 with no external ticket): after research, launch exactly one \`mr-general\` session in combined brief-and-implementation mode. That session submits the READY brief, spec, tasks, and \`mr_flow_plan\`; it continues into implementation only when the returned lane is \`fast\`. If risk classification returns another lane, it stops and the normal staged roles take over. Never launch a second planning or implementation session for a confirmed fast local lane.
      - Phase 'plan' (Blueprint-lite + SDD): With subagent \`mr-plan\`, first run the Blueprint-lite assessment through \`mr_sdd_submit\` kind=brief. Clear tickets submit status=READY immediately. Only high-impact ambiguity may return status=NEEDS_INPUT with at most 3 risk-prioritized questions; ask those questions once, pass the answers back to \`mr-plan\`, and persist a READY brief. Then submit SpecCapsule kind=spec and TaskGraph kind=tasks. Guardrails reject unknown requirements, uncovered requirements and cycles — fix and resubmit. Invoke \`mr_flow_plan\` with the consolidated file list. Its deterministic localized plan-at-a-glance block is the complete developer explanation: show it once and do not paraphrase it.
     - Phase 'implement': Loop deterministically: \`mr_sdd_get\` kind=next-task returns the required implementer, bounded task, acceptance criteria and hydrated bundle. Show its compact developerNote once. Difficulty 1-3 uses \`mr-general\`; difficulty 5+ uses \`mr-sdd-apply\`. Persist real verification before marking done.
-   - Phase 'judgment' (when the risk lane requires it): Each independent judge first calls \`mr_context_hydrate\` for its own role, then submits through \`mr_flow_judge\`.
+   - Phase 'judgment' (when the risk lane requires it): Each independent judge first calls \`mr_context_hydrate\` for its own role, retrieves every chunk of the immutable review subject with \`mr_judgment_candidate\` until done=true, then submits through \`mr_flow_judge\`.
    - Phase 'fix' (if judgment failed): \`mr-fix\` first hydrates role=fix, applies only validated findings, verifies, and calls \`mr_flow_fix\`.
    - Phase 'finish': Verify final state, commit changes, optionally create PR, and invoke \`mr_flow_finish\`. The plugin persists a compact delivery summary to Engram automatically; do not duplicate that save unless the user asks for extra memory notes.
 4. Always ask and confirm state transitions with the user using the question tool before proceeding to destructive or closing actions.
@@ -327,8 +367,13 @@ export function agentDefinitions(models: ModelMap): Record<string, AgentDefiniti
       "orchestrator": {
         mode: "primary",
         ...agentModel(models.roles.orchestrator),
-        description: "Coordinates deterministic mr-orchestrator flows for the active workspace.",
-        prompt: `You are Orchestrator, the deterministic flow orchestrator for this workspace.
+        description: "Routes everyday work adaptively and coordinates deterministic mr-orchestrator flows.",
+        prompt: `You are Orchestrator, the deterministic everyday-work and flow coordinator for this workspace.
+
+Outside an explicit /flow or /blueprint, follow this protocol:
+${WORK_ROUTING_CONTRACT}
+
+${SECURITY_BOUNDARY_CONTRACT}
 
 Your role is to coordinate the /flow lifecycle:
 1. Wizard (${FLOW_WIZARD_STEPS})
@@ -337,7 +382,7 @@ Your role is to coordinate the /flow lifecycle:
 4. Explore: Reuse the prefetched Engram context and approved intent when available. Map once, persist exact slices with mr_evidence_add, then submit ResearchCapsule v2 with evidenceRefs
 5. Plan: mr-plan runs Blueprint-lite (mr_sdd_submit kind=brief); ask at most 3 high-impact questions only when it returns NEEDS_INPUT, then persist READY and submit SpecCapsule + TaskGraph before mr_flow_plan
 6. Implement: Loop mr_sdd_get kind=next-task → hydrate its task bundle → bounded edit → verification receipt → done
-7. Judgment: When required by the risk lane, hydrate judge-a and judge-b bundles before independent review
+7. Judgment: When required by the risk lane, hydrate judge-a and judge-b bundles; each judge retrieves mr_judgment_candidate from offset=0 through done=true and reviews only those immutable chunks before its independent verdict
 8. Fix: Hydrate the fix bundle and apply only validated corrections
 9. Finish: Commit, push, and optionally create PR
 
@@ -446,7 +491,7 @@ Contract:
         `You are Judge A, the independent security and contract reviewer. You never edit.
 
 Contract:
-1. First call mr_context_hydrate(role=judge-a). Review the supplied spec, diff, contracts and hydrated context; do not infer unobserved runtime behavior.
+1. First call mr_context_hydrate(role=judge-a), then mr_judgment_candidate from offset=0 and repeat with nextOffset until done=true. Review only those frozen chunks with the supplied spec, contracts, and hydrated context; do not inspect a later live diff or infer unobserved runtime behavior.
 2. Look for correctness, security, data-contract, concurrency, and scope-boundary failures.
 3. Classify findings as critical, warning, or suggestion and attach exact file/line evidence when available.
 4. Submit one strict verdict through mr_flow_judge with judge=a. Every finding MUST cite a visible diff line, identify side=new|old, and copy an exact snippet from that line. Approve only when no critical finding remains.
@@ -463,7 +508,7 @@ Controlled verdict examples:
         `You are Judge B, the independent QA and regression reviewer. You never edit.
 
 Contract:
-1. First call mr_context_hydrate(role=judge-b). Review the supplied spec, diff, tests and hydrated context; do not infer unobserved runtime behavior.
+1. First call mr_context_hydrate(role=judge-b), then mr_judgment_candidate from offset=0 and repeat with nextOffset until done=true. Review only those frozen chunks with the supplied spec, tests, and hydrated context; do not inspect a later live diff or infer unobserved runtime behavior.
 2. Look for missing tests, edge cases, backwards-compatibility breaks, acceptance-criteria gaps, and unintended side effects.
 3. Classify findings as critical, warning, or suggestion and attach exact file/line evidence when available.
 4. Submit one strict verdict through mr_flow_judge with judge=b. Every finding MUST cite a visible diff line, identify side=new|old, and copy an exact snippet from that line. Approve only when no critical finding remains.
@@ -582,7 +627,8 @@ Your role:
         ...agent,
         temperature: 0,
         top_p: 1,
-        ...(agent.prompt === undefined ? {} : { prompt: `${GROUNDING_CONTRACT}\n\n${agent.prompt}` }),
+        permission: securedPermissions(agent.permission),
+        ...(agent.prompt === undefined ? {} : { prompt: `${GROUNDING_CONTRACT}\n\n${SECURITY_BOUNDARY_CONTRACT}\n\n${agent.prompt}` }),
       },
     ]),
   );
@@ -628,6 +674,9 @@ export function buildOpenCodeConfig(
     // dispatches to the primary orchestrator, so no manual mode switch is needed.
     default_agent: "build",
     disabled_providers: ["openrouter"],
+    // Top-level rules cover OpenCode's built-in build agent. Custom roles
+    // repeat the guards so an agent-specific permission map cannot shadow them.
+    permission: securedPermissions(undefined),
     instructions: [join(profile.root, "AGENTS.md"), ...(existsSync(atlasInstructions) ? [atlasInstructions] : []), ...overlayInstructions(profile, overlay)],
     ...(Object.keys(mcp).length === 0 ? {} : { mcp }),
     plugin: plugins,

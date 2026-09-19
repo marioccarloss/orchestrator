@@ -103,6 +103,6 @@ La presencia del modelo en configuración o catálogo no prueba cuota ni una pet
 ## Límites actuales
 
 - No bloquea acciones ni sustituye el Judgment Day.
-- No poda contexto ni reescribe el routing determinista.
+- Los perfiles del Decision Plane no podan contexto. La poda vive en el módulo independiente JevCompactor y no reescribe el routing determinista.
 - No ejecuta una llamada real durante tests o instalación.
 - No replica lógica Jev en cada arnés: todos comparten el Decision Plane, salvo el reviewer nativo de fx.
