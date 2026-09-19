@@ -8,6 +8,7 @@ import {
   finalizeFlowMetrics,
   loadFlowMetrics,
   recordContextHydration,
+  recordDecisionUsage,
   recordFlowAssistantUsage,
   startFlowMetrics,
   summarizeFlowMetrics,
@@ -58,6 +59,16 @@ test("Flow metrics deduplicate message updates and include child sessions", asyn
     truncated: 2,
     taskId: "T1",
   }), true);
+  assert.equal(await recordDecisionUsage(paths, "workspace-1", {
+    profile: "routing",
+    mode: "shadow",
+    provider: "vercel-ai-gateway",
+    model: "typesafe-ai/jev",
+    status: "escalate",
+    latencyMs: 35,
+    inputTokens: 22,
+    outputTokens: 0,
+  }), true);
 
   const stored = await loadFlowMetrics(paths, "workspace-1");
   assert.ok(stored);
@@ -74,6 +85,14 @@ test("Flow metrics deduplicate message updates and include child sessions", asyn
     reasoning: 5,
     cacheRead: 70,
     cacheWrite: 3,
+  });
+  assert.deepEqual(summary.decisionPlane, {
+    calls: 1,
+    escalations: 1,
+    errors: 0,
+    inputTokens: 22,
+    outputTokens: 0,
+    latencyMs: 35,
   });
   assert.deepEqual(summary.context, {
     role: "implement",

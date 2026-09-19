@@ -8,10 +8,12 @@ import {
   mergeCodexConfig,
   mergeCursorConfig,
   mergeFxConfig,
+  mergeFxSettings,
   mergeGeminiConfig,
   mergeOpenCodeCatalogs,
   removeCodexBridge,
   removeOwnedFxBridge,
+  removeOwnedFxSettings,
   removeOwnedGeminiBridges,
   removeOwnedJsonBridge,
   removeOwnedJsonBridges,
@@ -33,7 +35,7 @@ export type InstallTarget =
   | "fx-cli";
 
 type ArtifactTarget = "codex" | "cursor" | "claude" | "antigravity" | "agy" | "fx";
-type ConfigTarget = "codex" | "cursor" | "claude" | "gemini" | "fx";
+type ConfigTarget = "codex" | "cursor" | "claude" | "gemini" | "fx" | "fx-settings";
 type LegacyConfigTarget = "antigravity" | "agy";
 type ManagedTarget = ArtifactTarget | ConfigTarget;
 
@@ -42,6 +44,7 @@ interface OwnedEntry {
   target: ManagedTarget;
   path: string;
   fingerprint: string;
+  ownedKeys?: string[];
 }
 
 interface Manifest {
@@ -64,6 +67,7 @@ function targetPath(target: ConfigTarget): string {
   if (target === "cursor") return join(home, ".cursor", "mcp.json");
   if (target === "claude") return join(home, ".claude.json");
   if (target === "fx") return join(home, ".fx", "mcp.json");
+  if (target === "fx-settings") return join(home, ".fx", "settings.json");
   return join(home, ".gemini", "config", "mcp_config.json");
 }
 
@@ -109,7 +113,7 @@ async function saveManifest(manifest: Manifest): Promise<void> {
 }
 
 interface ConfigPlan {
-  readonly target: ConfigTarget;
+  readonly target: Exclude<ConfigTarget, "fx-settings">;
   readonly bridges: Record<string, McpServerConfig>;
 }
 
@@ -127,7 +131,7 @@ function configPlans(targets: InstallTarget[]): ConfigPlan[] {
   return plans;
 }
 
-function removeManagedBridges(content: string, target: ConfigTarget | LegacyConfigTarget): string {
+function removeManagedBridges(content: string, target: Exclude<ConfigTarget, "fx-settings"> | LegacyConfigTarget): string {
   if (target === "codex") return removeCodexBridge(content);
   if (target === "fx") return removeOwnedFxBridge(content);
   if (target === "gemini") return removeOwnedGeminiBridges(content);
@@ -185,6 +189,33 @@ export async function install(targets: InstallTarget[]): Promise<string[]> {
     manifest.entries.push({ kind: "config", target, path, fingerprint: fingerprint(after) });
     messages.push(`Installed ${target} MCP configuration at ${path}.`);
   }
+  if (targets.includes("fx-cli")) {
+    const settingsPath = targetPath("fx-settings");
+    const before = await readOptional(settingsPath);
+    const previous = manifest.entries.find((entry) => entry.target === "fx-settings" && entry.path === settingsPath);
+    const ownedUnchanged = previous !== undefined && fingerprint(before) === previous.fingerprint;
+    const base = ownedUnchanged ? removeOwnedFxSettings(before, previous.ownedKeys ?? []) : before;
+    const merged = mergeFxSettings(base);
+    if (before !== merged.content) {
+      await mkdir(dirname(settingsPath), { recursive: true });
+      await writeFile(settingsPath, merged.content);
+    }
+    manifest.entries = manifest.entries.filter((entry) => entry.path !== settingsPath);
+    if (merged.ownedKeys.length > 0) {
+      manifest.entries.push({
+        kind: "config",
+        target: "fx-settings",
+        path: settingsPath,
+        fingerprint: fingerprint(merged.content),
+        ownedKeys: [...merged.ownedKeys],
+      });
+      messages.push(`Configured fx native Jev reviewer in ${settingsPath}; provider and permission mode remain user-overridable.`);
+    }
+    if (merged.preservedKeys.length > 0) {
+      messages.push(`Preserved user-managed fx settings: ${merged.preservedKeys.join(", ")}.`);
+    }
+  }
+
   const artifacts = adapterArtifacts(targets, home, [process.execPath, bridgeEntryPath()]);
   for (const owner of new Set(artifacts.map((artifact) => artifact.owner))) {
     manifest.entries = manifest.entries.filter((entry) => entry.kind !== "artifact" || entry.target !== owner);
@@ -242,7 +273,9 @@ export async function uninstall(dryRun: boolean): Promise<string[]> {
       if (!dryRun) await unlink(entry.path);
       continue;
     }
-    const after = removeManagedBridges(content, entry.target as ConfigTarget | LegacyConfigTarget);
+    const after = entry.target === "fx-settings"
+      ? removeOwnedFxSettings(content, entry.ownedKeys ?? [])
+      : removeManagedBridges(content, entry.target as Exclude<ConfigTarget, "fx-settings"> | LegacyConfigTarget);
     if (after === content) {
       remaining.push(entry);
       results.push(`Preserved ${entry.path}: its bridge entry no longer matches the owned configuration.`);

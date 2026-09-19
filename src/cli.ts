@@ -24,6 +24,7 @@ import { saveRepositoryProfiles, saveWorkspaceRules } from "./core/rules/store.j
 import { renderRepositoryAgentsMarkdown, renderRulesDiff, type AgentsLanguage } from "./core/rules/render.js";
 import { runAtlasOnboarding } from "./tui/atlas.js";
 import { atomicWrite } from "./core/files.js";
+import { hasGatewayCredentials, loadDecisionPlaneConfig, setDecisionPlaneMode } from "./core/decision.js";
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const sourceRoot = existsSync(join(sourceDirectory, "..", "package.json")) ? join(sourceDirectory, "..") : join(sourceDirectory, "..", "..");
@@ -46,6 +47,7 @@ Usage:
   mr models catalog --harness ID [--refresh]
   mr models preset <key>
   mr flow-models [--harness ID]
+  mr decision [status | shadow | off] [--model ID]
   mr atlas index
   mr atlas init [--guided] [--no-rules] [--lang en|es] [--write-repo-agents] [--yes]
   mr atlas rules [--diff] [--guided] [--lang en|es] [--write-repo-agents] [--yes]
@@ -111,6 +113,24 @@ async function chooseCapabilities(
   }
   info("Sin TTY: se reanudará la selección de capacidades guardada.");
   return loadCapabilitySelection(paths);
+}
+
+async function commandDecision(arguments_: readonly string[]): Promise<void> {
+  const action = arguments_[0] ?? "status";
+  if (!(["status", "shadow", "off"] as const).includes(action as "status" | "shadow" | "off")) {
+    throw new Error("Usage: mr decision [status | shadow | off] [--model ID]");
+  }
+  const model = option(arguments_, "--model");
+  if (arguments_.includes("--model") && model === undefined) throw new Error("--model requires an id");
+  const config = action === "status"
+    ? await loadDecisionPlaneConfig(paths)
+    : await setDecisionPlaneMode(paths, action === "shadow" ? "shadow" : "off", model);
+  heading("Jev Decision Plane");
+  info(`Mode: ${config.mode}`);
+  info(`Model: ${config.model}`);
+  info(`Authority: deterministic FSM (Jev is advisory)`);
+  if (hasGatewayCredentials()) success("Vercel AI Gateway credentials detected without reading or printing them.");
+  else warning("No AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN detected. Shadow calls will fail closed without changing FSM decisions.");
 }
 
 async function commandInstall(arguments_: readonly string[]): Promise<void> {
@@ -382,6 +402,7 @@ async function main(): Promise<void> {
     case "uninstall": await commandUninstall(arguments_); break;
     case "workspace": await commandWorkspace(arguments_); break;
     case "models": await commandModels(arguments_); break;
+    case "decision": await commandDecision(arguments_); break;
     case "flow-models": {
       const harnessValue = option(arguments_, "--harness");
       if (arguments_.includes("--harness") && harnessValue === undefined) throw new Error("--harness requires an id");

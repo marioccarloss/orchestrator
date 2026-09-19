@@ -6,6 +6,7 @@ import type { MrPaths } from "./paths.js";
 import { ContextRoleSchema, type ContextRole } from "./budgets.js";
 import { RiskLaneSchema, type RiskLane } from "./risk.js";
 import { UserLanguageSchema, type UserLanguage } from "./language.js";
+import { DecisionPlaneModeSchema, DecisionProfileSchema } from "./decision.js";
 
 const TokenUsageSchema = z.strictObject({
   input: z.number().nonnegative(),
@@ -23,6 +24,19 @@ const MessageUsageSchema = z.strictObject({
   role: z.string().min(1).optional(),
   taskId: z.string().min(1).optional(),
   tokens: TokenUsageSchema,
+});
+
+const DecisionUsageSchema = z.strictObject({
+  profile: DecisionProfileSchema,
+  mode: DecisionPlaneModeSchema,
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  status: z.enum(["accepted", "escalate", "error"]),
+  latencyMs: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  error: z.string().min(1).optional(),
+  recordedAt: z.iso.datetime(),
 });
 
 const ContextHydrationUsageSchema = z.strictObject({
@@ -44,12 +58,14 @@ export const FlowMetricsSchema = z.strictObject({
   sessionIDs: z.array(z.string().min(1)),
   messages: z.record(z.string(), MessageUsageSchema),
   hydrations: z.array(ContextHydrationUsageSchema).default([]),
+  decisions: z.array(DecisionUsageSchema).default([]),
   updatedAt: z.iso.datetime(),
   completedAt: z.iso.datetime().optional(),
 });
 
 export type FlowMetrics = z.infer<typeof FlowMetricsSchema>;
 export type ContextHydrationUsage = z.infer<typeof ContextHydrationUsageSchema>;
+export type DecisionUsage = z.infer<typeof DecisionUsageSchema>;
 
 export interface AssistantUsageUpdate {
   readonly id: string;
@@ -77,6 +93,14 @@ export interface FlowUsageSummary {
   readonly messages: number;
   readonly sessions: number;
   readonly tokens: z.infer<typeof TokenUsageSchema>;
+  readonly decisionPlane?: {
+    readonly calls: number;
+    readonly escalations: number;
+    readonly errors: number;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly latencyMs: number;
+  };
   readonly context?: {
     readonly role: ContextRole;
     readonly lane: RiskLane;
@@ -122,6 +146,7 @@ export async function startFlowMetrics(
     sessionIDs: [sessionID],
     messages: {},
     hydrations: [],
+    decisions: [],
     updatedAt: now,
   });
   await saveFlowMetrics(paths, workspaceId, metrics);
@@ -212,6 +237,23 @@ export async function recordContextHydration(
   return true;
 }
 
+export async function recordDecisionUsage(
+  paths: MrPaths,
+  workspaceId: string,
+  usage: Omit<DecisionUsage, "recordedAt">,
+): Promise<boolean> {
+  const current = await loadFlowMetrics(paths, workspaceId);
+  if (current === undefined) return false;
+  const decision = DecisionUsageSchema.parse({ ...usage, recordedAt: new Date().toISOString() });
+  const updated = FlowMetricsSchema.parse({
+    ...current,
+    decisions: [...current.decisions, decision].slice(-500),
+    updatedAt: decision.recordedAt,
+  });
+  await saveFlowMetrics(paths, workspaceId, updated);
+  return true;
+}
+
 export async function finalizeFlowMetrics(
   paths: MrPaths,
   workspaceId: string,
@@ -233,12 +275,21 @@ export async function finalizeFlowMetrics(
 export function summarizeFlowMetrics(metrics: FlowMetrics): FlowUsageSummary {
   const messages = Object.values(metrics.messages);
   const latestContext = metrics.hydrations.at(-1);
+  const decisionPlane = metrics.decisions.length === 0 ? undefined : {
+    calls: metrics.decisions.length,
+    escalations: metrics.decisions.filter((decision) => decision.status === "escalate").length,
+    errors: metrics.decisions.filter((decision) => decision.status === "error").length,
+    inputTokens: metrics.decisions.reduce((total, decision) => total + (decision.inputTokens ?? 0), 0),
+    outputTokens: metrics.decisions.reduce((total, decision) => total + (decision.outputTokens ?? 0), 0),
+    latencyMs: metrics.decisions.reduce((total, decision) => total + decision.latencyMs, 0),
+  };
   return {
     ticketId: metrics.ticketId,
     status: metrics.status,
     cost: messages.reduce((total, message) => total + message.cost, 0),
     messages: messages.length,
     sessions: metrics.sessionIDs.length,
+    ...(decisionPlane === undefined ? {} : { decisionPlane }),
     tokens: messages.reduce((total, message) => ({
       input: total.input + message.tokens.input,
       output: total.output + message.tokens.output,

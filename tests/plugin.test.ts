@@ -14,6 +14,7 @@ import { loadEffectiveModels } from "../src/core/models.js";
 import { runCommand } from "../src/core/process.js";
 import { loadFlowState, saveFlowState } from "../src/core/flow-state.js";
 import type { PluginInput, ToolContext } from "@opencode-ai/plugin";
+import { DEFAULT_DECISION_PLANE_CONFIG, saveDecisionPlaneConfig, type DecisionEngine } from "../src/core/decision.js";
 
 const sourceRoot = process.cwd();
 const FLOW_TEST_TIMEOUT = { timeout: 20_000 } as const;
@@ -122,6 +123,7 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
     const tools = hooks.tool;
 
     const expectedTools = [
+      "mr_decision_evaluate",
       "mr_flow_status",
       "mr_flow_platform_status",
       "mr_flow_wizard_begin",
@@ -184,6 +186,57 @@ void test("MrOrchestrator plugin exports all required tools with argument schema
     assert.doesNotMatch(candidatesRes.output, /^- github-copilot\/kimi-k3$/mu);
     assert.ok(Object.keys(tools["mr_propose_save"]!.args).length >= 5, "mr_propose_save must define arguments");
     assert.ok(Object.keys(tools["mr_prompt_build"]!.args).length >= 2, "mr_prompt_build must define arguments");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("Jev decision tool stays advisory and uses bounded fixed profiles", async () => {
+  const ctx = await createPluginContext();
+  try {
+    await saveDecisionPlaneConfig(ctx.paths, { ...DEFAULT_DECISION_PLANE_CONFIG, mode: "shadow" });
+    const engine: DecisionEngine = {
+      provider: "test-gateway",
+      model: "typesafe-ai/jev",
+      status: () => ({ available: true }),
+      evaluate: async (input) => {
+        assert.deepEqual(input.questions.map((question) => question.id), ["modelTier"]);
+        return {
+          provider: "test-gateway",
+          model: "typesafe-ai/jev",
+          answers: { modelTier: { type: "choice", choice: "balanced", probabilities: { cheap: 0.02, balanced: 0.96, strong: 0.02 } } },
+          usage: { inputTokens: 18, outputTokens: 0, totalTokens: 18 },
+          warnings: [],
+        };
+      },
+    };
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths, engine);
+    const evaluated = await hooks.tool!["mr_decision_evaluate"]!.execute({
+      profile: "routing",
+      state: JSON.stringify({ task: "localized change", evidence: "focused tests" }),
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    const report = JSON.parse(evaluated.output) as { status: string; authority: string; recommendations: { value: string }[] };
+    assert.equal(evaluated.title, "Decision Plane (shadow)");
+    assert.equal(report.status, "accepted");
+    assert.equal(report.authority, "deterministic-fsm");
+    assert.equal(report.recommendations[0]?.value, "balanced");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+void test("invalid Jev configuration cannot disable the deterministic plugin", async () => {
+  const ctx = await createPluginContext();
+  try {
+    await writeFile(join(ctx.paths.configRoot, "decision-plane.json"), "{invalid-json\n");
+    const hooks = await createMrOrchestrator(ctx.mockContext, ctx.paths);
+    assert.ok(hooks.tool?.["mr_flow_status"] !== undefined);
+    const evaluated = await hooks.tool["mr_decision_evaluate"]!.execute({
+      profile: "intent",
+      state: "bounded evidence",
+    }, ctx.dummyToolContext) as { title: string; output: string };
+    assert.equal(evaluated.title, "Decision Plane Unavailable");
+    assert.match(evaluated.output, /configuration is invalid/u);
   } finally {
     ctx.cleanup();
   }

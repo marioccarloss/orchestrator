@@ -90,11 +90,21 @@ test("installs and uninstalls only owned unchanged adapters", async () => {
   };
   expect(fxConfig.mcp["mr-orchestrator"]?.command?.slice(-2)).toEqual(["--harness", "fx"]);
   expect(fxConfig.mcp["mr-orchestrator"]?.environment?.["MR_HARNESS_ID"]).toBe("fx");
+  const fxSettings = JSON.parse(await readFile(join(sandbox, ".fx", "settings.json"), "utf8")) as {
+    provider?: string;
+    review_model?: string;
+    permission_mode?: string;
+  };
+  expect(fxSettings).toEqual({
+    provider: "gateway",
+    review_model: "typesafeai/jev",
+    permission_mode: "auto",
+  });
 
   const manifest = JSON.parse(await readFile(join(sandbox, "data", "mr-orchestrator-clients", "manifest.json"), "utf8")) as {
     entries: Array<{ kind?: string; path: string }>;
   };
-  expect(manifest.entries.filter((entry) => entry.kind === "config")).toHaveLength(5);
+  expect(manifest.entries.filter((entry) => entry.kind === "config")).toHaveLength(6);
   expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(17);
 
   await runInstaller("await uninstall(false);");

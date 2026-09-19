@@ -141,6 +141,54 @@ export function mergeFxConfig(content: string, servers: Record<string, McpServer
   return mergeJsonConfig(content, "mcp", "fx", servers, { "mr-orchestrator": bridge });
 }
 
+const recommendedFxSettings = {
+  provider: "gateway",
+  review_model: "typesafeai/jev",
+  permission_mode: "auto",
+} as const;
+
+export interface FxSettingsMerge {
+  readonly content: string;
+  readonly ownedKeys: readonly string[];
+  readonly preservedKeys: readonly string[];
+}
+
+export function mergeFxSettings(content: string): FxSettingsMerge {
+  let next = content.trim().length === 0 ? "{}\n" : content;
+  const ownedKeys: string[] = [];
+  const preservedKeys: string[] = [];
+  for (const [key, value] of Object.entries(recommendedFxSettings)) {
+    const root = asRecord(parse(next));
+    const current = root[key];
+    if (current !== undefined) {
+      if (current !== value) preservedKeys.push(key);
+      continue;
+    }
+    next = applyEdits(next, modify(next, [key], value, {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+    }));
+    ownedKeys.push(key);
+  }
+  return {
+    content: next.endsWith("\n") ? next : `${next}\n`,
+    ownedKeys,
+    preservedKeys,
+  };
+}
+
+export function removeOwnedFxSettings(content: string, ownedKeys: readonly string[]): string {
+  let next = content;
+  for (const key of ownedKeys) {
+    const expected = recommendedFxSettings[key as keyof typeof recommendedFxSettings];
+    const root = asRecord(parse(next));
+    if (root[key] !== expected) continue;
+    next = applyEdits(next, modify(next, [key], undefined, {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+    }));
+  }
+  return next.endsWith("\n") ? next : `${next}\n`;
+}
+
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }

@@ -121,12 +121,24 @@ import {
   finalizeFlowMetrics,
   loadFlowMetrics,
   recordContextHydration,
+  recordDecisionUsage,
   recordFlowAssistantUsage,
   startFlowMetrics,
   summarizeFlowMetrics,
 } from "./core/flow-metrics.js";
 import { detectLanguage, normalizeUserLanguage, type UserLanguage } from "./core/language.js";
 import { flowEconomyPolicy } from "./core/budgets.js";
+import {
+  DEFAULT_DECISION_PLANE_CONFIG,
+  DecisionProfileSchema,
+  evaluateDecisionProfile,
+  loadDecisionPlaneConfig,
+  type DecisionEngine,
+  type DecisionProfile,
+  type DecisionReport,
+  type DecisionState,
+} from "./core/decision.js";
+import { JevDecisionEngine } from "./adapters/decision/jev.js";
 
 interface PluginMessages {
   readonly noActiveFlow: string;
@@ -152,6 +164,7 @@ const PLUGIN_MESSAGES = {
 export async function createMrOrchestrator(
   ctx: PluginInput,
   paths = resolvePaths(),
+  decisionEngineOverride?: DecisionEngine,
 ): Promise<Awaited<ReturnType<Plugin>>> {
   const registry = await loadRegistry(paths);
   const workspace = detectWorkspace(registry, ctx.directory);
@@ -159,6 +172,14 @@ export async function createMrOrchestrator(
   const workspaceRoot = workspace?.root ?? ctx.directory;
   const activeHarness = parseHarnessId(process.env["MR_HARNESS_ID"]);
   const persistedFlow = await loadFlowState(paths, workspaceId);
+  let decisionConfig = DEFAULT_DECISION_PLANE_CONFIG;
+  let decisionConfigError: string | undefined;
+  try {
+    decisionConfig = await loadDecisionPlaneConfig(paths);
+  } catch (error: unknown) {
+    decisionConfigError = error instanceof Error ? error.message : String(error);
+  }
+  const decisionEngine = decisionEngineOverride ?? new JevDecisionEngine(decisionConfig.model);
   let outputLanguage = normalizeUserLanguage(persistedFlow?.userLanguage);
   const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string; readonly agent: string }>();
   const atlasFreshness = new WeakMap<AtlasGraph, boolean>();
@@ -236,6 +257,72 @@ export async function createMrOrchestrator(
       }
       await bindFlowSession(paths, workspaceId, sessionID, state.userLanguage);
     });
+  }
+
+  interface DecisionRun {
+    readonly report?: DecisionReport;
+    readonly error?: string;
+  }
+
+  async function recordDecisionMetric(usage: Parameters<typeof recordDecisionUsage>[2]): Promise<void> {
+    try {
+      await withUsageWriteLock(async () => recordDecisionUsage(paths, workspaceId, usage));
+    } catch {
+      // Advisory telemetry must never block the deterministic workflow.
+    }
+  }
+
+  async function runDecision(profile: DecisionProfile, state: DecisionState): Promise<DecisionRun> {
+    if (decisionConfigError !== undefined) return { error: `Decision plane configuration is invalid: ${decisionConfigError}` };
+    if (decisionConfig.mode === "off") return { error: "Decision plane is disabled; run `mr decision shadow` to enable it." };
+    const startedAt = Date.now();
+    try {
+      const report = await evaluateDecisionProfile(decisionEngine, decisionConfig, profile, state);
+      await recordDecisionMetric({
+        profile,
+        mode: decisionConfig.mode,
+        provider: report.provider,
+        model: report.model,
+        status: report.status,
+        latencyMs: Date.now() - startedAt,
+        ...(report.usage.inputTokens === undefined ? {} : { inputTokens: report.usage.inputTokens }),
+        ...(report.usage.outputTokens === undefined ? {} : { outputTokens: report.usage.outputTokens }),
+      });
+      return { report };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      await recordDecisionMetric({
+        profile,
+        mode: decisionConfig.mode,
+        provider: decisionEngine.provider,
+        model: decisionEngine.model,
+        status: "error",
+        latencyMs: Date.now() - startedAt,
+        error: message,
+      });
+      return { error: message };
+    }
+  }
+
+  function parseDecisionState(value: string): DecisionState {
+    if (value.length > 16_000) throw new Error("Decision state exceeds the 16,000 character safety limit; pass compact evidence, not raw history");
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (typeof parsed === "object" && parsed !== null) return parsed as Record<string, unknown>;
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      return value;
+    }
+    throw new Error("Decision state must be text, a JSON object, or a JSON array");
+  }
+
+  function renderDecisionShadow(report: DecisionReport): string {
+    const recommendations = report.recommendations.map((recommendation) => {
+      const probability = recommendation.probability === undefined ? "" : ` p=${recommendation.probability.toFixed(3)}`;
+      const confidence = recommendation.confidence === undefined ? "" : ` confidence=${recommendation.confidence.toFixed(3)}`;
+      return `${recommendation.id}=${String(recommendation.value)}${probability}${confidence}`;
+    }).join(", ");
+    return `Jev shadow (${report.status}; FSM authoritative): ${recommendations}`;
   }
 
   async function loadFlowModels() {
@@ -390,6 +477,14 @@ export async function createMrOrchestrator(
     if (result.assessment.status !== "NEEDS_INPUT") {
       await saveSddArtifact(paths, workspaceId, "intent", result.assessment);
     }
+    const advisory = result.assessment.status === "NEEDS_INPUT"
+      ? await runDecision("intent", {
+        ticket: { id: ticket.ref.id, title: ticket.title, description: ticket.description.slice(0, 6_000) },
+        difficulty,
+        deterministicStatus: result.assessment.status,
+        unresolved: result.assessment.questions.map((question) => ({ id: question.id, risk: question.risk, reason: question.reason })),
+      })
+      : undefined;
     const headline = result.assessment.status === "READY"
       ? `Intent auto-ready (${result.assessment.mode}). Confirm with mr_flow_intent.`
       : result.assessment.status === "PROPOSED"
@@ -397,7 +492,11 @@ export async function createMrOrchestrator(
         : "Intent resolution blocked after sweeps S0–S4. Human clarification is exceptional — answer the suggested defaults.";
     return {
       assessment: result.assessment,
-      output: `${headline}\n\n${renderIntentAssessment(result.assessment, result.sweepLog, outputLanguage)}`,
+      output: [
+        headline,
+        advisory?.report === undefined ? "" : renderDecisionShadow(advisory.report),
+        renderIntentAssessment(result.assessment, result.sweepLog, outputLanguage),
+      ].filter((part) => part.length > 0).join("\n\n"),
     };
   }
 
@@ -593,6 +692,24 @@ export async function createMrOrchestrator(
       });
     },
     tool: {
+      mr_decision_evaluate: tool({
+        description: "Evaluate compact evidence with the advisory Jev decision plane; deterministic FSM rules remain authoritative",
+        args: {
+          profile: tool.schema.enum(["intent", "context", "routing", "flow", "judgment", "permission"])
+            .describe("Bounded decision policy to apply"),
+          state: tool.schema.string()
+            .describe("Compact text or JSON evidence, limited to 16,000 characters; never pass raw conversation history or secrets"),
+        },
+        execute: async (args, _context) => {
+          const profile = DecisionProfileSchema.parse(args.profile);
+          const evaluated = await runDecision(profile, parseDecisionState(args.state));
+          if (evaluated.report === undefined) {
+            return { title: "Decision Plane Unavailable", output: evaluated.error ?? "Decision evaluation failed." };
+          }
+          return { title: "Decision Plane (shadow)", output: compactJson(evaluated.report) };
+        },
+      }),
+
       // ─── Flow Tools ────────────────────────────────────────────────────────
 
       mr_flow_status: tool({
@@ -939,6 +1056,13 @@ export async function createMrOrchestrator(
             touchedAreas: plannedPaths,
             touchedFiles: plannedPaths,
             ...(criticalAreas === undefined ? {} : { rules: { criticalAreas } }),
+          });
+          await runDecision("routing", {
+            task: { summary: plan.summary, files: plannedPaths },
+            deterministicRisk: { lane: risk.lane, reasons: risk.reasons },
+            evidence: { count: relevantRefs.length, fresh: evidenceFreshness.every((freshness) => freshness.status === "fresh") },
+            atlasImpact: impacted.size,
+            difficulty: state.difficulty,
           });
           const event: FlowEvent = { type: "plan_approved", plan, lane: risk.lane, riskReasons: [...risk.reasons] };
           const next = await applyEvent(paths, workspaceId, event);

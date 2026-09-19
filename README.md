@@ -32,6 +32,11 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
    - Configuración de modelos de IA por rol.
    - Troubleshooting y preguntas frecuentes.
 
+4. 🧭 **[Decision Plane con Jev (`docs/DECISION-PLANE.md`)](docs/DECISION-PLANE.md):**
+   - Integración compartida para OpenCode y arneses externos.
+   - Configuración nativa y reversible de fx.
+   - Activación segura en modo shadow, métricas y límites de autoridad.
+
 ---
 
 ## ⚡ Estado del Proyecto
@@ -44,6 +49,7 @@ Hemos preparado manuales detallados para cada aspecto del sistema:
 - Pipeline SDD/RPI determinista: cápsulas JSON tipadas, límites quirúrgicos, recibos de verificación y gates bloqueantes por defecto
 - Carriles `fast`, `standard`, `full` y `critical` con presupuesto de contexto por rol; `fast` local reutiliza una sola sesión
 - Salida determinista en español, inglés, portugués, catalán o francés, manteniendo inglés para contratos internos y prompts
+- Decision Plane opcional con Jev en modo shadow: aconseja sobre ambigüedad sin sustituir FSM, gates, denegaciones ni confirmación humana
 - Progreso tipo pedido, coste/tokens estimados por Flow y explicaciones técnicas ultracondensadas
 - Skill `i-have-adhd` aplicado solo por Orchestrator y catálogo MCP gestionado (`codebase-memory`, CodeGraph, Context7, Engram, GitHub, Jira y `figma-live-mcp`)
 - Diagnóstico React `/trace`, propuestas técnicas `/propose` y generador `/prompt` con `pbcopy`

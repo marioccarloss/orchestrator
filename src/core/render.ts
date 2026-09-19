@@ -311,9 +311,13 @@ export function renderFlowUsage(usage: FlowUsageSummary, language: UserLanguage 
   const m = messagesFor(language);
   const tokens = usage.tokens;
   const tokenUsage = `**${m.flow.estimatedCost}**: $${usage.cost.toFixed(4)} USD · ${m.flow.tokens}: ${String(tokens.input)}/${String(tokens.output)}/${String(tokens.reasoning)} · ${m.flow.cache}: ${String(tokens.cacheRead)} read, ${String(tokens.cacheWrite)} write · ${String(usage.sessions)} ${m.flow.sessions}`;
-  if (usage.context === undefined) return tokenUsage;
-  const context = usage.context;
-  return `${tokenUsage}\n**${m.flow.contextBudget} (${context.role}/${context.lane})**: ${String(context.usedChars)}/${String(context.requestedChars)} chars · ${String(context.hydrations)} ${m.flow.hydrations} · ${String(context.truncated)} ${m.flow.truncated}`;
+  const decisions = usage.decisionPlane === undefined
+    ? undefined
+    : `**Jev shadow**: ${String(usage.decisionPlane.calls)} calls · ${String(usage.decisionPlane.escalations)} escalations · ${String(usage.decisionPlane.errors)} errors · ${String(usage.decisionPlane.inputTokens)}/${String(usage.decisionPlane.outputTokens)} tokens · ${String(usage.decisionPlane.latencyMs)} ms`;
+  const context = usage.context === undefined
+    ? undefined
+    : `**${m.flow.contextBudget} (${usage.context.role}/${usage.context.lane})**: ${String(usage.context.usedChars)}/${String(usage.context.requestedChars)} chars · ${String(usage.context.hydrations)} ${m.flow.hydrations} · ${String(usage.context.truncated)} ${m.flow.truncated}`;
+  return [tokenUsage, decisions, context].filter((line) => line !== undefined).join("\n");
 }
 
 export function renderFlowStatus(

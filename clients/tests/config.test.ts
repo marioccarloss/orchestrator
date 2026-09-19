@@ -6,9 +6,11 @@ import {
   mergeCodexConfig,
   mergeCursorConfig,
   mergeFxConfig,
+  mergeFxSettings,
   mergeGeminiConfig,
   mergeOpenCodeCatalogs,
   parseOpenCodeCatalog,
+  removeOwnedFxSettings,
 } from "../src/config.js";
 
 const openCode = `{
@@ -70,6 +72,24 @@ test("merges selected host configurations without replacing user servers", () =>
     command: ["bun", "/clients/src/cli.ts", "serve"],
   });
   expect(fx.mcp.context7).toEqual({ type: "http", url: "https://mcp.context7.com/mcp" });
+});
+
+test("adds and removes only owned native fx Jev reviewer settings", () => {
+  const merged = mergeFxSettings('{"models":{"gateway":"moonshotai/kimi-k3"}}');
+  expect(JSON.parse(merged.content)).toEqual({
+    models: { gateway: "moonshotai/kimi-k3" },
+    provider: "gateway",
+    review_model: "typesafeai/jev",
+    permission_mode: "auto",
+  });
+  expect(merged.ownedKeys).toEqual(["provider", "review_model", "permission_mode"]);
+  expect(JSON.parse(removeOwnedFxSettings(merged.content, merged.ownedKeys))).toEqual({
+    models: { gateway: "moonshotai/kimi-k3" },
+  });
+
+  const preserved = mergeFxSettings('{"provider":"codex","review_model":"custom/reviewer","permission_mode":"ask"}');
+  expect(preserved.ownedKeys).toEqual([]);
+  expect(preserved.preservedKeys).toEqual(["provider", "review_model", "permission_mode"]);
 });
 
 test("rejects a change set containing files outside clients", () => {

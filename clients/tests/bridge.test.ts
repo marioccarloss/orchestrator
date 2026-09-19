@@ -31,9 +31,11 @@ test("loads the immutable compiled plugin as a tool facade", async () => {
   const workspacePath = await mkdtemp(join(tmpdir(), "mr-clients-facade-"));
   const tools = await loadPluginFacade(workspacePath);
 
-  expect(tools["mr_flow_status"]?.description).toBe("Get the current mr-orchestrator flow status");
+  expect(tools["mr_flow_status"]?.description).toBe("Get the current mr-orchestrator flow status and harness role badge");
   expect(tools["mr_flow_status"]?.args).toEqual({});
   expect(tools["mr_flow_start"]?.args).toHaveProperty("ticketId");
+  expect(tools["mr_decision_evaluate"]?.args).toHaveProperty("profile");
+  expect(typeof tools["mr_decision_evaluate"]?.execute).toBe("function");
   expect(typeof tools["mr_blueprint_save"]?.execute).toBe("function");
 });
 

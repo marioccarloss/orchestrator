@@ -22,6 +22,7 @@ const grounding = `Grounding contract (mandatory): use only supplied tickets, ty
 function workflowBody(workflow: Workflow, input: string, harness: HarnessId, runnerCommand: readonly string[]): string {
   const server = harness === "antigravity" || harness === "agy" ? `mr-orchestrator-${harness}` : "mr-orchestrator";
   const binding = `Use only the \`${server}\` MCP server for mr-orchestrator tools. First call \`mr_bind_workspace\` with exactly one registered workspaceId or workspacePath. Use the current project root only when it is registered; if binding fails, ask the user which registered workspace to use. Then call \`mr_models\` with action=validate and harness=${harness}; stop before role dispatch if validation fails.`;
+  const decisionPlane = "When deterministic evidence leaves material ambiguity, call `mr_decision_evaluate` with one bounded profile and compact evidence. Jev is shadow-only: its probability can recommend but never override the FSM, gates, explicit denies, or human confirmation.";
   const runner = runnerCommand.map((part) => JSON.stringify(part)).join(" ");
   const usesRunner = harness === "codex" || harness === "cursor" || harness === "claude" || harness === "agy" || harness === "fx";
   const roleDispatch = usesRunner
@@ -33,6 +34,8 @@ function workflowBody(workflow: Workflow, input: string, harness: HarnessId, run
 You are executing the mr-orchestrator /flow workflow.
 
 ${binding}
+
+${decisionPlane}
 
 1. Call \`mr_flow_status\` and resume the active phase rather than starting over.
 2. If no flow exists, obtain ticketId, Fibonacci difficulty (1, 3, 5, 8, 13, or 21), and whether a Figma design exists, then call \`mr_flow_start\`. Dificultad >= 5 enforces mandatory Judgment Day.

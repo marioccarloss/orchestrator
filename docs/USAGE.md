@@ -70,6 +70,20 @@ Otras operaciones CLI directas para modelos:
 
 Los identificadores admitidos son `opencode`, `codex`, `cursor`, `claude`, `antigravity`, `agy` y `fx`. No existe `--workspace`: cambiar el workspace cambia el código y el estado de ejecución, nunca el roster de modelos.
 
+### `mr decision status | shadow | off`
+
+Gestiona el Decision Plane compartido con Jev. El valor inicial es `off`; `shadow` permite evaluaciones consultivas, pero nunca cambia por sí solo una transición, un gate, una denegación o una confirmación humana.
+
+```bash
+mr decision status
+mr decision shadow
+mr decision off
+```
+
+La autenticación se toma del entorno (`AI_GATEWAY_API_KEY` o `VERCEL_OIDC_TOKEN`) y no se persiste ni se imprime. Se puede cambiar el identificador del modelo al activar mediante `--model`, aunque el valor recomendado para el adaptador Vercel AI SDK es `typesafe-ai/jev`.
+
+Consulta [`docs/DECISION-PLANE.md`](DECISION-PLANE.md) para la configuración de OpenCode y fx, los perfiles disponibles y el modelo de autoridad.
+
 ### `mr atlas index | init | rules`
 
 ```bash
@@ -320,6 +334,7 @@ export MR_GATES_MODE=warn
 | `mr_prompt_build` | Construye un prompt desde una plantilla (bugfix, feature, refactor, review) |
 | `mr_prompt_copy` | Copia texto al portapapeles del SO |
 | `mr_models` | Lista, valida o modifica el roster global o el override del arnés que inyecta el bridge |
+| `mr_decision_evaluate` | Evalúa un perfil acotado con Jev y devuelve una recomendación shadow; no modifica la FSM |
 
 ---
 

@@ -6,6 +6,19 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-19
+
+### Added
+
+- Added an opt-in Jev Decision Plane for OpenCode and MCP-connected harnesses, with bounded intent/context/routing/flow/judgment/permission profiles, shadow-only recommendations, and Flow metrics.
+- Added native fx Gateway/Jev permission reviewer setup with reversible, user-preserving settings management.
+- Added `mr decision status|shadow|off`, Jev doctor checks, Vercel AI Gateway zero-data-retention requests, and operating documentation.
+
+### Safety
+
+- Jev remains advisory; deterministic FSM, gates, explicit denies, and human confirmation remain authoritative. Invalid configuration, evaluation errors, and telemetry persistence failures cannot block the workflow.
+- Gateway credentials are environment-only and never persisted by mr-orchestrator.
+
 ## [0.11.0] - 2026-09-17
 
 ### Added
@@ -207,3 +220,6 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.3.0]: https://github.com/marioccarloss/orchestrator/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/marioccarloss/orchestrator/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/marioccarloss/orchestrator/releases/tag/v0.1.0
+
+[Unreleased]: https://github.com/marioccarloss/orchestrator/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/marioccarloss/orchestrator/compare/v0.11.0...v0.12.0

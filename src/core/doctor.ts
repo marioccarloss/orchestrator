@@ -13,6 +13,7 @@ import { profileRepository } from "./rules/profiler.js";
 import { loadWorkspaceRules, staleRuleRepositories } from "./rules/store.js";
 import { configuredHarnesses, resolveStoredHarnessModels } from "./harness-models.js";
 import type { HarnessId } from "./schema.js";
+import { hasGatewayCredentials, loadDecisionPlaneConfig } from "./decision.js";
 
 export interface CheckResult {
   readonly name: string;
@@ -107,6 +108,22 @@ export async function runDoctor(paths: MrPaths, env: NodeJS.ProcessEnv = process
       ok: ready,
       detail: ready ? "marked ready by user" : `pending; complete OAuth and run mr capabilities install`,
     });
+  }
+
+  try {
+    const decision = await loadDecisionPlaneConfig(paths, env);
+    const credentials = hasGatewayCredentials(env);
+    checks.push({
+      name: "Jev decision plane",
+      ok: decision.mode === "off" || credentials,
+      detail: decision.mode === "off"
+        ? `off; enable advisory mode with mr decision shadow (${decision.model})`
+        : credentials
+          ? `shadow; ${decision.model}; deterministic FSM remains authoritative`
+          : `shadow; ${decision.model}; missing AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN`,
+    });
+  } catch (error: unknown) {
+    checks.push({ name: "Jev decision plane", ok: false, detail: error instanceof Error ? error.message : String(error) });
   }
 
   const pathDirectories = (env["PATH"] ?? "").split(delimiter);
