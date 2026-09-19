@@ -6,6 +6,25 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-19
+
+### Added
+
+- Added ODD-lite everyday routing with deterministic `read-only`, `direct`, and resumable `tracked` paths, plus the `/work` workflow for OpenCode and all native client adapters.
+- Added global and per-role credential boundaries for sensitive files and explicit approval gates for remote execution and transfer.
+- Added opt-in Jev context compaction with verbatim KEEP preservation, bounded evaluation, deterministic FIFO fallback, secret redaction, and a 1500 ms timeout ceiling.
+
+### Changed
+
+- Judgment now freezes the exact review diff, verifies it with SHA-256 and live CAS checks, and serves bounded chunks so both independent judges inspect the same immutable candidate without tool-output truncation.
+- Native client installers now publish `/work` alongside `/flow`, `/blueprint`, and `/flow-models`.
+
+### Safety
+
+- Formal `/flow` remains explicit and is never selected automatically by ODD-lite.
+- Context compaction is opt-in, never rewrites system or current user messages, and falls back deterministically on provider errors, timeouts, incomplete answers, or low confidence.
+- Commit and release metadata contain no AI co-author trailers.
+
 ## [0.12.0] - 2026-09-19
 
 ### Added
@@ -221,5 +240,6 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.2.0]: https://github.com/marioccarloss/orchestrator/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/marioccarloss/orchestrator/releases/tag/v0.1.0
 
-[Unreleased]: https://github.com/marioccarloss/orchestrator/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/marioccarloss/orchestrator/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/marioccarloss/orchestrator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/marioccarloss/orchestrator/compare/v0.11.0...v0.12.0
