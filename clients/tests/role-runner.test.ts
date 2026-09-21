@@ -37,3 +37,17 @@ test("builds verified per-invocation commands for Codex, Cursor, Claude, and AGY
     arguments: ["--print", "--model", "native-model", "--effort", "high", "task"],
   });
 });
+
+test("builds a Pi invocation with optional thinking from the native role target", () => {
+  const withThinking = { explore: { primary: { native: { model: "anthropic/claude-sonnet-4-6", variant: "high" } } } };
+  expect(roleCommand({ harness: "pi", applicationMode: "per-invocation", roles: withThinking } as never, "explore", "Inspect the router")).toEqual({
+    command: "pi",
+    arguments: ["--print", "--no-session", "--model", "anthropic/claude-sonnet-4-6", "--thinking", "high", "Inspect the router"],
+  });
+
+  const withoutThinking = { explore: { primary: { native: { model: "openai/gpt-4o-mini" } } } };
+  expect(roleCommand({ harness: "pi", applicationMode: "per-invocation", roles: withoutThinking } as never, "explore", "Inspect the router")).toEqual({
+    command: "pi",
+    arguments: ["--print", "--no-session", "--model", "openai/gpt-4o-mini", "Inspect the router"],
+  });
+});

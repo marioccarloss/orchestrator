@@ -93,6 +93,7 @@ export const HARNESS_IDS = [
   "antigravity",
   "agy",
   "fx",
+  "pi",
 ] as const;
 
 export const HarnessIdSchema = z.enum(HARNESS_IDS);

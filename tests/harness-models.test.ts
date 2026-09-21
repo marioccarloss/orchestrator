@@ -23,7 +23,7 @@ import {
 } from "../src/core/harness-models.js";
 import { resolvePaths } from "../src/core/paths.js";
 import { SCHEMA_VERSION, type HarnessModelCatalog, type ModelMap } from "../src/core/schema.js";
-import { PRESETS, parseFxAvailableModels, setModels } from "../src/core/models.js";
+import { PRESETS, parseFxAvailableModels, parsePiAvailableModels, setModels } from "../src/core/models.js";
 
 const globalModels = (): ModelMap => ({
   schemaVersion: SCHEMA_VERSION,
@@ -222,4 +222,45 @@ void test("parses the documented fx JSON catalog shape", () => {
     { id: "anthropic/claude-opus-4.1", source: "Vercel AI Gateway" },
   ]);
   assert.throws(() => parseFxAvailableModels("{}"), /invalid model catalog/u);
+});
+
+void test("parses the public Pi model table and qualifies native model ids", () => {
+  assert.deepEqual(parsePiAvailableModels([
+    "provider   model                         context  max-out  thinking  images",
+    "anthropic  claude-sonnet-4-6             200K     64K      yes       yes",
+    "openai     gpt-4o-mini                   128K     16K      no        yes",
+    "openrouter  meta-llama/llama-3.3-70b      128K     8K       yes       no",
+  ].join("\n")), [
+    { logicalModel: "anthropic/claude-sonnet-4-6", nativeModel: "anthropic/claude-sonnet-4-6", supportsThinking: true },
+    { logicalModel: "openai/gpt-4o-mini", nativeModel: "openai/gpt-4o-mini", supportsThinking: false },
+    { logicalModel: "openrouter/meta-llama/llama-3.3-70b", nativeModel: "openrouter/meta-llama/llama-3.3-70b", supportsThinking: true },
+  ]);
+});
+
+void test("rejects malformed or empty Pi model tables", () => {
+  assert.throws(
+    () => parsePiAvailableModels("provider model context max-out thinking images\nanthropic claude 200K 8K yes no"),
+    /invalid header/u,
+  );
+  assert.throws(
+    () => parsePiAvailableModels("provider  model  context  max-out  thinking  images"),
+    /no model rows/u,
+  );
+  assert.throws(
+    () => parsePiAvailableModels("provider  model  context  max-out  thinking  images\nanthropic  claude  200K  8K  maybe  no"),
+    /malformed row/u,
+  );
+});
+
+void test("accepts Pi as a verified per-invocation harness", () => {
+  const global = globalModels();
+  const cursorCatalog = identityCatalog("cursor", global);
+  const catalog: HarnessModelCatalog = {
+    ...cursorCatalog,
+    harness: "pi",
+    applicationMode: "per-invocation",
+  };
+  const effective = resolveEffectiveModels(global, undefined, catalog, "pi");
+  assert.equal(effective.harness, "pi");
+  assert.equal(effective.applicationMode, "per-invocation");
 });

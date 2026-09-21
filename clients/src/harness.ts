@@ -6,6 +6,7 @@ export const HARNESS_IDS = [
   "antigravity",
   "agy",
   "fx",
+  "pi",
 ] as const;
 
 export type HarnessId = typeof HARNESS_IDS[number];

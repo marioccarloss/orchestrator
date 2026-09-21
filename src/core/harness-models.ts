@@ -68,6 +68,7 @@ const MANAGED_APPLICATION_MODES: Partial<Record<HarnessId, HarnessApplicationMod
   claude: "per-invocation",
   agy: "per-invocation",
   fx: "per-invocation",
+  pi: "per-invocation",
 };
 
 function isNotFound(error: unknown): boolean {

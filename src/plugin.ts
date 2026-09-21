@@ -1509,7 +1509,7 @@ export async function createMrOrchestrator(
         args: {
           action: tool.schema.enum(["status", "providers", "models", "candidates", "set", "reset", "validate", "catalog"]).optional()
             .describe("Model operation; status is the default"),
-          harness: tool.schema.enum(["opencode", "codex", "cursor", "claude", "antigravity", "agy", "fx"]).optional()
+          harness: tool.schema.enum(["opencode", "codex", "cursor", "claude", "antigravity", "agy", "fx", "pi"]).optional()
             .describe("Optional harness scope. Omit to inspect or edit the global roster."),
           category: tool.schema.enum(["flow", "blueprint"]).optional()
             .describe("Filter by process category: flow (8 steps) or blueprint (3 steps)"),

@@ -414,6 +414,7 @@ export async function resetHarnessModels(
 
 const OPENCODE_VARIANTS = ["low", "medium", "high", "xhigh", "max"] as const;
 const FX_VARIANTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const PI_VARIANTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export interface FxDiscoveredModel {
   readonly id: string;
@@ -445,6 +446,46 @@ export function parseFxAvailableModels(output: string): readonly FxDiscoveredMod
   });
 }
 
+export interface PiDiscoveredModel {
+  readonly logicalModel: string;
+  readonly nativeModel: string;
+  readonly supportsThinking: boolean;
+}
+
+const PI_MODEL_HEADERS = ["provider", "model", "context", "max-out", "thinking", "images"] as const;
+
+function piModelColumns(line: string): readonly string[] {
+  return line.trim().split(/\s{2,}/u);
+}
+
+export function parsePiAvailableModels(output: string): readonly PiDiscoveredModel[] {
+  const lines = stripTerminalSequences(output)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const header = lines.shift();
+  if (header === undefined || !PI_MODEL_HEADERS.every((value, index) => piModelColumns(header)[index] === value)
+    || piModelColumns(header).length !== PI_MODEL_HEADERS.length) {
+    throw new Error("pi --list-models returned an invalid header");
+  }
+  if (lines.length === 0) throw new Error("pi --list-models returned no model rows");
+  return lines.map((line) => {
+    const columns = piModelColumns(line);
+    const [provider, model, context, maxOut, thinking, images] = columns;
+    if (columns.length !== PI_MODEL_HEADERS.length
+      || provider === undefined || provider.length === 0
+      || model === undefined || model.length === 0
+      || context === undefined || context.length === 0
+      || maxOut === undefined || maxOut.length === 0
+      || (thinking !== "yes" && thinking !== "no")
+      || (images !== "yes" && images !== "no")) {
+      throw new Error(`pi --list-models returned a malformed row: ${line}`);
+    }
+    const qualified = `${provider}/${model}`;
+    return { logicalModel: qualified, nativeModel: qualified, supportsThinking: thinking === "yes" };
+  });
+}
+
 export interface RefreshedHarnessCatalog {
   readonly catalog: HarnessModelCatalog;
   readonly effective?: EffectiveHarnessModels;
@@ -452,24 +493,33 @@ export interface RefreshedHarnessCatalog {
 }
 
 export async function refreshHarnessCatalog(paths: MrPaths, harness: HarnessId): Promise<RefreshedHarnessCatalog> {
-  if (harness !== "opencode" && harness !== "fx") {
+  if (harness !== "opencode" && harness !== "fx" && harness !== "pi") {
     throw new Error(`[${harness}] automatic model discovery is not implemented; maintain ${harness}/catalog.json explicitly`);
   }
   const discovered = harness === "opencode"
     ? discoverAvailableModels()
-    : (() => {
+    : harness === "fx" ? (() => {
         const result = runCommand("fx", ["models", "--json"]);
         if (!result.ok) throw new Error(`[fx] could not discover models: ${result.stderr.trim() || result.stdout.trim() || "fx models --json failed"}`);
         return { models: parseFxAvailableModels(result.stdout), source: "fx models --json" };
+      })()
+    : (() => {
+        const result = runCommand("pi", ["--list-models"]);
+        if (!result.ok) throw new Error(`[pi] could not discover models: ${result.stderr.trim() || result.stdout.trim() || "pi --list-models failed"}`);
+        return { models: parsePiAvailableModels(result.stdout), source: "pi --list-models" };
       })();
   const catalogModels = harness === "opencode"
     ? Object.fromEntries(discovered.models.map((model) => [model, {
         nativeModel: model,
         variants: Object.fromEntries(OPENCODE_VARIANTS.map((variant) => [variant, variant])),
       }]))
-    : Object.fromEntries((discovered.models as readonly FxDiscoveredModel[]).map((model) => [fxLogicalModel(model), {
+    : harness === "fx" ? Object.fromEntries((discovered.models as readonly FxDiscoveredModel[]).map((model) => [fxLogicalModel(model), {
         nativeModel: model.id,
         variants: Object.fromEntries(FX_VARIANTS.map((variant) => [variant, variant])),
+      }]))
+    : Object.fromEntries((discovered.models as readonly PiDiscoveredModel[]).map((model) => [model.logicalModel, {
+        nativeModel: model.nativeModel,
+        ...(model.supportsThinking ? { variants: Object.fromEntries(PI_VARIANTS.map((variant) => [variant, variant])) } : {}),
       }]));
   const catalog: HarnessModelCatalog = {
     schemaVersion: SCHEMA_VERSION,

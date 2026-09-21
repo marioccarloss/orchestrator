@@ -19,7 +19,7 @@ export const MODEL_ROLES = [
 export const ModelRoleSchema = z.enum(MODEL_ROLES);
 export type ModelRole = z.infer<typeof ModelRoleSchema>;
 
-export const RUNNER_HARNESSES = ["codex", "cursor", "claude", "agy", "fx"] as const;
+export const RUNNER_HARNESSES = ["codex", "cursor", "claude", "agy", "fx", "pi"] as const;
 export const RunnerHarnessSchema = z.enum(RUNNER_HARNESSES);
 export type RunnerHarness = z.infer<typeof RunnerHarnessSchema>;
 
@@ -73,6 +73,12 @@ export function roleCommand(
     return {
       command: "agy",
       arguments: ["--model", target.model, ...(target.variant === undefined ? [] : ["--effort", target.variant]), "--print", prompt],
+    };
+  }
+  if (effective.harness === "pi") {
+    return {
+      command: "pi",
+      arguments: ["--print", "--no-session", "--model", target.model, ...(target.variant === undefined ? [] : ["--thinking", target.variant]), prompt],
     };
   }
   return {
