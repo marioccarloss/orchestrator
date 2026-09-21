@@ -17,6 +17,7 @@ const targets: Array<{ value: InstallTarget; label: string; hint: string }> = [
   { value: "antigravity-desktop", label: "Antigravity Desktop", hint: "MCP + flow, blueprint, and flow-models skills" },
   { value: "agy-cli", label: "AGY CLI", hint: "MCP + /flow, /blueprint, and /flow-models commands" },
   { value: "fx-cli", label: "fx CLI", hint: "MCP + $flow, $blueprint, and $flow-models skills" },
+  { value: "pi-cli", label: "Pi CLI", hint: "MCP via user-managed pi-mcp-adapter + native /work, /flow, /blueprint, and /flow-models prompts" },
 ];
 
 const knownTargets = new Set(targets.map((target) => target.value));
@@ -57,9 +58,9 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "run-role") {
-    if (args[0] === undefined || args[1] === undefined) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx> <role> -- <prompt>");
+    if (args[0] === undefined || args[1] === undefined) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx|pi> <role> -- <prompt>");
     const separator = args.indexOf("--");
-    if (separator < 0) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx> <role> -- <prompt>");
+    if (separator < 0) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx|pi> <role> -- <prompt>");
     const harness = RunnerHarnessSchema.parse(args[0]);
     const role = ModelRoleSchema.parse(args[1]);
     process.exitCode = await runRole(harness, role, args.slice(separator + 1).join(" "));

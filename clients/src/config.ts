@@ -59,7 +59,7 @@ export function mergeOpenCodeCatalogs(contents: string[]): Record<string, McpSer
   return Object.assign({}, ...contents.filter((content) => content.length > 0).map(parseOpenCodeCatalog));
 }
 
-type JsonHost = "cursor" | "antigravity" | "claude" | "fx";
+type JsonHost = "cursor" | "antigravity" | "claude" | "fx" | "pi";
 
 function toHostServer(config: McpServerConfig, host: JsonHost | "codex"): JsonRecord {
   if (config.url !== undefined) {
@@ -141,6 +141,10 @@ export function mergeFxConfig(content: string, servers: Record<string, McpServer
   return mergeJsonConfig(content, "mcp", "fx", servers, { "mr-orchestrator": bridge });
 }
 
+export function mergePiConfig(content: string, servers: Record<string, McpServerConfig>, bridge: McpServerConfig): string {
+  return mergeJsonConfig(content, "mcpServers", "pi", servers, { "mr-orchestrator": bridge });
+}
+
 const recommendedFxSettings = {
   provider: "gateway",
   review_model: "typesafeai/jev",
@@ -203,6 +207,18 @@ export function removeJsonBridge(content: string, bridge: McpServerConfig): stri
     formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
   });
   const next = applyEdits(content, edits);
+  return next.endsWith("\n") ? next : `${next}\n`;
+}
+
+export function removePiBridge(content: string, bridge: McpServerConfig): string {
+  const root = asRecord(parse(content));
+  const servers = asRecord(root["mcpServers"]);
+  const current = servers["mr-orchestrator"];
+  const expected = toHostServer({ ...bridge, instructions: bindingInstruction }, "pi");
+  if (!sameJson(current, expected)) return content;
+  const next = applyEdits(content, modify(content, ["mcpServers", "mr-orchestrator"], undefined, {
+    formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+  }));
   return next.endsWith("\n") ? next : `${next}\n`;
 }
 

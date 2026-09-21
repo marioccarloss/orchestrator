@@ -9,8 +9,10 @@ import {
   mergeFxSettings,
   mergeGeminiConfig,
   mergeOpenCodeCatalogs,
+  mergePiConfig,
   parseOpenCodeCatalog,
   removeOwnedFxSettings,
+  removePiBridge,
 } from "../src/config.js";
 
 const openCode = `{
@@ -90,6 +92,32 @@ test("adds and removes only owned native fx Jev reviewer settings", () => {
   const preserved = mergeFxSettings('{"provider":"codex","review_model":"custom/reviewer","permission_mode":"ask"}');
   expect(preserved.ownedKeys).toEqual([]);
   expect(preserved.preservedKeys).toEqual(["provider", "review_model", "permission_mode"]);
+});
+
+test("merges Pi MCP configuration and removes only the unchanged owned bridge", () => {
+  const bridge = {
+    command: ["bun", "/clients/src/cli.ts", "serve", "--harness", "pi"],
+    env: { MR_HARNESS_ID: "pi" },
+  };
+  const merged = mergePiConfig(
+    '{"mcpServers":{"user":{"command":"user-mcp"}}}',
+    parseOpenCodeCatalog(openCode),
+    bridge,
+  );
+  const parsed = JSON.parse(merged);
+  expect(parsed.mcpServers.user).toEqual({ command: "user-mcp" });
+  expect(parsed.mcpServers["mr-orchestrator"].args.slice(-2)).toEqual(["--harness", "pi"]);
+  expect(parsed.mcpServers["mr-orchestrator"].env).toEqual({ MR_HARNESS_ID: "pi" });
+
+  parsed.mcpServers.later = { url: "https://later.example/mcp" };
+  const withLaterServer = `${JSON.stringify(parsed, null, 2)}\n`;
+  const removed = JSON.parse(removePiBridge(withLaterServer, bridge));
+  expect(removed.mcpServers.user).toEqual({ command: "user-mcp" });
+  expect(removed.mcpServers.later).toEqual({ url: "https://later.example/mcp" });
+  expect(removed.mcpServers["mr-orchestrator"]).toBeUndefined();
+
+  parsed.mcpServers["mr-orchestrator"].args.push("--user-change");
+  expect(removePiBridge(`${JSON.stringify(parsed, null, 2)}\n`, bridge)).toContain("--user-change");
 });
 
 test("rejects a change set containing files outside clients", () => {

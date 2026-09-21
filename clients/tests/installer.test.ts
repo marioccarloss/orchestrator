@@ -62,7 +62,9 @@ afterAll(async () => {
 });
 
 test("installs and uninstalls only owned unchanged adapters", async () => {
-  await runInstaller(`await install(["codex-cli", "cursor-cli", "claude-code", "antigravity-desktop", "agy-cli", "fx-cli"]);`);
+  await mkdir(join(sandbox, ".pi", "agent"), { recursive: true });
+  await writeFile(join(sandbox, ".pi", "agent", "mcp.json"), '{"mcpServers":{"user":{"command":"user-mcp"}}}\n');
+  await runInstaller(`await install(["codex-cli", "cursor-cli", "claude-code", "antigravity-desktop", "agy-cli", "fx-cli", "pi-cli"]);`);
 
   expect(await readFile(join(sandbox, ".cursor", "skills", "flow", "SKILL.md"), "utf8")).toBe(customCursorFlow);
   expect(await readFile(join(sandbox, ".cursor", "skills", "blueprint", "SKILL.md"), "utf8")).toContain("/blueprint");
@@ -72,6 +74,8 @@ test("installs and uninstalls only owned unchanged adapters", async () => {
   expect(await readFile(join(sandbox, ".codex", "skills", "flow", "SKILL.md"), "utf8")).toContain("$flow");
   expect(await readFile(join(sandbox, ".gemini", "commands", "flow.toml"), "utf8")).toContain("{{args}}");
   expect(await readFile(join(sandbox, ".fx", "skills", "flow", "SKILL.md"), "utf8")).toContain("$flow");
+  expect(await readFile(join(sandbox, ".pi", "agent", "prompts", "flow.md"), "utf8")).toContain("run-role pi <role>");
+  expect(await readFile(join(sandbox, ".pi", "agent", "prompts", "work.md"), "utf8")).toContain("$ARGUMENTS");
   expect(await readFile(join(sandbox, ".cursor", "skills", "flow-models", "SKILL.md"), "utf8")).toContain("mr_models");
   const cursorConfig = JSON.parse(await readFile(join(sandbox, ".cursor", "mcp.json"), "utf8")) as {
     mcpServers: Record<string, { args?: string[]; env?: Record<string, string> }>;
@@ -91,6 +95,13 @@ test("installs and uninstalls only owned unchanged adapters", async () => {
   };
   expect(fxConfig.mcp["mr-orchestrator"]?.command?.slice(-2)).toEqual(["--harness", "fx"]);
   expect(fxConfig.mcp["mr-orchestrator"]?.environment?.["MR_HARNESS_ID"]).toBe("fx");
+  const piConfigPath = join(sandbox, ".pi", "agent", "mcp.json");
+  const piConfig = JSON.parse(await readFile(piConfigPath, "utf8")) as {
+    mcpServers: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }>;
+  };
+  expect(piConfig.mcpServers["user"]).toEqual({ command: "user-mcp" });
+  expect(piConfig.mcpServers["mr-orchestrator"]?.args?.slice(-2)).toEqual(["--harness", "pi"]);
+  expect(piConfig.mcpServers["mr-orchestrator"]?.env?.["MR_HARNESS_ID"]).toBe("pi");
   const fxSettings = JSON.parse(await readFile(join(sandbox, ".fx", "settings.json"), "utf8")) as {
     provider?: string;
     review_model?: string;
@@ -105,15 +116,41 @@ test("installs and uninstalls only owned unchanged adapters", async () => {
   const manifest = JSON.parse(await readFile(join(sandbox, "data", "mr-orchestrator-clients", "manifest.json"), "utf8")) as {
     entries: Array<{ kind?: string; path: string }>;
   };
-  expect(manifest.entries.filter((entry) => entry.kind === "config")).toHaveLength(6);
-  expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(23);
+  expect(manifest.entries.filter((entry) => entry.kind === "config")).toHaveLength(7);
+  expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(27);
+
+  piConfig.mcpServers["later"] = { args: ["later"] };
+  await writeFile(piConfigPath, `${JSON.stringify(piConfig, null, 2)}\n`);
 
   await runInstaller("await uninstall(false);");
 
   expect(await readFile(join(sandbox, ".cursor", "skills", "flow", "SKILL.md"), "utf8")).toBe(customCursorFlow);
   await expect(readFile(join(sandbox, ".claude", "commands", "flow.md"), "utf8")).rejects.toThrow();
+  const remainingPiConfig = JSON.parse(await readFile(piConfigPath, "utf8")) as { mcpServers: Record<string, unknown> };
+  expect(remainingPiConfig.mcpServers["user"]).toEqual({ command: "user-mcp" });
+  expect(remainingPiConfig.mcpServers["later"]).toEqual({ args: ["later"] });
+  expect(remainingPiConfig.mcpServers["mr-orchestrator"]).toBeUndefined();
   const remainingManifest = JSON.parse(await readFile(join(sandbox, "data", "mr-orchestrator-clients", "manifest.json"), "utf8")) as {
     entries: unknown[];
   };
   expect(remainingManifest.entries).toEqual([]);
+});
+
+test("reports a missing user-managed pi-mcp-adapter without installing it", async () => {
+  const installerUrl = pathToFileURL(resolve("src/installer.ts")).href;
+  const processHandle = Bun.spawn([process.execPath, "--eval", `import { install, doctor } from ${JSON.stringify(installerUrl)}; console.log(JSON.stringify([...(await install(["pi-cli"])), ...(await doctor())]));`], {
+    cwd: resolve("."),
+    env: { ...environment, PATH: join(sandbox, "empty-bin") },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    processHandle.exited,
+    new Response(processHandle.stdout).text(),
+    new Response(processHandle.stderr).text(),
+  ]);
+  expect(exitCode).toBe(0);
+  expect(stderr).toBe("");
+  expect(stdout).toContain("pi-mcp-adapter");
+  expect(stdout).toContain("must be installed and managed by the user");
 });

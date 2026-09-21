@@ -10,10 +10,11 @@ test("creates native workflow adapters for every selected client without duplica
     "antigravity-desktop",
     "agy-cli",
     "fx-cli",
+    "pi-cli",
   ], "/home/tester");
 
-  expect(artifacts).toHaveLength(24);
-  expect(new Set(artifacts.map((artifact) => artifact.path)).size).toBe(24);
+  expect(artifacts).toHaveLength(28);
+  expect(new Set(artifacts.map((artifact) => artifact.path)).size).toBe(28);
   expect(artifacts.map((artifact) => artifact.invocation)).toContain("$work");
   expect(artifacts.map((artifact) => artifact.invocation)).toContain("$flow");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.cursor/skills/flow/SKILL.md");
@@ -21,6 +22,22 @@ test("creates native workflow adapters for every selected client without duplica
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.gemini/commands/flow.toml");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.gemini/config/skills/blueprint/SKILL.md");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.fx/skills/flow/SKILL.md");
+  expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.pi/agent/prompts/flow.md");
+});
+
+test("creates native Pi slash prompts with per-invocation model routing", () => {
+  const artifacts = adapterArtifacts(["pi-cli"], "/home/tester", ["mr-clients"]);
+  expect(artifacts).toHaveLength(4);
+  expect(artifacts.map((artifact) => artifact.invocation)).toEqual(["/work", "/flow", "/blueprint", "/flow-models"]);
+  for (const artifact of artifacts) {
+    expect(artifact.path).toStartWith("/home/tester/.pi/agent/prompts/");
+    expect(artifact.content).toContain("$ARGUMENTS");
+    expect(artifact.content).toContain("harness=pi");
+    expect(artifact.content).toContain("longest path prefix");
+    expect(artifact.content).not.toContain("/skill:");
+  }
+  const flow = artifacts.find((artifact) => artifact.path.endsWith("/flow.md"));
+  expect(flow?.content).toContain("run-role pi <role>");
 });
 
 test("all adapters bind a workspace and delegate state to mr-orchestrator tools", () => {

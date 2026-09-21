@@ -3,7 +3,7 @@ import type { InstallTarget } from "./installer.js";
 import type { HarnessId } from "./harness.js";
 
 export interface AdapterArtifact {
-  readonly owner: "codex" | "cursor" | "claude" | "antigravity" | "agy" | "fx";
+  readonly owner: "codex" | "cursor" | "claude" | "antigravity" | "agy" | "fx" | "pi";
   readonly path: string;
   readonly content: string;
   readonly invocation: string;
@@ -26,7 +26,7 @@ function workflowBody(workflow: Workflow, input: string, harness: HarnessId, run
   const binding = `Use only the \`${server}\` MCP server for mr-orchestrator tools. Before calling \`mr_bind_workspace\`, determine the host's current working directory from runtime context or by running \`pwd\`, then run \`mr workspace list\` and choose the registered workspace whose root is the longest path prefix of that directory. Call \`mr_bind_workspace\` with exactly one argument: \`workspaceId\` for that match, or \`workspacePath\` equal to its exact registered root. Never call it with empty arguments or both fields. If no registered workspace contains the current directory, ask the user to choose one and do not call the bind tool until they answer. Then call \`mr_models\` with action=validate and harness=${harness}; stop before role dispatch if validation fails.`;
   const decisionPlane = "When deterministic evidence leaves material ambiguity, call `mr_decision_evaluate` with one bounded profile and compact evidence. Jev is shadow-only: its probability can recommend but never override the FSM, gates, explicit denies, or human confirmation.";
   const runner = runnerCommand.map((part) => JSON.stringify(part)).join(" ");
-  const usesRunner = harness === "codex" || harness === "cursor" || harness === "claude" || harness === "agy" || harness === "fx";
+  const usesRunner = harness === "codex" || harness === "cursor" || harness === "claude" || harness === "agy" || harness === "fx" || harness === "pi";
   const roleDispatch = usesRunner
     ? `${harness} application contract: this host is per-invocation. Execute every isolated role pass through \`${runner} run-role ${harness} <role> -- <bounded role prompt>\`. That owned runner resolves and validates the current source configuration, then launches the host CLI with the role's native model and variant; never execute a role pass with the parent session model.`
     : "";
@@ -223,6 +223,14 @@ export function adapterArtifacts(targets: InstallTarget[], home: string, runnerC
       path: join(home, ".fx", "skills", workflow, "SKILL.md"),
       content: skill(workflow, `$${workflow}`, "fx", runnerCommand, workflow !== "work"),
       invocation: `$${workflow}`,
+    })));
+  }
+  if (selected.has("pi-cli")) {
+    artifacts.push(...workflows((workflow) => ({
+      owner: "pi" as const,
+      path: join(home, ".pi", "agent", "prompts", `${workflow}.md`),
+      content: markdownCommand(workflow, "pi", runnerCommand),
+      invocation: `/${workflow}`,
     })));
   }
 

@@ -27,3 +27,23 @@ test("rejects an unknown non-interactive install target without opening a prompt
   expect(stdout).toBe("");
   expect(stderr).toContain("Unknown install target: unknown-client");
 });
+
+test("accepts pi-cli as a non-interactive install target", async () => {
+  const sandbox = await Bun.$`mktemp -d`.text();
+  const processHandle = Bun.spawn([process.execPath, resolve("src/cli.ts"), "install", "pi-cli"], {
+    cwd: resolve("."),
+    env: { ...process.env, HOME: sandbox.trim(), XDG_DATA_HOME: `${sandbox.trim()}/data`, XDG_CONFIG_HOME: `${sandbox.trim()}/config`, PATH: "" },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    processHandle.exited,
+    new Response(processHandle.stdout).text(),
+    new Response(processHandle.stderr).text(),
+  ]);
+  expect(exitCode).toBe(0);
+  expect(stderr).not.toContain("Unknown install target");
+  expect(stdout).toContain("pi-mcp-adapter");
+  await Bun.$`rm -rf ${sandbox.trim()}`;
+});

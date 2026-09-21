@@ -11,12 +11,14 @@ import {
   mergeFxSettings,
   mergeGeminiConfig,
   mergeOpenCodeCatalogs,
+  mergePiConfig,
   removeCodexBridge,
   removeOwnedFxBridge,
   removeOwnedFxSettings,
   removeOwnedGeminiBridges,
   removeOwnedJsonBridge,
   removeOwnedJsonBridges,
+  removePiBridge,
   type McpServerConfig,
 } from "./config.js";
 import { adapterArtifacts } from "./adapters.js";
@@ -32,10 +34,11 @@ export type InstallTarget =
   | "claude-code"
   | "antigravity-desktop"
   | "agy-cli"
-  | "fx-cli";
+  | "fx-cli"
+  | "pi-cli";
 
-type ArtifactTarget = "codex" | "cursor" | "claude" | "antigravity" | "agy" | "fx";
-type ConfigTarget = "codex" | "cursor" | "claude" | "gemini" | "fx" | "fx-settings";
+type ArtifactTarget = "codex" | "cursor" | "claude" | "antigravity" | "agy" | "fx" | "pi";
+type ConfigTarget = "codex" | "cursor" | "claude" | "gemini" | "fx" | "fx-settings" | "pi";
 type LegacyConfigTarget = "antigravity" | "agy";
 type ManagedTarget = ArtifactTarget | ConfigTarget;
 
@@ -68,6 +71,7 @@ function targetPath(target: ConfigTarget): string {
   if (target === "claude") return join(home, ".claude.json");
   if (target === "fx") return join(home, ".fx", "mcp.json");
   if (target === "fx-settings") return join(home, ".fx", "settings.json");
+  if (target === "pi") return join(home, ".pi", "agent", "mcp.json");
   return join(home, ".gemini", "config", "mcp_config.json");
 }
 
@@ -128,12 +132,14 @@ function configPlans(targets: InstallTarget[]): ConfigPlan[] {
   if (selected.has("agy-cli")) geminiBridges["mr-orchestrator-agy"] = bridgeConfig("agy");
   if (Object.keys(geminiBridges).length > 0) plans.push({ target: "gemini", bridges: geminiBridges });
   if (selected.has("fx-cli")) plans.push({ target: "fx", bridges: { "mr-orchestrator": bridgeConfig("fx") } });
+  if (selected.has("pi-cli")) plans.push({ target: "pi", bridges: { "mr-orchestrator": bridgeConfig("pi") } });
   return plans;
 }
 
 function removeManagedBridges(content: string, target: Exclude<ConfigTarget, "fx-settings"> | LegacyConfigTarget): string {
   if (target === "codex") return removeCodexBridge(content);
   if (target === "fx") return removeOwnedFxBridge(content);
+  if (target === "pi") return removePiBridge(content, bridgeConfig("pi"));
   if (target === "gemini") return removeOwnedGeminiBridges(content);
   return removeOwnedJsonBridge(content);
 }
@@ -159,15 +165,22 @@ export async function install(targets: InstallTarget[]): Promise<string[]> {
   const messages = targets.filter((target) => target.startsWith("opencode")).map(
     (target) => `${target === "opencode-cli" ? "OpenCode CLI" : "OpenCode Desktop"} selected: no changes made; its integration is immutable.`,
   );
+  if (targets.includes("pi-cli")) {
+    messages.push(Bun.which("pi-mcp-adapter") === null
+      ? "Pi dependency missing: pi-mcp-adapter must be installed and managed by the user; mr-clients will not install packages automatically."
+      : "Pi dependency available: user-managed pi-mcp-adapter detected.");
+  }
   for (const plan of configPlans(targets)) {
     const { target } = plan;
     const path = targetPath(target);
     const before = await readOptional(path);
     const ownedFingerprint = ownedConfigFingerprints.get(path);
     const ownedUnchanged = ownedFingerprint !== undefined && fingerprint(before) === ownedFingerprint;
+    const piOwnedBase = target === "pi" ? removePiBridge(before, plan.bridges["mr-orchestrator"]!) : before;
+    const piEntryUnchanged = target === "pi" && piOwnedBase !== before;
     const base = ownedUnchanged
       ? removePlanBridges(before, plan)
-      : before;
+      : piOwnedBase;
     const after = target === "codex"
       ? mergeCodexConfig(base, catalog, plan.bridges["mr-orchestrator"]!)
       : target === "cursor"
@@ -176,8 +189,10 @@ export async function install(targets: InstallTarget[]): Promise<string[]> {
           ? mergeClaudeConfig(base, catalog, plan.bridges["mr-orchestrator"]!)
           : target === "fx"
             ? mergeFxConfig(base, catalog, plan.bridges["mr-orchestrator"]!)
+            : target === "pi"
+              ? mergePiConfig(base, catalog, plan.bridges["mr-orchestrator"]!)
             : mergeGeminiConfig(base, catalog, plan.bridges);
-    if (before === after && !ownedUnchanged) {
+    if (before === after && !ownedUnchanged && !piEntryUnchanged) {
       messages.push(`Preserved ${target} MCP configuration at ${path}: an existing bridge entry is not owned by mr-orchestrator.`);
       continue;
     }
@@ -248,7 +263,12 @@ export async function install(targets: InstallTarget[]): Promise<string[]> {
 
 export async function doctor(): Promise<string[]> {
   const manifest = await loadManifest();
-  const results = ["OpenCode integration: immutable; not managed by mr-clients."];
+  const results = [
+    "OpenCode integration: immutable; not managed by mr-clients.",
+    Bun.which("pi-mcp-adapter") === null
+      ? "Pi MCP adapter: missing; pi-mcp-adapter must be installed and managed by the user."
+      : "Pi MCP adapter: available (user-managed).",
+  ];
   for (const entry of manifest.entries) {
     const content = await readOptional(entry.path);
     const kind = entry.kind === "artifact" ? "adapter" : "configuration";
@@ -264,6 +284,14 @@ export async function uninstall(dryRun: boolean): Promise<string[]> {
   for (const entry of manifest.entries) {
     const content = await readOptional(entry.path);
     if (fingerprint(content) !== entry.fingerprint) {
+      if (entry.kind !== "artifact" && entry.target === "pi") {
+        const after = removePiBridge(content, bridgeConfig("pi"));
+        if (after !== content) {
+          results.push(`${dryRun ? "Would remove" : "Removed"} unchanged owned pi bridge entry from ${entry.path}; preserved unrelated Pi MCP entries.`);
+          if (!dryRun) await writeFile(entry.path, after);
+          continue;
+        }
+      }
       remaining.push(entry);
       results.push(`Preserved ${entry.path}: it changed after installation.`);
       continue;
