@@ -6,6 +6,26 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-21
+
+### Added
+
+- Added first-class Pi harness support with per-invocation application mode, provider-qualified model translation, and reasoning level mapping.
+- Added native Pi prompt templates under `~/.pi/agent/prompts/` for `/flow`, `/blueprint`, `/flow-models`, and `/work`.
+- Added managed mr-orchestrator MCP server registration in `~/.pi/agent/mcp.json` that safely preserves user-managed MCP servers.
+- Added CLI support for non-interactive installer targeting (`mr-clients --target pi-cli`).
+
+### Changed
+
+- Updated client installer and role runner to execute Pi roles using `pi --print --no-session --model ...` with optional thinking parameters.
+- Updated documentation and design specs with Pi prerequisites (`pi-mcp-adapter`) and harness routing architecture.
+
+### Safety
+
+- Catalog presence is not treated as proof of quota; missing models or permissions fail closed with actionable diagnostics.
+- Pi configuration and model artifacts remain completely isolated from FX and other harness configurations.
+- Unchanged user MCP servers and custom prompt configurations are strictly preserved.
+
 ## [0.13.0] - 2026-09-19
 
 ### Added
@@ -240,6 +260,7 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.2.0]: https://github.com/marioccarloss/orchestrator/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/marioccarloss/orchestrator/releases/tag/v0.1.0
 
-[Unreleased]: https://github.com/marioccarloss/orchestrator/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/marioccarloss/orchestrator/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/marioccarloss/orchestrator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/marioccarloss/orchestrator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/marioccarloss/orchestrator/compare/v0.11.0...v0.12.0
