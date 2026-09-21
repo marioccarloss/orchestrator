@@ -78,7 +78,7 @@ export function roleCommand(
   if (effective.harness === "pi") {
     return {
       command: "pi",
-      arguments: ["--print", "--no-session", "--model", target.model, ...(target.variant === undefined ? [] : ["--thinking", target.variant]), prompt],
+      arguments: ["--print", "--no-session", "--model", target.model, ...(target.variant === undefined ? [] : ["--thinking", target.variant]), "--", prompt],
     };
   }
   return {

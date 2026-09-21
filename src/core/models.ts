@@ -481,8 +481,9 @@ export function parsePiAvailableModels(output: string): readonly PiDiscoveredMod
       || (images !== "yes" && images !== "no")) {
       throw new Error(`pi --list-models returned a malformed row: ${line}`);
     }
-    const qualified = `${provider}/${model}`;
-    return { logicalModel: qualified, nativeModel: qualified, supportsThinking: thinking === "yes" };
+    const nativeModel = `${provider}/${model}`;
+    const logicalModel = provider === "vercel-ai-gateway" && model.includes("/") ? model : nativeModel;
+    return { logicalModel, nativeModel, supportsThinking: thinking === "yes" };
   });
 }
 

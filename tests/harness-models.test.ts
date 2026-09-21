@@ -237,6 +237,25 @@ void test("parses the public Pi model table and qualifies native model ids", () 
   ]);
 });
 
+void test("keeps Vercel Gateway vendor ids logical while qualifying the Pi native id", () => {
+  assert.deepEqual(parsePiAvailableModels([
+    "provider           model                       context  max-out  thinking  images",
+    "vercel-ai-gateway  alibaba/qwen3-coder-next    262K     65K      yes       no",
+    "anthropic          claude-sonnet-4-6           200K     64K      yes       yes",
+  ].join("\n")), [
+    {
+      logicalModel: "alibaba/qwen3-coder-next",
+      nativeModel: "vercel-ai-gateway/alibaba/qwen3-coder-next",
+      supportsThinking: true,
+    },
+    {
+      logicalModel: "anthropic/claude-sonnet-4-6",
+      nativeModel: "anthropic/claude-sonnet-4-6",
+      supportsThinking: true,
+    },
+  ]);
+});
+
 void test("rejects malformed or empty Pi model tables", () => {
   assert.throws(
     () => parsePiAvailableModels("provider model context max-out thinking images\nanthropic claude 200K 8K yes no"),

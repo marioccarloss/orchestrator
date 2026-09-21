@@ -42,12 +42,17 @@ test("builds a Pi invocation with optional thinking from the native role target"
   const withThinking = { explore: { primary: { native: { model: "anthropic/claude-sonnet-4-6", variant: "high" } } } };
   expect(roleCommand({ harness: "pi", applicationMode: "per-invocation", roles: withThinking } as never, "explore", "Inspect the router")).toEqual({
     command: "pi",
-    arguments: ["--print", "--no-session", "--model", "anthropic/claude-sonnet-4-6", "--thinking", "high", "Inspect the router"],
+    arguments: ["--print", "--no-session", "--model", "anthropic/claude-sonnet-4-6", "--thinking", "high", "--", "Inspect the router"],
   });
 
   const withoutThinking = { explore: { primary: { native: { model: "openai/gpt-4o-mini" } } } };
   expect(roleCommand({ harness: "pi", applicationMode: "per-invocation", roles: withoutThinking } as never, "explore", "Inspect the router")).toEqual({
     command: "pi",
-    arguments: ["--print", "--no-session", "--model", "openai/gpt-4o-mini", "Inspect the router"],
+    arguments: ["--print", "--no-session", "--model", "openai/gpt-4o-mini", "--", "Inspect the router"],
+  });
+
+  expect(roleCommand({ harness: "pi", applicationMode: "per-invocation", roles: withoutThinking } as never, "explore", "--help")).toEqual({
+    command: "pi",
+    arguments: ["--print", "--no-session", "--model", "openai/gpt-4o-mini", "--", "--help"],
   });
 });
