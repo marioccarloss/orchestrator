@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { runCommand } from "./process.js";
 import { atomicWrite } from "./files.js";
@@ -23,10 +23,14 @@ export const ATLAS_BLOCK_START = "<!-- mr-atlas:start -->";
 export const ATLAS_BLOCK_END = "<!-- mr-atlas:end -->";
 export const MAP_CHAR_BUDGET = 16_000;
 
-/** Instruction files that other agents read. AGENTS.md is created when missing; the rest only when present. */
+/**
+ * Instruction files that other agents read. AGENTS.md and CLAUDE.md are created when missing
+ * (Claude Code reads CLAUDE.md, not AGENTS.md, so a created CLAUDE.md just imports @AGENTS.md);
+ * the rest are only updated when present.
+ */
 export const POINTER_TARGETS = [
   { file: "AGENTS.md", create: true },
-  { file: "CLAUDE.md", create: false },
+  { file: "CLAUDE.md", create: true },
   { file: "GEMINI.md", create: false },
   { file: ".github/copilot-instructions.md", create: false },
 ] as const;
@@ -161,6 +165,15 @@ export function renderAtlasPointer(packRelative: string): string {
   ].join("\n");
 }
 
+/** Managed CLAUDE.md block: Claude Code resolves `@AGENTS.md` as an import, so the pointer lives in one place. */
+export function renderClaudeImport(): string {
+  return [ATLAS_BLOCK_START, "@AGENTS.md", ATLAS_BLOCK_END].join("\n");
+}
+
+function importsAgentsOutsideBlock(content: string): boolean {
+  return /^\s*@AGENTS\.md\s*$/mu.test(removeManagedBlock(content));
+}
+
 /** Inserts or replaces only the managed block; everything outside the markers is preserved byte for byte. */
 export function upsertManagedBlock(content: string, block: string): string {
   const start = content.indexOf(ATLAS_BLOCK_START);
@@ -219,7 +232,11 @@ export async function linkAtlasPointers(workspace: Pick<WorkspaceProfile, "root"
       const exists = existsSync(path);
       if (!exists && !target.create) continue;
       const previous = exists ? await readFile(path, "utf8") : "";
-      const next = upsertManagedBlock(previous, block);
+      const claude = target.file === "CLAUDE.md";
+      // A CLAUDE.md that already imports @AGENTS.md sees the AGENTS.md pointer; do not duplicate it.
+      const next = claude && exists && importsAgentsOutsideBlock(previous)
+        ? previous
+        : upsertManagedBlock(previous, claude && !exists ? renderClaudeImport() : block);
       if (next === previous) {
         changes.push({ path, action: "unchanged", tracked: isTracked(repoRoot, target.file) });
         continue;
@@ -243,7 +260,9 @@ export async function unlinkAtlasPointers(repoRoots: readonly string[]): Promise
       const previous = await readFile(path, "utf8");
       const next = removeManagedBlock(previous);
       if (next !== previous) {
-        await writeFile(path, next, "utf8");
+        // Files that only held the Atlas block were created by mr: remove them entirely.
+        if (next.trim().length === 0) await rm(path);
+        else await writeFile(path, next, "utf8");
         changed.push(path);
       }
     }
