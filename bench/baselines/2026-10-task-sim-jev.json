@@ -1,0 +1,303 @@
+{
+  "schemaVersion": 1,
+  "kind": "task-simulation",
+  "generatedAt": "2026-10-03T18:31:15.246Z",
+  "scope": "scripted role outputs on real fixture repos; zero model tokens; verifies machinery, not model quality",
+  "corpus": "/Users/roca/Documents/apps/corpus",
+  "summary": {
+    "journeys": 6,
+    "delivered": 6,
+    "modelTokens": 0,
+    "jev": "typesafe",
+    "jevCalls": 19,
+    "jevTokens": 18806,
+    "autoAppliedSteps": 9,
+    "modelSteps": 2,
+    "failuresCaught": 1,
+    "meanPlanHandoffTokens": 367,
+    "meanHandoffVsRepo": 1.05,
+    "meanMs": 1041
+  },
+  "journeys": [
+    {
+      "id": "A1-tweak",
+      "repo": "web-shop",
+      "intake": {
+        "classification": {
+          "strategy": "tweak",
+          "difficulty": 1,
+          "source": "jev",
+          "confidence": 1
+        },
+        "read": "none",
+        "verify": "tests"
+      },
+      "handoff": {
+        "chars": 348,
+        "approxTokens": 87,
+        "repoChars": 1380,
+        "mustKeep": 0,
+        "slices": 1,
+        "manifest": 0
+      },
+      "jevCalls": 2,
+      "jevTokens": 1961,
+      "ok": true,
+      "autoSteps": [
+        "S1"
+      ],
+      "modelSteps": [],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ npm run test (122 ms)"
+      ],
+      "phases": [
+        "start→plan",
+        "plan_submit→apply",
+        "apply→verify",
+        "verify→done",
+        "status→done"
+      ],
+      "ms": 798
+    },
+    {
+      "id": "A2-replicate",
+      "repo": "web-shop",
+      "intake": {
+        "classification": {
+          "strategy": "replicate",
+          "difficulty": 2,
+          "source": "jev",
+          "confidence": 1
+        },
+        "read": "targeted",
+        "verify": "tests"
+      },
+      "handoff": {
+        "chars": 1786,
+        "approxTokens": 447,
+        "repoChars": 1380,
+        "mustKeep": 2,
+        "slices": 3,
+        "manifest": 0
+      },
+      "applyHandoffChars": 1398,
+      "jevCalls": 3,
+      "jevTokens": 3169,
+      "ok": true,
+      "autoSteps": [
+        "S1",
+        "S2"
+      ],
+      "modelSteps": [
+        "S3"
+      ],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ bun test (15 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→apply",
+        "step_done→verify",
+        "verify→done",
+        "status→done"
+      ],
+      "ms": 880
+    },
+    {
+      "id": "A3-bugfix",
+      "repo": "web-shop",
+      "intake": {
+        "classification": {
+          "strategy": "bugfix",
+          "difficulty": 3,
+          "source": "jev",
+          "confidence": 1
+        },
+        "read": "targeted",
+        "verify": "tests"
+      },
+      "handoff": {
+        "chars": 1924,
+        "approxTokens": 481,
+        "repoChars": 1380,
+        "mustKeep": 3,
+        "slices": 3,
+        "manifest": 0
+      },
+      "jevCalls": 3,
+      "jevTokens": 3149,
+      "ok": true,
+      "autoSteps": [
+        "S1",
+        "S2"
+      ],
+      "modelSteps": [],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ bun test (15 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→verify",
+        "verify→done",
+        "status→done"
+      ],
+      "ms": 970
+    },
+    {
+      "id": "B1-feature",
+      "repo": "api-refs",
+      "intake": {
+        "classification": {
+          "strategy": "feature",
+          "difficulty": 5,
+          "source": "heuristic"
+        },
+        "read": "targeted",
+        "verify": "tests"
+      },
+      "handoff": {
+        "chars": 2220,
+        "approxTokens": 555,
+        "repoChars": 1415,
+        "mustKeep": 2,
+        "slices": 3,
+        "manifest": 0
+      },
+      "jevCalls": 3,
+      "jevTokens": 3110,
+      "ok": true,
+      "autoSteps": [
+        "S1",
+        "S2"
+      ],
+      "modelSteps": [],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ bun test (14 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→verify",
+        "verify→done",
+        "status→done"
+      ],
+      "ms": 984
+    },
+    {
+      "id": "B2-bugfix",
+      "repo": "api-refs",
+      "intake": {
+        "classification": {
+          "strategy": "bugfix",
+          "difficulty": 3,
+          "source": "jev",
+          "confidence": 0.91
+        },
+        "read": "targeted",
+        "verify": "tests"
+      },
+      "handoff": {
+        "chars": 1340,
+        "approxTokens": 335,
+        "repoChars": 1415,
+        "mustKeep": 2,
+        "slices": 2,
+        "manifest": 0
+      },
+      "jevCalls": 3,
+      "jevTokens": 3037,
+      "ok": true,
+      "autoSteps": [
+        "S1",
+        "S2"
+      ],
+      "modelSteps": [],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ bun test (13 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→verify",
+        "verify→done",
+        "status→done"
+      ],
+      "ms": 974
+    },
+    {
+      "id": "B3-recovery",
+      "repo": "api-refs",
+      "intake": {
+        "classification": {
+          "strategy": "tweak",
+          "difficulty": 1,
+          "source": "jev",
+          "confidence": 0.9
+        },
+        "read": "targeted",
+        "verify": "tests"
+      },
+      "exploreResubmitted": [
+        "missing:target"
+      ],
+      "handoff": {
+        "chars": 1189,
+        "approxTokens": 297,
+        "repoChars": 1415,
+        "mustKeep": 2,
+        "slices": 1,
+        "manifest": 0
+      },
+      "rejectedPlanIssues": [
+        "anchor-not-found"
+      ],
+      "applyHandoffChars": 1827,
+      "jevCalls": 5,
+      "jevTokens": 4380,
+      "ok": true,
+      "autoSteps": [],
+      "modelSteps": [
+        "S1"
+      ],
+      "verifyAttempts": 2,
+      "verificationFailuresCaught": [
+        {
+          "outOfPlanFiles": [
+            "src/utils/debug.ts"
+          ],
+          "failedCommands": []
+        }
+      ],
+      "commands": [
+        "✓ bun test (15 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→apply",
+        "step_done→verify",
+        "verify→apply",
+        "verify→done",
+        "status→done"
+      ],
+      "ms": 1641
+    }
+  ]
+}

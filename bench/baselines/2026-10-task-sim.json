@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "kind": "task-simulation",
+  "generatedAt": "2026-10-03T18:10:34.612Z",
+  "scope": "scripted role outputs on real fixture repos; zero model tokens; verifies machinery, not model quality",
+  "corpus": "/Users/roca/Documents/apps/corpus",
+  "summary": {
+    "journeys": 6,
+    "delivered": 6,
+    "modelTokens": 0,
+    "autoAppliedSteps": 9,
+    "modelSteps": 2,
+    "failuresCaught": 1,
+    "meanPlanHandoffTokens": 363,
+    "meanHandoffVsRepo": 1.04,
+    "meanMs": 63
+  },
+  "journeys": [
+    {
+      "id": "A1-tweak",
+      "repo": "web-shop",
+      "intake": {
+        "classification": {
+          "strategy": "tweak",
+          "difficulty": 1,
+          "source": "heuristic"
+        },
+        "read": "none",
+        "verify": "format-lint"
+      },
+      "handoff": {
+        "chars": 358,
+        "approxTokens": 90,
+        "repoChars": 1380,
+        "mustKeep": 0,
+        "slices": 1,
+        "manifest": 0
+      },
+      "ok": true,
+      "autoSteps": [
+        "S1"
+      ],
+      "modelSteps": [],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [],
+      "phases": [
+        "start→plan",
+        "plan_submit→apply",
+        "apply→verify",
+        "verify→done"
+      ],
+      "ms": 53
+    },
+    {
+      "id": "A2-replicate",
+      "repo": "web-shop",
+      "intake": {
+        "classification": {
+          "strategy": "replicate",
+          "difficulty": 2,
+          "source": "heuristic"
+        },
+        "read": "targeted",
+        "verify": "typecheck"
+      },
+      "handoff": {
+        "chars": 1794,
+        "approxTokens": 449,
+        "repoChars": 1380,
+        "mustKeep": 2,
+        "slices": 3,
+        "manifest": 0
+      },
+      "applyHandoffChars": 1402,
+      "ok": true,
+      "autoSteps": [
+        "S1",
+        "S2"
+      ],
+      "modelSteps": [
+        "S3"
+      ],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ bun test (21 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→apply",
+        "step_done→verify",
+        "verify→done"
+      ],
+      "ms": 76
+    },
+    {
+      "id": "A3-bugfix",
+      "repo": "web-shop",
+      "intake": {
+        "classification": {
+          "strategy": "bugfix",
+          "difficulty": 3,
+          "source": "heuristic"
+        },
+        "read": "targeted",
+        "verify": "tests"
+      },
+      "handoff": {
+        "chars": 1928,
+        "approxTokens": 482,
+        "repoChars": 1380,
+        "mustKeep": 3,
+        "slices": 3,
+        "manifest": 0
+      },
+      "ok": true,
+      "autoSteps": [
+        "S1",
+        "S2"
+      ],
+      "modelSteps": [],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ bun test (15 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→verify",
+        "verify→done"
+      ],
+      "ms": 50
+    },
+    {
+      "id": "B1-feature",
+      "repo": "api-refs",
+      "intake": {
+        "classification": {
+          "strategy": "feature",
+          "difficulty": 5,
+          "source": "heuristic"
+        },
+        "read": "targeted",
+        "verify": "typecheck"
+      },
+      "handoff": {
+        "chars": 2228,
+        "approxTokens": 557,
+        "repoChars": 1415,
+        "mustKeep": 2,
+        "slices": 3,
+        "manifest": 0
+      },
+      "ok": true,
+      "autoSteps": [
+        "S1",
+        "S2"
+      ],
+      "modelSteps": [],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ bun test (18 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→verify",
+        "verify→done"
+      ],
+      "ms": 53
+    },
+    {
+      "id": "B2-bugfix",
+      "repo": "api-refs",
+      "intake": {
+        "classification": {
+          "strategy": "bugfix",
+          "difficulty": 3,
+          "source": "heuristic"
+        },
+        "read": "targeted",
+        "verify": "tests"
+      },
+      "handoff": {
+        "chars": 1344,
+        "approxTokens": 336,
+        "repoChars": 1415,
+        "mustKeep": 2,
+        "slices": 2,
+        "manifest": 0
+      },
+      "ok": true,
+      "autoSteps": [
+        "S1",
+        "S2"
+      ],
+      "modelSteps": [],
+      "verifyAttempts": 1,
+      "verificationFailuresCaught": [],
+      "commands": [
+        "✓ bun test (15 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→verify",
+        "verify→done"
+      ],
+      "ms": 53
+    },
+    {
+      "id": "B3-recovery",
+      "repo": "api-refs",
+      "intake": {
+        "classification": {
+          "strategy": "feature",
+          "difficulty": 3,
+          "source": "heuristic"
+        },
+        "read": "targeted",
+        "verify": "typecheck"
+      },
+      "handoff": {
+        "chars": 1056,
+        "approxTokens": 264,
+        "repoChars": 1415,
+        "mustKeep": 1,
+        "slices": 1,
+        "manifest": 0
+      },
+      "rejectedPlanIssues": [
+        "anchor-not-found"
+      ],
+      "applyHandoffChars": 1748,
+      "ok": true,
+      "autoSteps": [],
+      "modelSteps": [
+        "S1"
+      ],
+      "verifyAttempts": 2,
+      "verificationFailuresCaught": [
+        {
+          "outOfPlanFiles": [
+            "src/utils/debug.ts"
+          ],
+          "failedCommands": []
+        }
+      ],
+      "commands": [
+        "✓ bun test (17 ms)"
+      ],
+      "phases": [
+        "start→explore",
+        "explore_submit→plan",
+        "plan_submit→apply",
+        "apply→apply",
+        "step_done→verify",
+        "verify→apply",
+        "verify→done"
+      ],
+      "ms": 92
+    }
+  ]
+}
