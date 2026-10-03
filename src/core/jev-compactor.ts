@@ -33,6 +33,8 @@ export const JevCompactorConfigSchema = z.strictObject({
   maxLinesPerChunk: z.number().int().min(1).max(100),
   minToolOutputChars: z.number().int().min(0),
   protectedRecentToolResults: z.number().int().min(0).max(20),
+  /** Request Gateway Zero Data Retention. Plans without ZDR reject every call; the plugin passes the Decision Plane setting. */
+  zeroDataRetention: z.boolean(),
 }).refine(
   (config) => config.targetRatio < config.triggerRatio,
   { message: "targetRatio must be lower than triggerRatio" },
@@ -56,6 +58,7 @@ export const DEFAULT_JEV_COMPACTOR_CONFIG: JevCompactorConfig = {
   maxLinesPerChunk: 20,
   minToolOutputChars: 256,
   protectedRecentToolResults: 1,
+  zeroDataRetention: true,
 };
 
 export interface CompactionMessage {
@@ -199,7 +202,7 @@ function defaultRunner(config: JevCompactorConfig, env: NodeJS.ProcessEnv): JevC
       questions: input.questions,
       maxRetries: 0,
       abortSignal: input.abortSignal,
-      providerOptions: { gateway: { zeroDataRetention: true } },
+      providerOptions: { gateway: { zeroDataRetention: config.zeroDataRetention } },
     });
     const confidence = providerConfidence(result.providerMetadata);
     return {

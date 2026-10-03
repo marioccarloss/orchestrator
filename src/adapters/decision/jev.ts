@@ -18,6 +18,8 @@ interface JevRunnerInput {
   readonly questions: Readonly<Record<string, Experimental_EvaluationQuestion>>;
   readonly maxRetries: number;
   readonly abortSignal: AbortSignal;
+  /** Request Zero Data Retention from the Gateway. Defaults to true; only explicit opt-outs disable it. */
+  readonly zeroDataRetention?: boolean;
 }
 
 interface JevRunnerResult {
@@ -113,7 +115,7 @@ const defaultRunner: JevEvaluationRunner = async (input) => {
     maxRetries: input.maxRetries,
     abortSignal: input.abortSignal,
     providerOptions: {
-      gateway: { zeroDataRetention: true },
+      gateway: { zeroDataRetention: input.zeroDataRetention ?? true },
     },
   });
   return result;
@@ -126,6 +128,7 @@ export class JevDecisionEngine implements DecisionEngine {
     readonly model: string,
     private readonly environment: NodeJS.ProcessEnv = process.env,
     private readonly runner: JevEvaluationRunner = defaultRunner,
+    private readonly options: { readonly zeroDataRetention?: boolean } = {},
   ) {}
 
   status(): { readonly available: boolean; readonly reason?: string } {
@@ -158,6 +161,7 @@ export class JevDecisionEngine implements DecisionEngine {
         questions: questionsRecord(input.questions),
         maxRetries: input.maxRetries,
         abortSignal: controller.signal,
+        ...(this.options.zeroDataRetention === false ? { zeroDataRetention: false } : {}),
       });
       const answers = Object.fromEntries(Object.entries(result.answers).map(([id, answer]) => [id, asDecisionAnswer(answer)]));
       const confidence = confidenceMap(result.providerMetadata, input.questions.map((question) => question.id));

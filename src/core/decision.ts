@@ -20,6 +20,12 @@ export const DecisionPlaneConfigSchema = z.strictObject({
   model: z.string().min(1),
   maxRetries: z.number().int().min(0).max(5),
   timeoutMs: z.number().int().min(250).max(30_000),
+  /**
+   * Ask Vercel AI Gateway for Zero Data Retention. Gateway rejects it on plans
+   * without ZDR (e.g. hobby), which makes every Jev call fail closed. Turning it
+   * off is an explicit developer decision (`mr decision zdr off`).
+   */
+  zeroDataRetention: z.boolean().default(true),
   thresholds: z.strictObject({
     booleanTrue: z.number().min(0.5).max(1),
     booleanFalse: z.number().min(0).max(0.5),
@@ -41,6 +47,7 @@ export const DEFAULT_DECISION_PLANE_CONFIG: DecisionPlaneConfig = {
   model: "typesafe-ai/jev",
   maxRetries: 1,
   timeoutMs: 8_000,
+  zeroDataRetention: true,
   thresholds: {
     booleanTrue: 0.9,
     booleanFalse: 0.1,
@@ -171,7 +178,11 @@ export async function loadDecisionPlaneConfig(
     : DecisionPlaneModeSchema.parse(env["MR_DECISION_MODE"]);
   const configuredModel = env["MR_DECISION_MODEL"]?.trim();
   const model = configuredModel === undefined || configuredModel.length === 0 ? stored.model : configuredModel;
-  return DecisionPlaneConfigSchema.parse({ ...stored, mode, model });
+  const zdrOverride = env["MR_DECISION_ZDR"]?.trim().toLowerCase();
+  const zeroDataRetention = zdrOverride === "off" || zdrOverride === "false" || zdrOverride === "0"
+    ? false
+    : zdrOverride === "on" || zdrOverride === "true" || zdrOverride === "1" ? true : stored.zeroDataRetention;
+  return DecisionPlaneConfigSchema.parse({ ...stored, mode, model, zeroDataRetention });
 }
 
 export async function saveDecisionPlaneConfig(paths: MrPaths, config: DecisionPlaneConfig): Promise<void> {
@@ -189,6 +200,13 @@ export async function setDecisionPlaneMode(
     mode,
     ...(model === undefined ? {} : { model: model.trim() }),
   });
+  await saveDecisionPlaneConfig(paths, next);
+  return next;
+}
+
+export async function setDecisionZeroDataRetention(paths: MrPaths, enabled: boolean): Promise<DecisionPlaneConfig> {
+  const current = await loadDecisionPlaneConfig(paths, {});
+  const next = DecisionPlaneConfigSchema.parse({ ...current, zeroDataRetention: enabled });
   await saveDecisionPlaneConfig(paths, next);
   return next;
 }

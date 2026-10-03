@@ -25,6 +25,11 @@ El Decision Plane expone perfiles fijos y preguntas acotadas: `intent`, `context
 
 ## Activación
 
+Jev se llama por una de dos vías:
+
+1. **TypeSafe directo** (preferida): si existe `TYPESAFE_API_KEY` o `JEV_API_KEY`, el plugin usa `https://api.typesafe.ai/v1/systemone` (`TYPESAFE_BASE_URL` y `TYPESAFE_DEFAULT_MODEL` opcionales).
+2. **Vercel AI Gateway**: con `AI_GATEWAY_API_KEY`. Pide Zero Data Retention por defecto; en planes sin ZDR (hobby) cada llamada falla. `mr decision zdr off` (o `MR_DECISION_ZDR=off`) lo desactiva de forma explícita, aceptando la retención estándar del Gateway y del proveedor.
+
 Proporciona una credencial a Vercel AI Gateway en el entorno de ejecución. mr-orchestrator solo comprueba si existe; no la lee, almacena ni imprime.
 
 ```bash

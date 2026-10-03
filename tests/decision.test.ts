@@ -54,3 +54,17 @@ test("decision plane remains opt-in and persists shadow mode without credentials
     await rm(home, { recursive: true, force: true });
   }
 });
+
+void test("Zero Data Retention defaults on, can be turned off explicitly, and env overrides the file", async () => {
+  const { setDecisionZeroDataRetention } = await import("../src/core/decision.js");
+  const home = await mkdtemp(join(tmpdir(), "mr-decision-zdr-"));
+  try {
+    const paths = resolvePaths({ HOME: home });
+    assert.equal((await loadDecisionPlaneConfig(paths, {})).zeroDataRetention, true);
+    assert.equal((await setDecisionZeroDataRetention(paths, false)).zeroDataRetention, false);
+    assert.equal((await loadDecisionPlaneConfig(paths, {})).zeroDataRetention, false);
+    assert.equal((await loadDecisionPlaneConfig(paths, { MR_DECISION_ZDR: "on" })).zeroDataRetention, true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
