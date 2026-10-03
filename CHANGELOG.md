@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-03
+
+### Added
+
+- Added `mr task-model`: per-role models for `/task` (explore, plan, apply) with Modelo │ Esfuerzo │ Velocidad tabs driven by the OpenCode catalog (variants for effort, service-tier siblings such as `-fast`/`-flex` for speed), non-interactive `set`/`reset`/`show`, and an entry in `mr flow-models`. Roles without an override keep inheriting `/flow`.
+
+### Changed
+
+- Portable Atlas now creates `CLAUDE.md` when missing as a managed `@AGENTS.md` import so Claude Code reads the pointer; an existing `CLAUDE.md` that already imports `@AGENTS.md` is left untouched, and files that only held the Atlas block are removed by `mr atlas unlink`.
+
 ## [0.15.0] - 2026-10-03
 
 ### Added
