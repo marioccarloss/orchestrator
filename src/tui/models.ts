@@ -16,6 +16,7 @@ import {
   type RoleCategory,
 } from "../core/models.js";
 import type { HarnessId, ModelMap } from "../core/schema.js";
+import { interactiveTaskModelSelector } from "./task-models.js";
 
 export interface ModelSelectorOptions {
   readonly installation?: boolean;
@@ -166,6 +167,9 @@ export async function interactiveModelSelector(
         { value: "all", label: "Configurar todos los procesos", hint: "recorrido guiado completo (11 steps)" },
         { value: "flow", label: "Configurar steps de /flow", hint: "8 steps: orchestrator, explore, plan, etc." },
         { value: "blueprint", label: "Configurar steps de /blueprint", hint: "3 steps: extractor, architect, transactor" },
+        ...(options.harness === undefined || options.harness === "opencode"
+          ? [{ value: "task", label: "Configurar roles de /task", hint: "pestañas Modelo │ Esfuerzo │ Velocidad (task-model)" }]
+          : []),
         { value: "role", label: "Cambiar un proceso concreto" },
         { value: "preset", label: "Aplicar un preset" },
         { value: "refresh", label: "Actualizar catálogo desde OpenCode" },
@@ -187,6 +191,10 @@ export async function interactiveModelSelector(
         ? `Modelos guardados en ${options.harness === undefined ? "el roster global" : `el override de ${options.harness}`}. Reinicia las sesiones activas para aplicarlos.`
         : "No había cambios que guardar.");
       return dirty;
+    }
+    if (action === "task") {
+      await interactiveTaskModelSelector(paths);
+      continue;
     }
     if (action === "refresh") {
       if (options.harness === undefined) {

@@ -52,7 +52,7 @@ Escribes `/task <una línea, un prompt, o la referencia a un ticket/diseño>`. S
 5. **Verify** (`mr_task_verify`): lint/format de los archivos tocados + typecheck/tests según el nivel, sin shell, y comprobación de que el diff solo toca archivos del plan.
 6. **Finish** (`mr_task_finish`): memoria compacta en Engram. No hace commit, push ni PR.
 
-Modelos: `explore`, `plan` y `general` de tu configuración. Jev se usa si el Decision Plane está activo (`mr decision shadow` + credencial de AI Gateway); si no, heurísticas deterministas.
+Modelos: por defecto heredan `explore`, `plan` y `general` de `/flow`. `mr task-model` abre pestañas **Modelo │ Esfuerzo │ Velocidad** por rol (explore, plan, apply); la velocidad aparece solo si el catálogo de OpenCode tiene variantes de servicio (`-fast`, `-flex`, `-ultrafast`). También: `mr task-model set plan openai/gpt-5.6-sol-fast#high`, `mr task-model reset`, o la opción «Configurar roles de /task» en `mr flow-models`. Jev se usa si el Decision Plane está activo (`mr decision shadow` + credencial de AI Gateway); si no, heurísticas deterministas.
 
 El **Relay** (hook `tool.execute.after`) escribe cada lectura, búsqueda, edición y comando en `journal.jsonl`; lo omitido en un handoff aparece en el manifest y se recupera con `mr_task_recall`.
 
@@ -125,7 +125,7 @@ Flujo: payload vacío o con `index` → `mr_atlas_index` e informa `ficheros, no
 * `MEMORY.md`: decisiones del proyecto desde Engram (si está activo).
 * `AGENTS.md`: reglas (con `mr atlas init`).
 
-Y escribe un bloque `<!-- mr-atlas:start -->…<!-- mr-atlas:end -->` en el `AGENTS.md` de cada repo (lo crea si falta) y en `CLAUDE.md`, `GEMINI.md` y `.github/copilot-instructions.md` si existen. Solo toca lo que hay entre las marcas. `.aicontext/` y los `AGENTS.md` creados se ignoran en local con `.git/info/exclude`; nunca se commitean.
+Y escribe un bloque `<!-- mr-atlas:start -->…<!-- mr-atlas:end -->` en el `AGENTS.md` de cada repo (lo crea si falta), en `GEMINI.md` y `.github/copilot-instructions.md` si existen, y en `CLAUDE.md`: si falta lo crea con `@AGENTS.md` (Claude Code lo importa); si ya importa `@AGENTS.md` no lo toca. Solo toca lo que hay entre las marcas. `.aicontext/` y los `AGENTS.md` creados se ignoran en local con `.git/info/exclude`; nunca se commitean.
 
 * `mr atlas query <Símbolo> info|deps|dependents|impact|slice|tests|find`: consulta el grafo desde cualquier terminal.
 * `mr atlas index --no-link`: no escribe punteros. `mr atlas unlink`: los quita.

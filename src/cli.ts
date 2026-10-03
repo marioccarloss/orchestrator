@@ -10,7 +10,7 @@ import { runDoctor } from "./core/doctor.js";
 import { assessFigmaSetup, figmaSetupInstructions, publishFigmaManifest } from "./core/figma-setup.js";
 import { install, planUninstall, uninstall } from "./core/install.js";
 import { launch } from "./core/launch.js";
-import { loadEffectiveModels, refreshHarnessCatalog, resetHarnessModels, setHarnessModelRole, setModelPreset, setModelRole, syncAllWorkspaces, type ModelSlot } from "./core/models.js";
+import { loadEffectiveModels, refreshHarnessCatalog, resetHarnessModels, setHarnessModelRole, parseModelTarget, setModelPreset, setModelRole, syncAllWorkspaces, type ModelSlot } from "./core/models.js";
 import { harnessCatalogPath, loadHarnessCatalog, parseHarnessId, writeEffectiveHarnessModels } from "./core/harness-models.js";
 import { resolvePaths } from "./core/paths.js";
 import { ModelRoleSchema, type HarnessId } from "./core/schema.js";
@@ -31,6 +31,8 @@ import { atomicWrite } from "./core/files.js";
 import { hasGatewayCredentials, loadDecisionPlaneConfig, setDecisionPlaneMode, setDecisionZeroDataRetention } from "./core/decision.js";
 import { TaskEffortRoleSchema, loadTaskEffortSync, saveTaskEffort, setTaskEffort, taskEffortPath } from "./core/task/effort.js";
 import { TaskStrategySchema } from "./core/task/schema.js";
+import { loadTaskModelsSync, parseTaskRoleArgument, saveTaskModels, setTaskModel } from "./core/task/models.js";
+import { formatTaskModelMatrix, interactiveTaskModelSelector } from "./tui/task-models.js";
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const sourceRoot = existsSync(join(sourceDirectory, "..", "package.json")) ? join(sourceDirectory, "..") : join(sourceDirectory, "..", "..");
@@ -54,6 +56,7 @@ Usage:
   mr models preset <key>
   mr flow-models [--harness ID]
   mr decision [status | shadow | off | zdr on|off] [--model ID]
+  mr task-model [show | set <explore|plan|apply> <provider/model[#variant]> | reset [role]]   # sin args: pestañas Modelo │ Esfuerzo │ Velocidad
   mr task-effort [show | set <strategy> <explore|plan|general> <variant> | unset <strategy> <role>]
   mr atlas index [--no-link]          # graph + local MAP.md/MEMORY.md + AGENTS.md pointer for any agent
   mr atlas query <Symbol> [info|deps|dependents|impact|slice|tests|find] [--depth N]
@@ -145,6 +148,36 @@ async function commandDecision(arguments_: readonly string[]): Promise<void> {
   info(`Zero Data Retention: ${config.zeroDataRetention ? "requested (requires a Gateway plan with ZDR)" : "OFF — Gateway and the provider may retain evaluated state under their standard policies"}`);
   if (hasGatewayCredentials()) success("Vercel AI Gateway credentials detected without reading or printing them.");
   else warning("No AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN detected. Shadow calls will fail closed without changing FSM decisions.");
+}
+
+async function commandTaskModel(arguments_: readonly string[]): Promise<void> {
+  const [action, roleArgument, modelArgument] = arguments_;
+  const usageText = "Usage: mr task-model [show | set <explore|plan|apply> <provider/model[#variant]> | reset [explore|plan|apply]]";
+  if (action === undefined) {
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      await interactiveTaskModelSelector(paths);
+      return;
+    }
+    throw new Error(`${usageText}\nThe interactive tabs (Modelo │ Esfuerzo │ Velocidad) need a TTY.`);
+  }
+  let config = loadTaskModelsSync(paths);
+  if (action === "set") {
+    if (roleArgument === undefined || modelArgument === undefined) throw new Error(usageText);
+    config = setTaskModel(config, parseTaskRoleArgument(roleArgument), parseModelTarget(modelArgument));
+  } else if (action === "reset") {
+    const roles = roleArgument === undefined ? TaskEffortRoleSchema.options : [parseTaskRoleArgument(roleArgument)];
+    for (const role of roles) config = setTaskModel(config, role, undefined);
+  } else if (action !== "show") {
+    throw new Error(usageText);
+  }
+  if (action !== "show") {
+    await saveTaskModels(paths, config);
+    await syncAllWorkspaces(paths);
+  }
+  const global = await loadModels(paths);
+  heading("/task models");
+  info(formatTaskModelMatrix(config, { explore: global.roles.explore, plan: global.roles.plan, general: global.roles.general }));
+  if (action !== "show") success("Agents regenerated. Restart active OpenCode sessions.");
 }
 
 async function commandTaskEffort(arguments_: readonly string[]): Promise<void> {
@@ -539,6 +572,7 @@ async function main(): Promise<void> {
     case "models": await commandModels(arguments_); break;
     case "decision": await commandDecision(arguments_); break;
     case "task-effort": await commandTaskEffort(arguments_); break;
+    case "task-model": await commandTaskModel(arguments_); break;
     case "choose-model": await commandChooseModel(arguments_); break;
     case "flow-models": {
       const harnessValue = option(arguments_, "--harness");

@@ -12,6 +12,7 @@ import { REMOTE_SHELL_RULES, SECURITY_BOUNDARY_CONTRACT, SENSITIVE_PATH_RULES, S
 import { ModelMapSchema, type ModelAssignment, type ModelMap, type ModelTarget, type WorkspaceProfile } from "./schema.js";
 import { WORK_ROUTING_CONTRACT } from "./work-routing.js";
 import { EMPTY_TASK_EFFORT, loadTaskEffortSync, taskAgentName, taskEffortVariants, type TaskEffortConfig } from "./task/effort.js";
+import { EMPTY_TASK_MODELS, loadTaskModelsSync, type TaskModelsConfig } from "./task/models.js";
 
 const DEFAULT_ROLES: ModelMap["roles"] = {
   orchestrator: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" } },
@@ -409,7 +410,11 @@ $ARGUMENTS`,
   );
 }
 
-export function agentDefinitions(models: ModelMap, taskEffort: TaskEffortConfig = EMPTY_TASK_EFFORT): Record<string, AgentDefinition> {
+export function agentDefinitions(
+  models: ModelMap,
+  taskEffort: TaskEffortConfig = EMPTY_TASK_EFFORT,
+  taskModels: TaskModelsConfig = EMPTY_TASK_MODELS,
+): Record<string, AgentDefinition> {
   const agents: Record<string, AgentDefinition> = {
       "orchestrator": {
         mode: "primary",
@@ -535,7 +540,7 @@ Contract:
 5. Do not mark the task done yourself. You are not a user-facing narrator. Submit mr_internal_receipt with role=mr-sdd-apply, language=en, and a typed COMPLETED or BLOCKED payload. Your final response must be exactly the minified JSON returned by that tool, with no surrounding prose.`,
       },
       "mr-task-explore": readonlyAgent(
-        models.roles.explore,
+        taskModels.roles.explore ?? models.roles.explore,
         "Reads only what a /task needs and records facts, discards, and unknowns for the planner.",
         `You are the /task explorer. You read; you never edit. Your output is the planner's only view of the codebase, so precision beats volume.
 
@@ -548,7 +553,7 @@ Contract:
 6. Never paste source code into the report; ranges are rehydrated for the planner. No prose output: your final message is the tool result JSON.`,
       ),
       "mr-task-plan": readonlyAgent(
-        models.roles.plan,
+        taskModels.roles.plan ?? models.roles.plan,
         "Reasons over the /task handoff and writes an anchored ExecutionPlan any model can apply.",
         `You are the /task planner. You reason once over a curated bundle and write a plan so exact that a weak model, or no model, can apply it without mistakes. You never edit.
 
@@ -566,7 +571,7 @@ Contract:
       ),
       "mr-task-apply": {
         mode: "subagent",
-        ...agentModel(models.roles.general),
+        ...agentModel(taskModels.roles.general ?? models.roles.general),
         description: "Applies exactly one /task model step from its handoff bundle.",
         prompt: `You are the /task applier. You implement EXACTLY ONE plan step per invocation.
 
@@ -778,7 +783,7 @@ export function buildOpenCodeConfig(
     ...(Object.keys(mcp).length === 0 ? {} : { mcp }),
     plugin: plugins,
     command: commandDefinitions(models),
-    agent: agentDefinitions(models, paths === undefined ? undefined : loadTaskEffortSync(paths)),
+    agent: paths === undefined ? agentDefinitions(models) : agentDefinitions(models, loadTaskEffortSync(paths), loadTaskModelsSync(paths)),
     tool_output: { max_lines: 300, max_bytes: 24_000 },
     compaction: { auto: true, prune: true, tail_turns: 12 },
   };
@@ -814,7 +819,7 @@ export function buildGlobalDefinitionFiles(paths: MrPaths, models: ModelMap): Ma
     );
   }
 
-  for (const [name, def] of Object.entries(agentDefinitions(models, loadTaskEffortSync(paths)))) {
+  for (const [name, def] of Object.entries(agentDefinitions(models, loadTaskEffortSync(paths), loadTaskModelsSync(paths)))) {
     const lines = [
       "---",
       `description: ${yamlEscape(def.description)}`,
