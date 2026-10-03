@@ -41,12 +41,16 @@ export interface RoleCommand {
   readonly arguments: readonly string[];
 }
 
+const VariantSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/u);
+
 export function roleCommand(
   effective: z.infer<typeof EffectiveRunnerModelsSchema>,
   role: ModelRole,
   prompt: string,
+  variantOverride?: string,
 ): RoleCommand {
-  const target = effective.roles[role].primary.native;
+  const configured = effective.roles[role].primary.native;
+  const target = variantOverride === undefined ? configured : { ...configured, variant: VariantSchema.parse(variantOverride) };
   if (effective.harness === "codex") {
     return {
       command: "codex",
@@ -93,11 +97,12 @@ export async function runRole(
   prompt: string,
   environment: NodeJS.ProcessEnv = process.env,
   loadEffective: (harness: RunnerHarness) => Promise<unknown> = loadEffectiveHarnessModels,
+  variantOverride?: string,
 ): Promise<number> {
   if (prompt.trim().length === 0) throw new Error("run-role requires a non-empty prompt after --");
   const effective = EffectiveRunnerModelsSchema.parse(await loadEffective(harness));
   if (effective.harness !== harness) throw new Error(`Effective model artifact declares '${effective.harness}', expected '${harness}'`);
-  const invocation = roleCommand(effective, role, prompt);
+  const invocation = roleCommand(effective, role, prompt, variantOverride);
   return await new Promise<number>((resolve, reject) => {
     const child = spawn(invocation.command, invocation.arguments, { env: environment, stdio: "inherit" });
     child.once("error", reject);

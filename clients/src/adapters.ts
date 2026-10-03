@@ -9,13 +9,15 @@ export interface AdapterArtifact {
   readonly invocation: string;
 }
 
-type Workflow = "work" | "flow" | "blueprint" | "flow-models";
+type Workflow = "work" | "flow" | "task" | "blueprint" | "flow-models" | "choose-model";
 
 const descriptions: Record<Workflow, string> = {
   work: "Route everyday repository work adaptively without starting a formal Flow",
   flow: "Start or continue the deterministic mr-orchestrator delivery workflow",
+  task: "Fast mr-orchestrator delivery: explore, plan, apply with Jev deciding how much to read, what to hand off, and what to verify",
   blueprint: "Develop a product idea or analyze and dispatch a GitHub ticket with mr-orchestrator",
   "flow-models": "Inspect and change mr-orchestrator role model assignments with explicit confirmation",
+  "choose-model": "Choose the best connected or catalog model for a role or task, checking current public prices",
 };
 
 const grounding = `Grounding contract (mandatory): use only supplied tickets, typed capsules, tool results, specifications, and inspected source/diffs. Never invent files, behavior, requirements, or command results. When essential evidence is missing, stop with {"status":"INSUFFICIENT_EVIDENCE","missing":["<specific missing evidence>"],"nextAction":"<smallest action that can obtain it>"}.`;
@@ -93,6 +95,41 @@ ${decisionPlane}
 ${input}`;
   }
 
+  if (workflow === "task") {
+    const rolePass = usesRunner
+      ? `Run each role as an isolated pass: \`${runner} run-role ${harness} <modelRole> [--variant <next.variant>] -- <role prompt>\` with modelRole explore, plan, or general; add --variant only when the last mr_task_* result returned next.variant (developer-configured effort for this strategy). Every role prompt must start with: "Use the \`${server}\` MCP server. Call \`mr_bind_workspace\` with workspaceId=<bound id> first." followed by the role contract below.`
+      : "Run each role as an isolated pass with only its contract and the bound workspace id; never reuse this session's accumulated context for a role.";
+    return `${grounding}
+
+${security}
+
+You are executing the mr-orchestrator /task fast delivery workflow. It is independent from /flow; never start /flow unless the user asks.
+
+${binding}
+
+${rolePass}
+
+Role contracts (each role's final message is only the JSON returned by its last tool):
+- explore (modelRole explore, read-only): read only what the brief allows (maxFilesToRead, useGraph, useRules). This host has no tool relay, so record every material read with \`mr_task_record\` kind=read (file + exact line range), plus fact, decision, discard (every ruled-out hypothesis and why), and unknown. For replicate find the existing reference first; for bugfix find a reproduction, the failing path, and ranked root causes. Finish with \`mr_task_explore_submit\` answering every requiredChecklist key concretely or as "unknown: <reason>"; if the code proves the intake strategy wrong, pass strategy and answer that strategy's checklist; if it returns gaps, close only those and resubmit.
+- plan (modelRole plan, read-only): call \`mr_task_context\` role=plan first; mustKeep entries are binding, slices are live code, recover manifest ids with \`mr_task_recall\`. Ask material choices only through \`mr_task_ask\` (max 3 bounded questions). Submit \`mr_task_plan_submit\`: prefer exact \`code\` (applied without a model); replace/insertAfter/insertBefore anchors must be copied exactly and be unique; use \`intent\` + \`reference\` only when synthesis is needed; verification uses package.json scripts. Fix rejected issues exactly and resubmit.
+- apply (modelRole general): for one stepId, call \`mr_task_context\` role=apply stepId=<id>, edit only that step's file, then \`mr_task_step_done\`. If the step cannot be done as written, record kind=unknown and stop.
+
+Coordinator steps (you are the only role that talks to the developer):
+1. Call \`mr_task_status\`; resume an active task from its phase.
+2. Intake: fetch ticket (Jira, GitHub, GitLab) or design (Figma, image) content with the available MCP tools first, then call \`mr_task_start\` with the full text and ticketRef/designRef. If escalation.recommend=flow, tell the developer once and continue unless they choose /flow.
+3. Phase explore: one explore pass with the returned brief. Do not read code yourself.
+4. Phase plan: one plan pass. If \`mr_task_ask\` returned askHuman questions, ask the developer, record answers with \`mr_task_answer\`, and resume the plan pass.
+5. Phase apply: call \`mr_task_apply\` (exact steps, no model). Run one apply pass per pendingModelSteps id, then call \`mr_task_apply\` again.
+6. Call \`mr_task_verify\`. Phase apply after failure: apply pass for the failing step. Phase plan: new plan pass (the failure is in its handoff).
+7. Call \`mr_task_finish\`. /task does not commit, push, or open PRs.
+
+Show the developer only the plan glance, crucial questions, and the final result, in the developer's language, at most 5 lines each.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+${input}`;
+  }
+
   if (workflow === "blueprint") return `${grounding}
 
 ${security}
@@ -114,6 +151,25 @@ ${binding}
    - before every create, update, or delete, call \`mr_blueprint_safety_gate\`, show its preview, and obtain explicit user confirmation;
    - execute confirmed GraphQL operations with \`mr_blueprint_graphql\` and return the resulting URL.
 4. Never mutate GitHub from an inferred instruction. Preserve unanswered points as explicit assumptions rather than fabricating facts.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+${input}`;
+
+  if (workflow === "choose-model") return `${grounding}
+
+${security}
+
+You are executing the mr-orchestrator /choose-model workflow.
+
+${binding}
+
+1. The invocation text is the case: a role such as orchestrator, explore, or applying a change, or a task such as video, realistic images without a watermark, statistics, markets, or SEO.
+2. Build the pool from the source the user named. Read a JSON path or attachment when they give one. Otherwise use models already available from a connected login: \`opencode models\` for OpenCode Zen and GitHub Copilot, the harness catalog for Claude or OpenAI, and the AI Gateway catalog when that login exists. Compare gpt, deepseek, qwen, glm, and claude when those families are in the pool.
+3. Search the web for current public price and fit before choosing. A newer model can cost less than an older one, and catalogs go stale. Keep modality limits, including watermarks, from those pages. Do not put secrets in the brief.
+4. Reduce the pool to at most 8. Each note needs the provider/model id, current price, and why it fits this case.
+5. If \`mr_choose_model\` is registered, call it with the case as brief, the shortlist as candidates, and that format. If it is not registered, run \`mr choose-model --format <format> --catalog <path> --brief <case>\` and use its JSON. A missing plugin tool is not missing evidence. For a table of every orchestrator role, run that once per flow role with format \`table\`. Roles: orchestrator, explore, plan, general, sddApply, judgeA, judgeB, fix. Add blueprint roles only when the case includes blueprint.
+6. Render only that shape in the user's language. scoring: id and score. boolean: id and yes-probability. json: the tool JSON unchanged. table: columns role, model, price, why. Do not change role assignments; that remains /flow-models.
 
 ---
 [CONTEXT_INPUT_PAYLOAD]
@@ -170,7 +226,7 @@ function geminiCommand(workflow: Workflow, harness: HarnessId, runnerCommand: re
 }
 
 function workflows<T>(factory: (workflow: Workflow) => T): T[] {
-  return [factory("work"), factory("flow"), factory("blueprint"), factory("flow-models")];
+  return [factory("work"), factory("flow"), factory("task"), factory("blueprint"), factory("flow-models"), factory("choose-model")];
 }
 
 export function adapterArtifacts(targets: InstallTarget[], home: string, runnerCommand: readonly string[] = ["mr-clients"]): AdapterArtifact[] {

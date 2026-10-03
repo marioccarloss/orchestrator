@@ -13,8 +13,8 @@ test("creates native workflow adapters for every selected client without duplica
     "pi-cli",
   ], "/home/tester");
 
-  expect(artifacts).toHaveLength(28);
-  expect(new Set(artifacts.map((artifact) => artifact.path)).size).toBe(28);
+  expect(artifacts).toHaveLength(42);
+  expect(new Set(artifacts.map((artifact) => artifact.path)).size).toBe(42);
   expect(artifacts.map((artifact) => artifact.invocation)).toContain("$work");
   expect(artifacts.map((artifact) => artifact.invocation)).toContain("$flow");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.cursor/skills/flow/SKILL.md");
@@ -23,12 +23,15 @@ test("creates native workflow adapters for every selected client without duplica
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.gemini/config/skills/blueprint/SKILL.md");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.fx/skills/flow/SKILL.md");
   expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.pi/agent/prompts/flow.md");
+  expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.fx/skills/task/SKILL.md");
+  expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.pi/agent/prompts/task.md");
+  expect(artifacts.map((artifact) => artifact.path)).toContain("/home/tester/.cursor/skills/task/SKILL.md");
 });
 
 test("creates native Pi slash prompts with per-invocation model routing", () => {
   const artifacts = adapterArtifacts(["pi-cli"], "/home/tester", ["mr-clients"]);
-  expect(artifacts).toHaveLength(4);
-  expect(artifacts.map((artifact) => artifact.invocation)).toEqual(["/work", "/flow", "/blueprint", "/flow-models"]);
+  expect(artifacts).toHaveLength(6);
+  expect(artifacts.map((artifact) => artifact.invocation)).toEqual(["/work", "/flow", "/task", "/blueprint", "/flow-models", "/choose-model"]);
   for (const artifact of artifacts) {
     expect(artifact.path).toStartWith("/home/tester/.pi/agent/prompts/");
     expect(artifact.content).toContain("$ARGUMENTS");
@@ -38,6 +41,9 @@ test("creates native Pi slash prompts with per-invocation model routing", () => 
   }
   const flow = artifacts.find((artifact) => artifact.path.endsWith("/flow.md"));
   expect(flow?.content).toContain("run-role pi <role>");
+  const task = artifacts.find((artifact) => artifact.path.endsWith("/task.md"));
+  expect(task?.content).toContain("run-role pi <modelRole>");
+  expect(task?.content).toContain("modelRole explore, plan, or general");
 });
 
 test("all adapters bind a workspace and delegate state to mr-orchestrator tools", () => {
@@ -55,12 +61,19 @@ test("all adapters bind a workspace and delegate state to mr-orchestrator tools"
     expect(artifact.content).toContain("mr workspace list");
     expect(artifact.content).toContain("Never call it with empty arguments or both fields");
     expect(artifact.content).toContain("action=validate");
-    if (artifact.path.includes("flow-models")) {
+    if (artifact.path.includes("choose-model")) {
+      expect(artifact.content).toContain("mr_choose_model");
+    } else if (artifact.path.includes("flow-models")) {
       expect(artifact.content).toContain("mr_models");
     } else if (artifact.path.includes("/work/") || artifact.path.endsWith("/work.md") || artifact.path.endsWith("/work.toml")) {
       expect(artifact.content).toContain("mr_work_route");
       expect(artifact.content).toContain("mr_work_track");
       expect(artifact.content).toContain("Never start /flow automatically");
+    } else if (artifact.path.includes("/task/") || artifact.path.endsWith("/task.md") || artifact.path.endsWith("/task.toml")) {
+      expect(artifact.content).toContain("mr_task_start");
+      expect(artifact.content).toContain("mr_task_record` kind=read");
+      expect(artifact.content).toContain("mr_task_verify");
+      expect(artifact.content).toContain("does not commit, push, or open PRs");
     } else if (artifact.path.includes("flow")) {
       expect(artifact.content).toContain("mr_flow_status");
       expect(artifact.content).toContain("mr_sdd_submit");

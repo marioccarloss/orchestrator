@@ -139,9 +139,14 @@ import {
   type DecisionState,
 } from "./core/decision.js";
 import { JevDecisionEngine } from "./adapters/decision/jev.js";
+import { TYPESAFE_DEFAULT_MODEL, TypeSafeDecisionEngine, typeSafeApiKey } from "./adapters/decision/typesafe.js";
+import { callTypeSafe, chooseGatewayModel, loadGatewayCatalog, modelsFromCandidates, parseGatewayCatalog } from "./core/choose-model.js";
 import { JevCompactor, estimateContextTokens, loadJevCompactorConfig } from "./core/jev-compactor.js";
 import { SECURITY_BOUNDARY_CONTRACT } from "./core/security-policy.js";
 import { classifyWork, saveWorkDocument, WORK_ROUTING_CONTRACT } from "./core/work-routing.js";
+import { createTaskTools, defaultEngramPorts } from "./task-tools.js";
+import { writeAtlasPack } from "./core/atlas-pack.js";
+import { NARRATED_COMMANDS, NarrationService, loadNarrationConfig, stripNarrationLink } from "./core/narration.js";
 
 interface PluginMessages {
   readonly noActiveFlow: string;
@@ -168,6 +173,7 @@ export async function createMrOrchestrator(
   ctx: PluginInput,
   paths = resolvePaths(),
   decisionEngineOverride?: DecisionEngine,
+  narrationOverride?: NarrationService,
 ): Promise<Awaited<ReturnType<Plugin>>> {
   const registry = await loadRegistry(paths);
   const workspace = detectWorkspace(registry, ctx.directory);
@@ -182,10 +188,14 @@ export async function createMrOrchestrator(
   } catch (error: unknown) {
     decisionConfigError = error instanceof Error ? error.message : String(error);
   }
-  const decisionEngine = decisionEngineOverride ?? new JevDecisionEngine(decisionConfig.model);
+  // Prefer the first-party TypeSafe API when its key exists; Vercel AI Gateway is the fallback.
+  const decisionEngine = decisionEngineOverride
+    ?? (typeSafeApiKey() === undefined
+      ? new JevDecisionEngine(decisionConfig.model, process.env, undefined, { zeroDataRetention: decisionConfig.zeroDataRetention })
+      : new TypeSafeDecisionEngine(process.env["TYPESAFE_DEFAULT_MODEL"]?.trim() ?? TYPESAFE_DEFAULT_MODEL));
   let contextCompactor: JevCompactor;
   try {
-    contextCompactor = new JevCompactor(loadJevCompactorConfig());
+    contextCompactor = new JevCompactor({ ...loadJevCompactorConfig(), zeroDataRetention: decisionConfig.zeroDataRetention });
   } catch (error: unknown) {
     console.warn(
       `[mr-orchestrator] Context compaction disabled because its configuration is invalid: ${error instanceof Error ? error.message : String(error)}`,
@@ -193,8 +203,26 @@ export async function createMrOrchestrator(
     contextCompactor = new JevCompactor({ enabled: false });
   }
   const sessionContextLimits = new Map<string, number>();
-  let outputLanguage = normalizeUserLanguage(persistedFlow?.userLanguage);
   const sessionModels = new Map<string, { readonly role: ModelRole; readonly model: string; readonly agent: string }>();
+  // /task: explore → plan → apply with a deterministic Relay journal and Jev cost decisions.
+  const task = createTaskTools({
+    paths,
+    workspaceId,
+    workspaceRoot,
+    ...(workspace === undefined ? {} : { workspace }),
+    decision: () => ({
+      engine: decisionEngine,
+      enabled: decisionConfigError === undefined && decisionConfig.mode !== "off",
+      maxRetries: decisionConfig.maxRetries,
+      timeoutMs: decisionConfig.timeoutMs,
+    }),
+    roleOf: (sessionID) => sessionModels.get(sessionID)?.agent,
+    ...await defaultEngramPorts(paths, workspaceRoot).catch(() => ({})),
+  });
+  // Narration: a clickable [▶ play] link on user-facing /task, /flow and /blueprint explanations (macOS say).
+  const narration = narrationOverride ?? new NarrationService({ config: loadNarrationConfig() });
+  const narratedSessions = new Map<string, UserLanguage | undefined>();
+  let outputLanguage = normalizeUserLanguage(persistedFlow?.userLanguage);
   const atlasFreshness = new WeakMap<AtlasGraph, boolean>();
   let judgmentWriteQueue: Promise<void> = Promise.resolve();
   let usageWriteQueue: Promise<void> = Promise.resolve();
@@ -694,6 +722,13 @@ export async function createMrOrchestrator(
       output.system.push(`${WORK_ROUTING_CONTRACT}\n\n${SECURITY_BOUNDARY_CONTRACT}`);
     },
     "experimental.chat.messages.transform": async (_input, output) => {
+      // [▶ play] links are for the developer only; never spend model tokens on them.
+      for (const message of output.messages) {
+        if (message.info.role !== "assistant") continue;
+        for (const part of message.parts) {
+          if (part.type === "text" && part.text.includes("▶ play")) part.text = stripNarrationLink(part.text);
+        }
+      }
       const firstMessage = output.messages[0];
       if (firstMessage === undefined) return;
       const sessionID = firstMessage.info.sessionID;
@@ -722,7 +757,19 @@ export async function createMrOrchestrator(
         );
       }
     },
+    "tool.execute.after": async (input, output) => {
+      await task.relay(input, output);
+    },
+    "experimental.text.complete": async (input, output) => {
+      if (!narratedSessions.has(input.sessionID)) return;
+      const link = await narration.link(output.text, narratedSessions.get(input.sessionID)).catch(() => undefined);
+      if (link !== undefined) output.text = `${output.text.trimEnd()}\n\n${link}`;
+    },
     "command.execute.before": async (input, _output) => {
+      if (NARRATED_COMMANDS.has(input.command)) {
+        const developerLanguage = input.arguments.trim().length === 0 ? narratedSessions.get(input.sessionID) : detectLanguage(input.arguments);
+        narratedSessions.set(input.sessionID, developerLanguage);
+      }
       if (input.command !== "flow") return;
       const state = await loadFlowState(paths, workspaceId);
       if (state !== undefined) await ensureFlowUsage(state, input.sessionID);
@@ -741,6 +788,7 @@ export async function createMrOrchestrator(
       });
     },
     tool: {
+      ...task.tools,
       mr_work_route: tool({
         description: "Deterministically choose read-only, direct, or recoverable tracked execution for everyday work; never starts /flow",
         args: {
@@ -776,6 +824,37 @@ export async function createMrOrchestrator(
         execute: async (args) => {
           const path = await saveWorkDocument(workspaceRoot, args);
           return { title: "Tracked Work Synchronized", output: compactJson({ path, status: args.status }) };
+        },
+      }),
+
+      mr_choose_model: tool({
+        description: "Ask Jev to pick the best model for a case. Pass candidates you already priced from a JSON, a connected provider, or the web. Does not change role assignments.",
+        args: {
+          brief: tool.schema.string().min(1).max(16_000)
+            .describe("The case: role or task, constraints, and price notes from the web. No secrets."),
+          catalogPath: tool.schema.string().min(1).max(500).optional()
+            .describe("Optional path to a models JSON. Used only when candidates is omitted."),
+          candidates: tool.schema.array(tool.schema.object({
+            id: tool.schema.string().min(3).max(160),
+            note: tool.schema.string().min(1).max(400),
+          })).min(2).max(8).optional()
+            .describe("Shortlist with provider/model id and a note that includes current public price and fit."),
+          format: tool.schema.enum(["scoring", "boolean", "json", "table"]).optional()
+            .describe("Result shape the user asked for. table uses the same choice as json; the agent renders the table."),
+        },
+        execute: async (args) => {
+          const models = args.candidates !== undefined
+            ? modelsFromCandidates(args.candidates)
+            : args.catalogPath !== undefined
+              ? parseGatewayCatalog(JSON.parse(await readFile(args.catalogPath, "utf8")))
+              : await loadGatewayCatalog(join(paths.cacheRoot, "ai-gateway-models.json"));
+          const result = await chooseGatewayModel(
+            args.brief,
+            models,
+            (state, questions) => callTypeSafe(process.env, state, questions),
+            args.format ?? "json",
+          );
+          return { title: "Model Choice", output: compactJson(result) };
         },
       }),
 
@@ -1822,6 +1901,10 @@ export async function createMrOrchestrator(
             : undefined;
           const graph = await indexer.indexWorkspace(workspaceRoot, indexOptions);
           await saveAtlasGraph(paths, workspaceId, graph);
+          // Keep the portable pack (MAP.md + AGENTS.md pointer) in sync so agents outside mr-orchestrator benefit too.
+          const pack = workspace === undefined
+            ? undefined
+            : await writeAtlasPack({ workspace, graph, profiles: await loadRepositoryProfiles(workspace) ?? [] }).catch(() => undefined);
           const summary = [
             `# Atlas Index Completed`,
             ``,
@@ -1830,6 +1913,7 @@ export async function createMrOrchestrator(
             `- **Total nodes**: ${graph.stats.totalNodes}`,
             `- **Total edges**: ${graph.stats.totalEdges}`,
             `- **Duration**: ${graph.stats.indexDurationMs}ms`,
+            ...(pack === undefined ? [] : [`- **Portable map**: \`${pack.mapPath}\` (~${String(Math.round(pack.mapChars / 4))} tokens)`]),
             ``,
             `### Breakdown by Kind:`,
             `- Components: ${graph.nodes.filter((n) => n.kind === "component").length}`,

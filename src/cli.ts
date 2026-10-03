@@ -4,12 +4,13 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadModels, seedModels, syncWorkspace } from "./core/config.js";
+import { callTypeSafe, chooseGatewayModel, parseGatewayCatalog, type ChooseFormat } from "./core/choose-model.js";
 import { CAPABILITY_IDS, LOCAL_CAPABILITY_IDS, defaultCapabilitySelection, detectInstalledCapabilities, loadCapabilitySelection, saveCapabilitySelection, type CapabilitySelection } from "./core/capabilities.js";
 import { runDoctor } from "./core/doctor.js";
 import { assessFigmaSetup, figmaSetupInstructions, publishFigmaManifest } from "./core/figma-setup.js";
 import { install, planUninstall, uninstall } from "./core/install.js";
 import { launch } from "./core/launch.js";
-import { loadEffectiveModels, refreshHarnessCatalog, resetHarnessModels, setHarnessModelRole, setModelPreset, setModelRole, type ModelSlot } from "./core/models.js";
+import { loadEffectiveModels, refreshHarnessCatalog, resetHarnessModels, setHarnessModelRole, setModelPreset, setModelRole, syncAllWorkspaces, type ModelSlot } from "./core/models.js";
 import { harnessCatalogPath, loadHarnessCatalog, parseHarnessId, writeEffectiveHarnessModels } from "./core/harness-models.js";
 import { resolvePaths } from "./core/paths.js";
 import { ModelRoleSchema, type HarnessId } from "./core/schema.js";
@@ -20,11 +21,16 @@ import { formatCapabilityGuide, interactiveCapabilitySelector } from "./tui/capa
 import { formatEffectiveModelMatrix, formatModelMatrix, interactiveModelSelector } from "./tui/models.js";
 import { buildAtlasBaseline, indexAtlasWorkspace } from "./core/atlas-init.js";
 import type { WorkspaceRules } from "./core/rules/generator.js";
-import { saveRepositoryProfiles, saveWorkspaceRules } from "./core/rules/store.js";
+import { loadRepositoryProfiles, saveRepositoryProfiles, saveWorkspaceRules } from "./core/rules/store.js";
+import { ATLAS_QUERY_ACTIONS, runAtlasQuery, unlinkAtlasPointers, writeAtlasPack } from "./core/atlas-pack.js";
+import { extractNodeSlice, findTestsFor, getImpactAnalysis, getNodeDependencies, getNodeDependents, loadAtlasGraph } from "./core/atlas.js";
+import { isEngramEnabled, resolveEngramBinary, searchEngramMemories } from "./core/engram-bridge.js";
 import { renderRepositoryAgentsMarkdown, renderRulesDiff, type AgentsLanguage } from "./core/rules/render.js";
 import { runAtlasOnboarding } from "./tui/atlas.js";
 import { atomicWrite } from "./core/files.js";
-import { hasGatewayCredentials, loadDecisionPlaneConfig, setDecisionPlaneMode } from "./core/decision.js";
+import { hasGatewayCredentials, loadDecisionPlaneConfig, setDecisionPlaneMode, setDecisionZeroDataRetention } from "./core/decision.js";
+import { TaskEffortRoleSchema, loadTaskEffortSync, saveTaskEffort, setTaskEffort, taskEffortPath } from "./core/task/effort.js";
+import { TaskStrategySchema } from "./core/task/schema.js";
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const sourceRoot = existsSync(join(sourceDirectory, "..", "package.json")) ? join(sourceDirectory, "..") : join(sourceDirectory, "..", "..");
@@ -47,8 +53,11 @@ Usage:
   mr models catalog --harness ID [--refresh]
   mr models preset <key>
   mr flow-models [--harness ID]
-  mr decision [status | shadow | off] [--model ID]
-  mr atlas index
+  mr decision [status | shadow | off | zdr on|off] [--model ID]
+  mr task-effort [show | set <strategy> <explore|plan|general> <variant> | unset <strategy> <role>]
+  mr atlas index [--no-link]          # graph + local MAP.md/MEMORY.md + AGENTS.md pointer for any agent
+  mr atlas query <Symbol> [info|deps|dependents|impact|slice|tests|find] [--depth N]
+  mr atlas unlink
   mr atlas init [--guided] [--no-rules] [--lang en|es] [--write-repo-agents] [--yes]
   mr atlas rules [--diff] [--guided] [--lang en|es] [--write-repo-agents] [--yes]
   mr sync [ID]
@@ -117,20 +126,49 @@ async function chooseCapabilities(
 
 async function commandDecision(arguments_: readonly string[]): Promise<void> {
   const action = arguments_[0] ?? "status";
-  if (!(["status", "shadow", "off"] as const).includes(action as "status" | "shadow" | "off")) {
-    throw new Error("Usage: mr decision [status | shadow | off] [--model ID]");
+  const usageText = "Usage: mr decision [status | shadow | off | zdr on|off] [--model ID]";
+  if (!(["status", "shadow", "off", "zdr"] as const).includes(action as "status" | "shadow" | "off" | "zdr")) {
+    throw new Error(usageText);
   }
   const model = option(arguments_, "--model");
   if (arguments_.includes("--model") && model === undefined) throw new Error("--model requires an id");
+  if (action === "zdr" && arguments_[1] !== "on" && arguments_[1] !== "off") throw new Error(usageText);
   const config = action === "status"
     ? await loadDecisionPlaneConfig(paths)
-    : await setDecisionPlaneMode(paths, action === "shadow" ? "shadow" : "off", model);
+    : action === "zdr"
+      ? await setDecisionZeroDataRetention(paths, arguments_[1] === "on")
+      : await setDecisionPlaneMode(paths, action === "shadow" ? "shadow" : "off", model);
   heading("Jev Decision Plane");
   info(`Mode: ${config.mode}`);
   info(`Model: ${config.model}`);
-  info(`Authority: deterministic FSM (Jev is advisory)`);
+  info(`Authority: deterministic FSM (Jev is advisory); /task uses Jev for read/verification/handoff decisions above deterministic floors`);
+  info(`Zero Data Retention: ${config.zeroDataRetention ? "requested (requires a Gateway plan with ZDR)" : "OFF — Gateway and the provider may retain evaluated state under their standard policies"}`);
   if (hasGatewayCredentials()) success("Vercel AI Gateway credentials detected without reading or printing them.");
   else warning("No AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN detected. Shadow calls will fail closed without changing FSM decisions.");
+}
+
+async function commandTaskEffort(arguments_: readonly string[]): Promise<void> {
+  const [action = "show", strategyArgument, roleArgument, variant] = arguments_;
+  const usageText = "Usage: mr task-effort [show | set <strategy> <explore|plan|general> <variant> | unset <strategy> <role>]";
+  let config = loadTaskEffortSync(paths);
+  if (action === "set" || action === "unset") {
+    const strategy = TaskStrategySchema.parse(strategyArgument);
+    const role = TaskEffortRoleSchema.parse(roleArgument);
+    if (action === "set" && variant === undefined) throw new Error(usageText);
+    config = setTaskEffort(config, strategy, role, action === "set" ? variant : undefined);
+    await saveTaskEffort(paths, config);
+    await syncAllWorkspaces(paths);
+  } else if (action !== "show") {
+    throw new Error(usageText);
+  }
+  heading("/task effort per strategy");
+  info(`File: ${taskEffortPath(paths)}`);
+  const rows = Object.entries(config.strategies);
+  if (rows.length === 0) info("No overrides: every /task role uses its models.json variant.");
+  for (const [strategy, roles] of rows) {
+    info(`${strategy}: ${Object.entries(roles).map(([role, value]) => `${role}=${value}`).join(", ")}`);
+  }
+  if (action !== "show") success("Agents regenerated. Restart active OpenCode sessions.");
 }
 
 async function commandInstall(arguments_: readonly string[]): Promise<void> {
@@ -222,6 +260,18 @@ async function commandWorkspace(arguments_: readonly string[]): Promise<void> {
     return;
   }
   throw new Error("Usage: mr workspace add PATH | list | remove ID");
+}
+
+async function commandChooseModel(arguments_: readonly string[]): Promise<void> {
+  const format = option(arguments_, "--format") ?? "json";
+  const catalogPath = option(arguments_, "--catalog");
+  const brief = option(arguments_, "--brief");
+  if (catalogPath === undefined || brief === undefined || !["scoring", "boolean", "json", "table"].includes(format)) {
+    throw new Error("Usage: mr choose-model --format scoring|boolean|json|table --catalog models.json --brief \"case\"");
+  }
+  const models = parseGatewayCatalog(JSON.parse(await readFile(catalogPath, "utf8")));
+  const result = await chooseGatewayModel(brief, models, (state, questions) => callTypeSafe(process.env, state, questions), format as ChooseFormat);
+  console.log(JSON.stringify(result));
 }
 
 async function commandSync(id: string | undefined): Promise<void> {
@@ -344,20 +394,104 @@ async function writeRepositoryAgents(
   }
 }
 
+const projectMemoryCache = new Map<string, Promise<readonly { readonly title: string; readonly excerpt: string }[]>>();
+
+/** Best-effort Engram recall for MAP/MEMORY.md; MR_ATLAS_MEMORY=off disables it (tests, offline use). */
+async function projectMemory(workspaceRoot: string): Promise<readonly { readonly title: string; readonly excerpt: string }[]> {
+  if (process.env["MR_ATLAS_MEMORY"]?.trim().toLowerCase() === "off") return [];
+  const cached = projectMemoryCache.get(workspaceRoot);
+  if (cached !== undefined) return cached;
+  const pending = recallProjectMemory(workspaceRoot);
+  projectMemoryCache.set(workspaceRoot, pending);
+  return pending;
+}
+
+async function recallProjectMemory(workspaceRoot: string): Promise<readonly { readonly title: string; readonly excerpt: string }[]> {
+  if (!await isEngramEnabled(paths).catch(() => false)) return [];
+  const binary = await resolveEngramBinary(paths).catch(() => undefined);
+  if (binary === undefined) return [];
+  const hits = new Map<string, { title: string; excerpt: string }>();
+  for (const query of ["decision", "architecture"]) {
+    for (const hit of await searchEngramMemories(binary, query, { cwd: workspaceRoot, limit: 4 }).catch(() => [])) {
+      if (hit.type !== "session_summary") hits.set(hit.id, { title: hit.title, excerpt: hit.excerpt });
+    }
+  }
+  return [...hits.values()].slice(0, 12);
+}
+
+async function refreshAtlasPack(
+  workspace: Awaited<ReturnType<typeof activeWorkspace>>,
+  graph: Awaited<ReturnType<typeof indexAtlasWorkspace>>,
+  arguments_: readonly string[],
+  knownProfiles?: Awaited<ReturnType<typeof buildAtlasBaseline>>["profiles"],
+): Promise<void> {
+  let profiles = knownProfiles ?? await loadRepositoryProfiles(workspace);
+  if (profiles === undefined) {
+    const baseline = await buildAtlasBaseline(workspace, graph);
+    profiles = baseline.profiles;
+    await saveRepositoryProfiles(workspace, profiles);
+  }
+  const pack = await writeAtlasPack({
+    workspace,
+    graph,
+    profiles,
+    memory: await projectMemory(workspace.root),
+    link: !arguments_.includes("--no-link"),
+  });
+  info(`Atlas map: ${pack.mapPath} (~${String(Math.round(pack.mapChars / 4))} tokens)${pack.memoryPath === undefined ? "" : ` · memory: ${pack.memoryPath}`}`);
+  if (!pack.excluded) warning("Not a git repository: make sure .aicontext/ stays out of version control.");
+  for (const pointer of pack.pointers.filter((change) => change.action !== "unchanged")) {
+    const note = pointer.action === "created" ? " (created, ignored locally via .git/info/exclude)" : pointer.tracked ? " (tracked file: the Atlas block is local, do not commit it)" : "";
+    info(`Pointer ${pointer.action}: ${pointer.path}${note}`);
+  }
+}
+
+async function commandAtlasQuery(arguments_: readonly string[]): Promise<void> {
+  const [name, rawAction = "info"] = arguments_;
+  if (name === undefined) throw new Error(`Usage: mr atlas query <Symbol|file-part> [${ATLAS_QUERY_ACTIONS.join("|")}] [--depth N]`);
+  const action = ATLAS_QUERY_ACTIONS.find((candidate) => candidate === rawAction);
+  if (action === undefined) throw new Error(`Unknown action '${rawAction}'. Use one of: ${ATLAS_QUERY_ACTIONS.join(", ")}`);
+  const workspace = await activeWorkspace();
+  const graph = await loadAtlasGraph(paths, workspace.id);
+  if (graph === undefined) throw new Error("No Atlas index for this workspace. Run `mr atlas index` first.");
+  const depth = Number(option(arguments_, "--depth") ?? "2");
+  console.log(await runAtlasQuery(graph, name, action, {
+    dependencies: getNodeDependencies,
+    dependents: getNodeDependents,
+    impact: getImpactAnalysis,
+    tests: findTestsFor,
+    slice: async (node) => (await extractNodeSlice(workspace.root, node, 2)).text,
+  }, Number.isFinite(depth) ? depth : 2));
+}
+
 async function commandAtlas(arguments_: readonly string[]): Promise<void> {
   const action = arguments_[0] ?? "init";
-  if (!["index", "init", "rules"].includes(action)) throw new Error("Usage: mr atlas index | init [--guided] [--no-rules] [--lang en|es] | rules [--diff] [--guided] [--lang en|es]");
+  const usageText = "Usage: mr atlas index [--no-link] | query <Symbol> [action] | unlink | init [--guided] [--no-rules] [--lang en|es] | rules [--diff] [--guided] [--lang en|es]";
+  if (!["index", "init", "rules", "query", "unlink"].includes(action)) throw new Error(usageText);
+  if (action === "query") {
+    await commandAtlasQuery(arguments_.slice(1));
+    return;
+  }
   const workspace = await activeWorkspace();
+  if (action === "unlink") {
+    const profiles = await loadRepositoryProfiles(workspace) ?? [];
+    const roots = profiles.length === 0 ? [workspace.root] : profiles.map((profile) => join(workspace.root, profile.root));
+    for (const path of await unlinkAtlasPointers(roots)) info(`Removed Atlas block from ${path}`);
+    success("Atlas pointers removed; the local pack in .aicontext/atlas is untouched.");
+    return;
+  }
   heading(`mr atlas ${action}`);
   const graph = await indexAtlasWorkspace(paths, workspace);
   info(`Indexed ${String(graph.stats.totalFiles)} files, ${String(graph.stats.totalNodes)} nodes, ${String(graph.stats.totalEdges)} edges.`);
   if (action === "index") {
-    success("Atlas index updated.");
+    await refreshAtlasPack(workspace, graph, arguments_);
+    success("Atlas index and portable map updated. Any agent can start from the pointer in AGENTS.md.");
     return;
   }
   const baseline = await buildAtlasBaseline(workspace, graph);
   for (const error of baseline.errors) warning(`Best-effort profiler: ${error}`);
   await saveRepositoryProfiles(workspace, baseline.profiles);
+  await refreshAtlasPack(workspace, graph, arguments_, baseline.profiles);
   if (arguments_.includes("--no-rules")) {
     success(`Atlas profiles saved for ${String(baseline.profiles.length)} repositories; rules were skipped.`);
     return;
@@ -391,6 +525,7 @@ async function commandAtlas(arguments_: readonly string[]): Promise<void> {
   }
   await seedModels(paths, sourceRoot);
   await syncWorkspace(paths, workspace);
+  await refreshAtlasPack(workspace, graph, arguments_, baseline.profiles);
   success(`Atlas rules saved (${String(written.length)} artifacts, ${String(baseline.profiles.length)} repositories).`);
 }
 
@@ -403,6 +538,8 @@ async function main(): Promise<void> {
     case "workspace": await commandWorkspace(arguments_); break;
     case "models": await commandModels(arguments_); break;
     case "decision": await commandDecision(arguments_); break;
+    case "task-effort": await commandTaskEffort(arguments_); break;
+    case "choose-model": await commandChooseModel(arguments_); break;
     case "flow-models": {
       const harnessValue = option(arguments_, "--harness");
       if (arguments_.includes("--harness") && harnessValue === undefined) throw new Error("--harness requires an id");

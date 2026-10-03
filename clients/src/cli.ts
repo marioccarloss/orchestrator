@@ -9,15 +9,15 @@ import { ModelRoleSchema, RunnerHarnessSchema, runRole } from "./role-runner.js"
 const targets: Array<{ value: InstallTarget; label: string; hint: string }> = [
   { value: "opencode-cli", label: "OpenCode CLI", hint: "Informational only: immutable integration" },
   { value: "opencode-desktop", label: "OpenCode Desktop", hint: "Informational only: immutable integration" },
-  { value: "codex-cli", label: "Codex CLI", hint: "MCP + $flow, $blueprint, and $flow-models skills" },
-  { value: "codex-desktop", label: "Codex Desktop", hint: "MCP + $flow, $blueprint, and $flow-models skills" },
-  { value: "cursor-cli", label: "Cursor CLI", hint: "MCP + /flow, /blueprint, and /flow-models skills" },
-  { value: "cursor-desktop", label: "Cursor Desktop", hint: "MCP + /flow, /blueprint, and /flow-models skills" },
-  { value: "claude-code", label: "Claude Code", hint: "MCP + /flow, /blueprint, and /flow-models commands" },
-  { value: "antigravity-desktop", label: "Antigravity Desktop", hint: "MCP + flow, blueprint, and flow-models skills" },
-  { value: "agy-cli", label: "AGY CLI", hint: "MCP + /flow, /blueprint, and /flow-models commands" },
-  { value: "fx-cli", label: "fx CLI", hint: "MCP + $flow, $blueprint, and $flow-models skills" },
-  { value: "pi-cli", label: "Pi CLI", hint: "MCP via user-managed pi-mcp-adapter + native /work, /flow, /blueprint, and /flow-models prompts" },
+  { value: "codex-cli", label: "Codex CLI", hint: "MCP + $flow, $task, $blueprint, and $flow-models skills" },
+  { value: "codex-desktop", label: "Codex Desktop", hint: "MCP + $flow, $task, $blueprint, and $flow-models skills" },
+  { value: "cursor-cli", label: "Cursor CLI", hint: "MCP + /flow, /task, /blueprint, and /flow-models skills" },
+  { value: "cursor-desktop", label: "Cursor Desktop", hint: "MCP + /flow, /task, /blueprint, and /flow-models skills" },
+  { value: "claude-code", label: "Claude Code", hint: "MCP + /flow, /task, /blueprint, and /flow-models commands" },
+  { value: "antigravity-desktop", label: "Antigravity Desktop", hint: "MCP + flow, task, blueprint, and flow-models skills" },
+  { value: "agy-cli", label: "AGY CLI", hint: "MCP + /flow, /task, /blueprint, and /flow-models commands" },
+  { value: "fx-cli", label: "fx CLI", hint: "MCP + $flow, $task, $blueprint, and $flow-models skills" },
+  { value: "pi-cli", label: "Pi CLI", hint: "MCP via user-managed pi-mcp-adapter + native /work, /flow, /task, /blueprint, and /flow-models prompts" },
 ];
 
 const knownTargets = new Set(targets.map((target) => target.value));
@@ -58,12 +58,16 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "run-role") {
-    if (args[0] === undefined || args[1] === undefined) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx|pi> <role> -- <prompt>");
+    if (args[0] === undefined || args[1] === undefined) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx|pi> <role> [--variant V] -- <prompt>");
     const separator = args.indexOf("--");
-    if (separator < 0) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx|pi> <role> -- <prompt>");
+    if (separator < 0) throw new Error("Usage: mr-clients run-role <codex|cursor|claude|agy|fx|pi> <role> [--variant V] -- <prompt>");
     const harness = RunnerHarnessSchema.parse(args[0]);
     const role = ModelRoleSchema.parse(args[1]);
-    process.exitCode = await runRole(harness, role, args.slice(separator + 1).join(" "));
+    const options = args.slice(2, separator);
+    const variantIndex = options.indexOf("--variant");
+    const variant = variantIndex >= 0 ? options[variantIndex + 1] : undefined;
+    if (variantIndex >= 0 && variant === undefined) throw new Error("--variant requires a value");
+    process.exitCode = await runRole(harness, role, args.slice(separator + 1).join(" "), process.env, undefined, variant);
     return;
   }
   if (command === "install") {
@@ -81,7 +85,7 @@ async function main(): Promise<void> {
     for (const message of await uninstall(dryRun)) p.log.info(message);
     return;
   }
-  console.error("Usage: mr-clients <install [targets...]|doctor|uninstall --dry-run|serve --harness ID|run-role HARNESS ROLE -- PROMPT>");
+  console.error("Usage: mr-clients <install [targets...]|doctor|uninstall --dry-run|serve --harness ID|run-role HARNESS ROLE [--variant V] -- PROMPT>");
   process.exitCode = 1;
 }
 

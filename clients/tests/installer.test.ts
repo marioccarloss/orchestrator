@@ -117,7 +117,8 @@ test("installs and uninstalls only owned unchanged adapters", async () => {
     entries: Array<{ kind?: string; path: string }>;
   };
   expect(manifest.entries.filter((entry) => entry.kind === "config")).toHaveLength(7);
-  expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(27);
+  // 7 hosts × 6 workflows, minus the user-customized Cursor flow skill that stays unowned.
+  expect(manifest.entries.filter((entry) => entry.kind === "artifact")).toHaveLength(41);
 
   piConfig.mcpServers["later"] = { args: ["later"] };
   await writeFile(piConfigPath, `${JSON.stringify(piConfig, null, 2)}\n`);

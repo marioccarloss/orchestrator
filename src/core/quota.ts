@@ -1,4 +1,5 @@
 import type { ModelRole } from "./models.js";
+import { taskAgentModelRole } from "./task/effort.js";
 
 export interface QuotaFailure {
   readonly code: "insufficient_quota" | "quota_exceeded";
@@ -14,6 +15,9 @@ const agentRoles: Readonly<Record<string, ModelRole>> = {
   "mr-judge-a": "judgeA",
   "mr-judge-b": "judgeB",
   "mr-fix": "fix",
+  "mr-task-explore": "explore",
+  "mr-task-plan": "plan",
+  "mr-task-apply": "general",
   "bp-extractor": "bpExtractor",
   "bp-architect": "bpArchitect",
   "bp-transactor": "bpTransactor",
@@ -34,5 +38,5 @@ export function classifyQuotaError(error: unknown): QuotaFailure | undefined {
 }
 
 export function resolveModelRole(agent: string): ModelRole | undefined {
-  return agentRoles[agent];
+  return agentRoles[agent] ?? taskAgentModelRole(agent);
 }

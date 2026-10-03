@@ -11,6 +11,7 @@ import type { MrPaths } from "./paths.js";
 import { REMOTE_SHELL_RULES, SECURITY_BOUNDARY_CONTRACT, SENSITIVE_PATH_RULES, SENSITIVE_SHELL_RULES } from "./security-policy.js";
 import { ModelMapSchema, type ModelAssignment, type ModelMap, type ModelTarget, type WorkspaceProfile } from "./schema.js";
 import { WORK_ROUTING_CONTRACT } from "./work-routing.js";
+import { EMPTY_TASK_EFFORT, loadTaskEffortSync, taskAgentName, taskEffortVariants, type TaskEffortConfig } from "./task/effort.js";
 
 const DEFAULT_ROLES: ModelMap["roles"] = {
   orchestrator: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" } },
@@ -155,6 +156,18 @@ function securedPermissions(permission: Record<string, PermissionValue> | undefi
   };
 }
 
+export const TASK_ORCHESTRATION_STEPS = `Roles: mr-task-explore reads, mr-task-plan reasons, mr-task-apply edits only model steps, the plugin applies exact steps and verifies, Jev decides how much to read, what to pass between roles, and what to verify. You coordinate and are the only role that talks to the developer.
+
+1. Call mr_task_status. If a task is active, resume it from its phase.
+2. Intake: if the payload references a ticket (Jira, GitHub, GitLab) or a design (Figma, image), fetch its content with the available MCP tools first. Then call mr_task_start with the full text, ticketRef/designRef when present. If escalation.recommend=flow, tell the developer once and continue unless they choose /flow.
+3. Explore (phase explore): launch mr-task-explore once with the returned brief. Do not read code yourself.
+4. Plan (phase plan): launch mr-task-plan. If it returns askHuman questions, ask them with the question tool (they are already filtered to the crucial ones), record each answer with mr_task_answer, and resume the planner.
+5. Apply (phase apply): call mr_task_apply. For each pendingModelSteps id, launch mr-task-apply with only that stepId (independent steps may run in parallel). Call mr_task_apply again after model steps so dependent exact steps land.
+6. Verify: call mr_task_verify. On failure with phase apply, launch mr-task-apply for the failing step with the failure; with phase plan, relaunch mr-task-plan (the failure capsule is in its handoff).
+7. Finish: call mr_task_finish. /task does not commit, push, or open PRs.
+
+Show the developer only: the plan glance from mr_task_plan_submit, crucial questions, and the final result, in the developer's language, in at most 5 lines each. Never relay internal JSON or another role's prose.`;
+
 export function commandDefinitions(_models: ModelMap): Record<string, CommandDefinition> {
   const commands: Record<string, CommandDefinition> = {
       work: {
@@ -196,6 +209,18 @@ Follow these steps:
    - Phase 'fix' (if judgment failed): \`mr-fix\` first hydrates role=fix, applies only validated findings, verifies, and calls \`mr_flow_fix\`.
    - Phase 'finish': Verify final state, commit changes, optionally create PR, and invoke \`mr_flow_finish\`. The plugin persists a compact delivery summary to Engram automatically; do not duplicate that save unless the user asks for extra memory notes.
 4. Always ask and confirm state transitions with the user using the question tool before proceeding to destructive or closing actions.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
+      },
+      task: {
+        description: "Tarea rápida: explore → plan → apply con Jev decidiendo cuánto leer y qué verificar",
+        descriptionEn: "Fast task: explore → plan → apply with Jev deciding how much to read and what to verify",
+        agent: "orchestrator",
+        template: `You are executing the /task fast delivery workflow. It is independent from /flow; never start /flow unless the user asks.
+
+${TASK_ORCHESTRATION_STEPS}
 
 ---
 [CONTEXT_INPUT_PAYLOAD]
@@ -329,6 +354,28 @@ Use the \`question\` tool to determine the path:
 [CONTEXT_INPUT_PAYLOAD]
 $ARGUMENTS`,
       },
+      "choose-model": {
+        description: "Elige un modelo de AI Gateway para el trabajo que el agente ve en disco",
+        descriptionEn: "Choose an AI Gateway model from the agent-visible workspace, not from a pasted prompt",
+        agent: "orchestrator",
+        template: `You are executing /choose-model.
+
+The invocation text is the case, in plain language. Examples: best model for the orchestrator role, for explore, for applying a change, for video, for realistic images without a watermark, for statistics or markets, for SEO analysis.
+
+1. Build the candidate pool from the source the user named, in this order:
+   - a JSON path or attached catalog, read from disk;
+   - otherwise the models already available through a connected login: \`opencode models\` for OpenCode Zen and GitHub Copilot, the harness catalog for Claude or OpenAI, and the AI Gateway catalog when Vercel AI Gateway is connected.
+   Compare across gpt, deepseek, qwen, glm, and claude when those families appear in that pool.
+2. Before choosing, search the web for current public price and fit. Catalog numbers go stale: a newer GPT can cost less than an older one. Keep watermark, video, image, and modality limits from those pages.
+3. Reduce the pool to at most 8. Each note must include provider/model id, current price, and why it fits this case.
+4. Read the requested result shape. Pass it as \`format\` to \`mr_choose_model\`: \`scoring\`, \`boolean\`, \`json\`, or \`table\`. Default to \`json\` when the user names none.
+5. If the tool \`mr_choose_model\` is registered in this session, call it with the case as brief, the shortlist as candidates, and that format. If it is not registered, run \`mr choose-model --format <format> --catalog <path> --brief <case>\` and use its JSON. A missing plugin tool is not missing evidence. For a table of every orchestrator role, run that once per flow role. Roles: orchestrator, explore, plan, general, sddApply, judgeA, judgeB, fix. Add bpExtractor, bpArchitect, and bpTransactor only when the case includes blueprint.
+6. Render only the requested shape, in the user's language. scoring: id and score, highest first. boolean: id and yes-probability, highest first. json: the tool JSON unchanged. table: one markdown table with columns role, model, price, why. Do not change role assignments; that is /flow-models. Name the pool source and the price pages.
+
+---
+[CONTEXT_INPUT_PAYLOAD]
+$ARGUMENTS`,
+      },
       "flow-models": {
         description: "Interactively configure the model for each /flow and /blueprint process step",
         agent: "orchestrator",
@@ -362,7 +409,7 @@ $ARGUMENTS`,
   );
 }
 
-export function agentDefinitions(models: ModelMap): Record<string, AgentDefinition> {
+export function agentDefinitions(models: ModelMap, taskEffort: TaskEffortConfig = EMPTY_TASK_EFFORT): Record<string, AgentDefinition> {
   const agents: Record<string, AgentDefinition> = {
       "orchestrator": {
         mode: "primary",
@@ -370,10 +417,12 @@ export function agentDefinitions(models: ModelMap): Record<string, AgentDefiniti
         description: "Routes everyday work adaptively and coordinates deterministic mr-orchestrator flows.",
         prompt: `You are Orchestrator, the deterministic everyday-work and flow coordinator for this workspace.
 
-Outside an explicit /flow or /blueprint, follow this protocol:
+Outside an explicit /flow, /task, or /blueprint, follow this protocol:
 ${WORK_ROUTING_CONTRACT}
 
 ${SECURITY_BOUNDARY_CONTRACT}
+
+Inside an explicit /task, follow the /task command steps (mr_task_* tools); it never starts /flow by itself.
 
 Your role is to coordinate the /flow lifecycle:
 1. Wizard (${FLOW_WIZARD_STEPS})
@@ -484,6 +533,48 @@ Contract:
 3. Satisfy every acceptance criterion and invariant.
 4. Run task.verification.commands and persist real results through mr_sdd_verify.
 5. Do not mark the task done yourself. You are not a user-facing narrator. Submit mr_internal_receipt with role=mr-sdd-apply, language=en, and a typed COMPLETED or BLOCKED payload. Your final response must be exactly the minified JSON returned by that tool, with no surrounding prose.`,
+      },
+      "mr-task-explore": readonlyAgent(
+        models.roles.explore,
+        "Reads only what a /task needs and records facts, discards, and unknowns for the planner.",
+        `You are the /task explorer. You read; you never edit. Your output is the planner's only view of the codebase, so precision beats volume.
+
+Contract:
+1. Start from the brief (requiredChecklist, maxFilesToRead, useGraph, useRules). Respect maxFilesToRead; read ranges, not whole files, when a symbol or line is known. Use mr_atlas_query only when useGraph is map or impact.
+2. For replicate tasks, first find the existing reference that already solves the same thing; it is the specification.
+3. For bugfix tasks, find a reproduction (command, test, or exact steps), the failing path, and ranked root-cause candidates.
+4. Record with mr_task_record as you go: fact (claim + file + exact line range), decision, discard (every hypothesis or location you ruled out and why), unknown. Discards are mandatory: they stop the next role from repeating your search.
+5. Finish with mr_task_explore_submit: every requiredChecklist key answered concretely or as "unknown: <reason>", facts with exact ranges, the reference when one exists, filesOfInterest, unknowns. If the code proves the intake strategy wrong (for example an existing reference makes it replicate, or the "feature" is really a bug), pass strategy and answer that strategy's checklist instead. If it returns gaps, close only those gaps and resubmit.
+6. Never paste source code into the report; ranges are rehydrated for the planner. No prose output: your final message is the tool result JSON.`,
+      ),
+      "mr-task-plan": readonlyAgent(
+        models.roles.plan,
+        "Reasons over the /task handoff and writes an anchored ExecutionPlan any model can apply.",
+        `You are the /task planner. You reason once over a curated bundle and write a plan so exact that a weak model, or no model, can apply it without mistakes. You never edit.
+
+Contract:
+1. Call mr_task_context role=plan first. mustKeep entries (user input, decisions, discards, unknowns, errors) are binding. Slices are live code; stale=true means re-read that range. Use mr_task_recall for manifest ids you need; read files directly only for what is still missing.
+2. If a decision could materially change behavior, data, security, or scope, call mr_task_ask with up to 3 bounded choice questions (options, impact, defaultOption). Do not ask about facts you can read.
+3. Submit mr_task_plan_submit:
+   - Prefer exact code: a step with \`code\` is applied by the plugin with zero model tokens. Use \`intent\` only when the code needs synthesis that is longer than writing it yourself; then add a \`reference\` (file + lines) to imitate.
+   - replace/insertAfter/insertBefore need anchor.snippet copied EXACTLY (indentation included) and unique in the file; extend it until unique. insertAfter inserts code immediately after the snippet, so start code with a newline when needed.
+   - One concern per step; order with dependsOn. Never touch files outside the plan.
+   - verification: real commands from package.json scripts (for example "bun run typecheck", "npm test"); lint and formatting of touched files run automatically.
+   - Strategy guidance: tweak = one exact step; replicate = mirror the reference with only the stated deltas; ui = reuse existing components and tokens; bugfix = fix the root cause and add or point to the check that reproduced it; feature/refactor = smallest correct diff.
+4. If the plan is rejected, fix exactly the reported issues and resubmit. If the replan follows a failed verification, the failure is in mustKeep: address it explicitly.
+5. No prose output: your final message is the tool result JSON.`,
+      ),
+      "mr-task-apply": {
+        mode: "subagent",
+        ...agentModel(models.roles.general),
+        description: "Applies exactly one /task model step from its handoff bundle.",
+        prompt: `You are the /task applier. You implement EXACTLY ONE plan step per invocation.
+
+Contract:
+1. Call mr_task_context role=apply stepId=<step>. The bundle holds the step, the anchor neighborhood, the reference to imitate, binding decisions, and prior failures. Do not explore beyond it unless a slice is stale.
+2. Edit only step.file. Respect mustNotTouch and repository conventions. Preserve unrelated code.
+3. Call mr_task_step_done with the stepId and a one-line note. If the step cannot be done as written, do not improvise: record the blocker with mr_task_record kind=unknown and stop.
+4. Do not run verification yourself; the orchestrator calls mr_task_verify. No prose output: your final message is the tool result JSON.`,
       },
       "mr-judge-a": readonlyAgent(
         models.roles.judgeA,
@@ -620,6 +711,12 @@ Your role:
         },
       },
   };
+  // Developer-configured effort per /task strategy: same model, different variant.
+  for (const { role, variant } of taskEffortVariants(taskEffort)) {
+    const base = agents[taskAgentName(role)];
+    if (base === undefined) continue;
+    agents[taskAgentName(role, variant)] = { ...base, variant, description: `${base.description} (effort: ${variant})` };
+  }
   return Object.fromEntries(
     Object.entries(agents).map(([name, agent]) => [
       name,
@@ -681,7 +778,7 @@ export function buildOpenCodeConfig(
     ...(Object.keys(mcp).length === 0 ? {} : { mcp }),
     plugin: plugins,
     command: commandDefinitions(models),
-    agent: agentDefinitions(models),
+    agent: agentDefinitions(models, paths === undefined ? undefined : loadTaskEffortSync(paths)),
     tool_output: { max_lines: 300, max_bytes: 24_000 },
     compaction: { auto: true, prune: true, tail_turns: 12 },
   };
@@ -717,7 +814,7 @@ export function buildGlobalDefinitionFiles(paths: MrPaths, models: ModelMap): Ma
     );
   }
 
-  for (const [name, def] of Object.entries(agentDefinitions(models))) {
+  for (const [name, def] of Object.entries(agentDefinitions(models, loadTaskEffortSync(paths)))) {
     const lines = [
       "---",
       `description: ${yamlEscape(def.description)}`,
@@ -782,9 +879,11 @@ export async function syncWorkspace(paths: MrPaths, profile: WorkspaceProfile, s
     await mkdir(dirname(pluginDest), { recursive: true });
     await copyFile(pluginSource, pluginDest);
 
-    // plugin.js imports "./core/*.js" — ship the compiled core alongside it
+    // plugin.js imports "./core/*.js" and "./adapters/*.js" — ship both alongside it
     const coreSource = join(sourceRoot, "dist", "src", "core");
     await cp(coreSource, join(generatedDir, "core"), { recursive: true });
+    const adaptersSource = join(sourceRoot, "dist", "src", "adapters");
+    await cp(adaptersSource, join(generatedDir, "adapters"), { recursive: true });
 
     // Tree-sitter grammars: ship next to the plugin so atlas resolves them offline
     const wasmDir = join(generatedDir, "wasm");

@@ -1,6 +1,6 @@
 # Guía rápida de comandos
 
-Chuleta puntual para `/flow`, `/blueprint`, `/prompt` y `/atlas`. Todos reciben texto libre como `[CONTEXT_INPUT_PAYLOAD] $ARGUMENTS`; los parámetros formales viven en las herramientas `mr_*` que cada comando invoca.
+Chuleta puntual para `/flow`, `/task`, `/blueprint`, `/prompt` y `/atlas`. Todos reciben texto libre como `[CONTEXT_INPUT_PAYLOAD] $ARGUMENTS`; los parámetros formales viven en las herramientas `mr_*` que cada comando invoca.
 
 ---
 
@@ -36,6 +36,36 @@ Herramientas del ciclo:
 * `mr_flow_judge`: `judge: a|b`, `status: SUPPORTED|INSUFFICIENT_EVIDENCE`, `approved`, `findings[] {severity, claim, file, line, side: new|old, source: diff, evidence}` requeridos; `missing`, `nextAction` para `INSUFFICIENT_EVIDENCE`.
 * `mr_flow_fix`: sin parámetros.
 * `mr_flow_finish`: `commitHash`, `prUrl`, `humanApproved` opcionales — pero `humanApproved=true` es obligatorio si `lane=critical`.
+
+---
+
+## `/task` — entrega rápida explore → plan → apply
+
+> Especificación: `docs/plans/2026-10-task-flow.md`.
+
+Escribes `/task <una línea, un prompt, o la referencia a un ticket/diseño>`. Sin wizard ni jueces:
+
+1. **Intake** (`mr_task_start`): señales deterministas + Jev decide cuánto leer, si usar grafo, memoria y reglas, y qué verificar. Suelos deterministas que Jev no puede bajar. Si es crítico o grande, recomienda `/flow` sin forzarlo.
+2. **Explore** (`mr-task-explore`): lee lo justo y registra hechos, decisiones, **descartes** y dudas (`mr_task_record`); cierra con `mr_task_explore_submit` y la checklist de la estrategia.
+3. **Plan** (`mr-task-plan`): recibe el handoff sin pérdida (`mr_task_context`), pregunta con `mr_task_ask` (Jev → default → humano solo si es crucial) y envía un plan anclado (`mr_task_plan_submit`).
+4. **Apply**: `mr_task_apply` aplica sin modelo los pasos con código exacto; `mr-task-apply` hace solo los pasos con `intent` (`mr_task_step_done`).
+5. **Verify** (`mr_task_verify`): lint/format de los archivos tocados + typecheck/tests según el nivel, sin shell, y comprobación de que el diff solo toca archivos del plan.
+6. **Finish** (`mr_task_finish`): memoria compacta en Engram. No hace commit, push ni PR.
+
+Modelos: `explore`, `plan` y `general` de tu configuración. Jev se usa si el Decision Plane está activo (`mr decision shadow` + credencial de AI Gateway); si no, heurísticas deterministas.
+
+El **Relay** (hook `tool.execute.after`) escribe cada lectura, búsqueda, edición y comando en `journal.jsonl`; lo omitido en un handoff aparece en el manifest y se recupera con `mr_task_recall`.
+
+---
+
+## Narración `[▶ play]` en `/task`, `/flow` y `/blueprint`
+
+Cada explicación del orchestrator (o de bp-architect) termina con un enlace `[▶ play]`. Al pincharlo se abre una URL local del plugin y la explicación se lee en voz alta con `say` de macOS, en el idioma del developer. Sin clic no suena nada; la página tiene `⏹ Detener`.
+
+* Solo `127.0.0.1`, token aleatorio por sesión de OpenCode; la URL no lleva el texto.
+* El enlace se quita del historial antes de cada llamada al modelo: cero tokens.
+* `MR_NARRATION=off` lo desactiva; `MR_NARRATION_VOICE` y `MR_NARRATION_RATE` (90-400) ajustan voz y velocidad.
+* Fuera de macOS, o en arneses externos (fx, Pi, Cursor…), no aparece.
 
 ---
 
@@ -86,3 +116,16 @@ Herramientas:
 * `mr_atlas_query`: todo opcional; lo habitual es `nodeName` + `action: map|info|deps|dependents|impact|slice|tests|semantic|governance`. Afinadores: `kind`, `depth` (default `2`), `context` (`0-50`), `filePath` (governance), `supports[]` (evidencia semántica).
 
 Flujo: payload vacío o con `index` → `mr_atlas_index` e informa `ficheros, nodos, aristas, duración`; con nombre/consulta → `mr_atlas_query` y presenta markdown estructurado.
+
+### Atlas para cualquier agente (fuera de `/flow` y `/task`)
+
+`mr atlas index` (y `init`/`rules`) además genera un paquete **local** en `.aicontext/atlas/`:
+
+* `MAP.md`: stack, comandos, carpetas y símbolos más conectados con `archivo:línea` (≤ 16.000 caracteres).
+* `MEMORY.md`: decisiones del proyecto desde Engram (si está activo).
+* `AGENTS.md`: reglas (con `mr atlas init`).
+
+Y escribe un bloque `<!-- mr-atlas:start -->…<!-- mr-atlas:end -->` en el `AGENTS.md` de cada repo (lo crea si falta) y en `CLAUDE.md`, `GEMINI.md` y `.github/copilot-instructions.md` si existen. Solo toca lo que hay entre las marcas. `.aicontext/` y los `AGENTS.md` creados se ignoran en local con `.git/info/exclude`; nunca se commitean.
+
+* `mr atlas query <Símbolo> info|deps|dependents|impact|slice|tests|find`: consulta el grafo desde cualquier terminal.
+* `mr atlas index --no-link`: no escribe punteros. `mr atlas unlink`: los quita.

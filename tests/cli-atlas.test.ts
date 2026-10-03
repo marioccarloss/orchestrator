@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolvePaths } from "../src/core/paths.js";
 import { loadRegistry } from "../src/core/workspace.js";
+import { removeManagedBlock } from "../src/core/atlas-pack.js";
 
 const repositoryRoot = process.cwd();
 
@@ -21,7 +22,7 @@ test("mr atlas init supports profile-only mode and persists rules outside genera
     const paths = resolvePaths({ HOME: home });
     await mkdir(paths.configRoot, { recursive: true });
     await writeFile(paths.models, await readFile(join(repositoryRoot, "models.json"), "utf8"));
-    const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_CACHE_HOME: join(home, ".cache"), MR_SKIP_PLUGIN_INSTALL: "1" };
+    const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_CACHE_HOME: join(home, ".cache"), MR_SKIP_PLUGIN_INSTALL: "1", MR_ATLAS_MEMORY: "off" };
     const run = (arguments_: readonly string[]) => spawnSync(process.execPath, [join(repositoryRoot, "src", "cli.ts"), ...arguments_], { cwd: workspace, env, encoding: "utf8" });
     const registered = run(["workspace", "add", workspace]);
     assert.equal(registered.status, 0, registered.stderr);
@@ -41,11 +42,16 @@ test("mr atlas init supports profile-only mode and persists rules outside genera
     await writeFile(join(workspace, "AGENTS.md"), "preserve me\n");
     const declined = run(["atlas", "rules", "--write-repo-agents"]);
     assert.equal(declined.status, 0, declined.stderr);
-    assert.equal(await readFile(join(workspace, "AGENTS.md"), "utf8"), "preserve me\n");
+    // Declining the rules rewrite preserves the developer's content; only the managed Atlas pointer block is added.
+    const declinedContent = await readFile(join(workspace, "AGENTS.md"), "utf8");
+    assert.equal(removeManagedBlock(declinedContent), "preserve me\n");
+    assert.match(declinedContent, /mr-atlas:start/u);
     assert.match(declined.stdout, /Proposed .*AGENTS\.md/u);
     const accepted = run(["atlas", "rules", "--write-repo-agents", "--yes"]);
     assert.equal(accepted.status, 0, accepted.stderr);
-    assert.match(await readFile(join(workspace, "AGENTS.md"), "utf8"), /Agent Rules/u);
+    const acceptedContent = await readFile(join(workspace, "AGENTS.md"), "utf8");
+    assert.match(acceptedContent, /Agent Rules/u);
+    assert.match(acceptedContent, /mr-atlas:start/u, "the pointer is re-applied after a full rules rewrite");
   } finally {
     await rm(home, { recursive: true, force: true });
     await rm(workspace, { recursive: true, force: true });

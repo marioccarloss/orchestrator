@@ -31,14 +31,14 @@ void test("repository models.json keeps the governed role roster", async () => {
   assert.deepEqual(configured.roles, {
     orchestrator: { model: "github-copilot/kimi-k3", variant: "high", alternative: { model: "github-copilot/gemini-3.8-flash", variant: "high" } },
     explore: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "github-copilot/kimi-k3", variant: "high" } },
-    plan: { model: "github-copilot/claude-opus-5", variant: "high", alternative: { model: "github-copilot/gpt-6-astra", variant: "xhigh" } },
+    plan: { model: "github-copilot/claude-opus-5.5", variant: "high", alternative: { model: "github-copilot/gpt-6-astra", variant: "xhigh" } },
     general: { model: "github-copilot/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
     sddApply: { model: "github-copilot/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
     judgeA: { model: "github-copilot/grok-4.6", variant: "xhigh", alternative: { model: "github-copilot/claude-opus-4.8", variant: "high" } },
     judgeB: { model: "github-copilot/claude-opus-4.8-fast", variant: "high", alternative: { model: "github-copilot/grok-4.6", variant: "xhigh" } },
     fix: { model: "github-copilot/gpt-5.6-sol", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "medium" } },
     bpExtractor: { model: "github-copilot/gpt-5.4-mini", variant: "low", alternative: { model: "github-copilot/gpt-5.6-luna", variant: "low" } },
-    bpArchitect: { model: "github-copilot/gemini-3.8-flash", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "high" } },
+    bpArchitect: { model: "github-copilot/claude-opus-5.5", variant: "high", alternative: { model: "github-copilot/claude-opus-5", variant: "high" } },
     bpTransactor: { model: "github-copilot/gpt-5.4-mini", variant: "low", alternative: { model: "github-copilot/gpt-5.6-luna", variant: "low" } },
   });
 });

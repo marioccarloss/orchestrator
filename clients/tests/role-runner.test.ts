@@ -56,3 +56,14 @@ test("builds a Pi invocation with optional thinking from the native role target"
     arguments: ["--print", "--no-session", "--model", "openai/gpt-4o-mini", "--", "--help"],
   });
 });
+
+test("a /task effort override replaces only the variant for fx, Pi, and Cursor agent", () => {
+  const assignment = { plan: { primary: { native: { model: "native-model", variant: "high" } } } };
+  expect(roleCommand({ harness: "fx", applicationMode: "per-invocation", roles: assignment } as never, "plan", "task", "low")).toEqual({
+    command: "fx",
+    arguments: ["ask", "--model", "native-model", "--effort", "low", "task"],
+  });
+  expect(roleCommand({ harness: "pi", applicationMode: "per-invocation", roles: assignment } as never, "plan", "task", "low").arguments).toContain("low");
+  expect(roleCommand({ harness: "cursor", applicationMode: "per-invocation", roles: assignment } as never, "plan", "task", "low").arguments).toContain("native-model[effort=low]");
+  expect(() => roleCommand({ harness: "fx", applicationMode: "per-invocation", roles: assignment } as never, "plan", "task", "low; rm")).toThrow();
+});

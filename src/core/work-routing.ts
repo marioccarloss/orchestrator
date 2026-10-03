@@ -113,7 +113,7 @@ export async function saveWorkDocument(workspaceRoot: string, inputValue: WorkDo
   return path;
 }
 
-export const WORK_ROUTING_CONTRACT = `Everyday work routing (ODD-lite, mandatory outside an explicit /flow or /blueprint):
+export const WORK_ROUTING_CONTRACT = `Everyday work routing (ODD-lite, mandatory outside an explicit /flow, /task, or /blueprint):
 1. Establish authorization first. Explanation, investigation, review, and proposal-only requests remain read-only.
 2. Explore proportionately before the first write. Then call mr_work_route with observed counts; never estimate success or invent scope.
 3. A direct route keeps a small understood change small. A tracked route requires mr_work_track before the first source write and after material progress so another session can resume it.

@@ -56,9 +56,10 @@ void test("generated opencode config keeps normal development as default and exp
   assert.equal(orchestrator.temperature, 0);
   assert.equal(orchestrator.top_p, 1);
   assert.equal(orchestrator.permission?.["*"], "allow");
-  assert.equal(Object.keys(config.agent).length, 12);
+  assert.equal(Object.keys(config.agent).length, 15);
   assert.equal(config.command["work"]?.agent, "orchestrator", "/work must use adaptive everyday routing");
   assert.equal(config.command["flow"]?.agent, "orchestrator", "/flow must dispatch internally without a manual mode switch");
+  assert.equal(config.command["task"]?.agent, "orchestrator", "/task must dispatch internally without a manual mode switch");
 
   const subagents = [
     "mr-explore",
@@ -68,6 +69,9 @@ void test("generated opencode config keeps normal development as default and exp
     "mr-judge-a",
     "mr-judge-b",
     "mr-fix",
+    "mr-task-explore",
+    "mr-task-plan",
+    "mr-task-apply",
     "bp-extractor",
     "bp-transactor",
   ];
@@ -105,7 +109,7 @@ void test("orchestrator has full autonomy except push and ticket commenting", ()
   assert.equal(edit["~/.ssh/**/*"], "deny");
 });
 
-void test("generated opencode config registers all 8 commands with correct agent assignments", () => {
+void test("generated opencode config registers all 10 commands with correct agent assignments", () => {
   const config = buildOpenCodeConfig(profile, models, "/generated") as {
     command: Record<string, { description?: string; agent?: string; template?: string }>;
   };
@@ -113,12 +117,14 @@ void test("generated opencode config registers all 8 commands with correct agent
   const expectedCommands: Record<string, string> = {
     "work": "orchestrator",
     "flow": "orchestrator",
+    "task": "orchestrator",
     "blueprint": "bp-architect",
     "atlas": "build",
     "trace": "build",
     "propose": "build",
     "prompt": "build",
     "flow-models": "orchestrator",
+    "choose-model": "orchestrator",
   };
 
   for (const [cmd, expectedAgent] of Object.entries(expectedCommands)) {
