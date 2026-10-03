@@ -6,6 +6,31 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-03
+
+### Added
+
+- Added `/task`, a fast explore → plan → apply workflow with deterministic intake, Jev decisions for read depth, verification and handoff, anchored execution plans applied without a model when they carry exact code, scoped verification without a shell, and an out-of-plan conformance check.
+- Added the Relay journal (`tool.execute.after`) and lossless-by-reference handoffs: must-keep entries travel verbatim, Jev-selected entries inline, everything else listed in a manifest and recoverable with `mr_task_recall`.
+- Added `/task` adapters for Codex, Cursor (`agent`), Claude Code, Antigravity, AGY, fx and Pi, with `run-role --variant` and `mr_task_record kind=read` for hosts without the relay.
+- Added per-strategy effort (`mr task-effort`), generating `mr-task-<role>-<variant>` agents without changing models.
+- Added a direct TypeSafe Jev adapter (`TYPESAFE_API_KEY`) preferred over Vercel AI Gateway, and `mr decision zdr on|off` for Gateway plans without Zero Data Retention.
+- Added the portable Atlas pack: local `.aicontext/atlas/MAP.md` and `MEMORY.md`, managed pointer blocks in `AGENTS.md` (created when missing), `CLAUDE.md`, `GEMINI.md` and Copilot instructions, `mr atlas query` and `mr atlas unlink`. The pack stays local through `.git/info/exclude`.
+- Added `[▶ play]` narration for `/task`, `/flow` and `/blueprint` explanations using macOS `say` on click, served on localhost with a per-session token and stripped from model history.
+- Added zero-token intake and simulation benches (`scripts/task-intake-bench.ts`, `scripts/task-sim-bench.ts`) with baselines under `bench/baselines/`.
+- Added `/choose-model` to pick a model for a case from the agent-visible catalog with Jev.
+
+### Changed
+
+- Planner role now defaults to `claude-opus-5.5` in the governed roster.
+- Intake heuristics recognise Spanish bugfix phrasing, cross-cutting contracts, and critical-area synonyms; at intake Jev may raise but never lower difficulty.
+
+### Safety
+
+- Jev only decides cost (reading, verification, handoff) above deterministic floors; floors, plan validation and verification remain deterministic.
+- Verification commands run without a shell from an allowlist (declared package scripts and known verification binaries).
+- Runtime keeps requesting Zero Data Retention on Vercel AI Gateway unless the developer turns it off explicitly.
+
 ## [0.14.0] - 2026-09-21
 
 ### Added
