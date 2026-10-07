@@ -95,6 +95,8 @@ mr atlas init --no-rules
 mr atlas init --guided --lang es
 mr atlas rules --diff --lang es
 mr atlas rules --write-repo-agents --lang es --yes
+mr atlas rules show --repo pasatiempos-ui --file src/a.css
+mr atlas rules render --lang es
 ```
 
 | Operación | Resultado |
@@ -102,7 +104,10 @@ mr atlas rules --write-repo-agents --lang es --yes
 | `index` | Actualiza el grafo incremental usando hashes de contenido. |
 | `init --no-rules` | Genera índice y perfiles sin crear una propuesta de reglas. |
 | `init --guided` | Permite revisar las inferencias en una TUI; requiere terminal interactiva. |
-| `rules --diff` | Regenera las reglas observadas y muestra el diff de su proyección. |
+| `rules` | Regenera y guarda las reglas observadas, los perfiles, la proyección `AGENTS.md` y los punteros Atlas. |
+| `rules --diff` | Simulación: reindexa en memoria, calcula la propuesta y muestra el diff de cada `AGENTS.md` interno. No escribe nada. |
+| `rules show` | Lista las reglas fusionadas (solo lectura). |
+| `rules render` | Reescribe solo las proyecciones `AGENTS.md` internas. |
 | `--lang en\|es` | Elige el idioma de la proyección humana de reglas. |
 | `--write-repo-agents` | Propone un `AGENTS.md` en cada repo. Siempre enseña el diff antes de escribir. |
 | `--yes` | Confirma esas escrituras cuando no hay TTY. |
@@ -136,6 +141,14 @@ Cada regla usa el esquema de `rules.json` (`statement` ≤ 200 caracteres, `valu
 - **Errores**: si `rules.local.json` es inválido se ignora y las reglas generadas siguen activas; si falta o falla `rules.json`, las reglas locales válidas se sirven igualmente.
 
 `mr doctor` valida `profile.json`, `rules.json` y `rules.local.json` de cada workspace cuando existen, y marca como fallido el fichero inválido con la ruta y el primer error de zod, por ejemplo `rules.local.json: repositories.0.rules.0.severity: Invalid option ...`. Un fichero ausente no es un error.
+
+#### Consultar y proyectar reglas sin flow
+
+Estos comandos funcionan desde cualquier directorio dentro de un workspace registrado y no necesitan MCP ni un flow activo.
+
+- **`mr atlas rules show [--repo R] [--file F]... [--json]`**: imprime las reglas fusionadas (`rules.json` + `rules.local.json`), agrupadas por repo, una por línea: `[severity] id — statement`. Las reglas del usuario (`kind: "user"`) llevan la marca `(user)`. `--repo` limita a un repo; cada `--file` filtra por los globs `appliesTo` (las reglas sin `appliesTo` siempre aplican), igual que `mr_atlas_profile`. `--json` imprime `[{ repo, id, severity, statement, kind }]`. Sin reglas, lo indica y sale con 0. Si `rules.json` o `rules.local.json` es inválido, muestra el error y sale con código distinto de 0. Nunca indexa ni escribe.
+- **`mr atlas rules render [--lang en|es]`**: reescribe solo `<contextRoot>/atlas/AGENTS.md` y `<contextRoot>/atlas/repos/<repo>/AGENTS.md` a partir de las reglas fusionadas y de `profile.json`. No reindexa, no escribe `rules.json`, `profile.json` ni `rules.local.json`, y no toca ficheros de los repositorios ni los bloques de punteros. El idioma por defecto es `en`. Falla si falta `profile.json` o si algún fichero de reglas es inválido. Úsalo tras editar `rules.local.json`.
+- **`mr atlas rules --diff [--lang en|es]`**: simulación. Indexa en memoria, sin guardar el grafo, calcula la propuesta, la fusiona con `rules.local.json` y muestra el diff de cada `AGENTS.md` interno. No guarda reglas, perfiles, `AGENTS.md`, `MAP.md` ni la caché del grafo, y no añade punteros. Para guardar, ejecuta `mr atlas rules` sin `--diff`.
 
 ---
 

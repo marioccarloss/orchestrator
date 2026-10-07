@@ -51,9 +51,9 @@ Strategy: `ask-on-risk`. Forecast is about 250 authored changed lines, under the
 - [x] T3 — `mr doctor` validation of Atlas rule files with explicit errors (+ tests), plus docs in `docs/USAGE.md`. Route: delegated writer.
 - [x] T4 — Migrate `core-dev` hand-added rules into `rules.local.json`, reinstall, regenerate, verify. Route: inline (operational).
 
-- [ ] T5 — `mr atlas rules show [--repo R] [--file F ...] [--json]`: read-only CLI that prints the merged rules (generated + local) without MCP or a flow. Route: delegated writer.
-- [ ] T6 — `mr atlas rules render`: rewrite only `.aicontext/atlas/AGENTS.md` and `.aicontext/atlas/repos/<repo>/AGENTS.md` from the current rules.json + rules.local.json + profile.json. No reindex, no rules.json/profile.json write, no pointer edits in repos. Route: delegated writer.
-- [ ] T7 — `mr atlas rules --diff` becomes a true dry run: print the diff, write nothing, and touch no pointers. Route: delegated writer.
+- [x] T5 — `mr atlas rules show [--repo R] [--file F ...] [--json]`: read-only CLI that prints the merged rules (generated + local) without MCP or a flow. Route: delegated writer.
+- [x] T6 — `mr atlas rules render`: rewrite only `.aicontext/atlas/AGENTS.md` and `.aicontext/atlas/repos/<repo>/AGENTS.md` from the current rules.json + rules.local.json + profile.json. No reindex, no rules.json/profile.json write, no pointer edits in repos. Route: delegated writer.
+- [x] T7 — `mr atlas rules --diff` becomes a true dry run: print the diff, write nothing, and touch no pointers. Route: delegated writer.
 
 ## Progress
 
@@ -63,6 +63,7 @@ Strategy: `ask-on-risk`. Forecast is about 250 authored changed lines, under the
 
 - 2026-10-07: T1–T3 committed as 307a858. RDD: clone-local off; assess = medium, under_budget, no review due.
 - 2026-10-07: T4. `mr atlas rules --diff` turned out to SAVE: it regenerated rules.json (hand rules dropped) and added Atlas pointer blocks to tracked AGENTS.md/CLAUDE.md/copilot-instructions.md in 42ds, pasatiempos-api and pasatiempos-ui. The pointer edits were reverted with `git checkout -- <file>` after confirming the diffs held only Atlas lines; unrelated staged work in pasatiempos-api was left untouched. All hand rules (4 for 42ds, 4 for api, 12 for ui) were rebuilt into rules.local.json from /tmp/rules.json.bak-1791384434 plus the 10 user rules. Verified with the new code that the merged digest for pasatiempos-ui serves every local rule. The new doctor check flagged invalid profile.json files in the openreferences workspaces. The running MCP server keeps the old code until the harness restarts.
+- 2026-10-07: T5–T7 done by delegated writer (uncommitted). RED: tests/cli-atlas-rules.test.ts 3/3 failing (`rules show` ran a full regeneration; `rules render` rewrote MAP.md/profile.json/rules.json; `rules --diff` saved and re-added pointers). GREEN: focused 10/10; `bun run typecheck` clean; `bun run lint` clean; `bun run test` 362/362. Design: `renderAtlasAgentsFiles` in store.ts is the single AGENTS.md projection helper used by `saveWorkspaceRules`, `renderWorkspaceRules` and the dry run. `--diff` indexes in memory via `AtlasIndexer` (no graph cache save), skips onboarding, and diffs every internal AGENTS.md; a test proves the workspace tree and graph cache stay byte-identical. `mr atlas init --diff` no longer prints a diff (undocumented flag, now ignored there).
 
 ## Follow-ups
 

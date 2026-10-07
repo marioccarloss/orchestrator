@@ -1,5 +1,5 @@
 import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { atomicWrite, canonicalJson, readJson } from "../files.js";
 import type { WorkspaceProfile } from "../schema.js";
@@ -60,26 +60,49 @@ export async function saveRepositoryProfiles(profile: WorkspaceProfile, profiles
   return path;
 }
 
-export async function saveWorkspaceRules(profile: WorkspaceProfile, rules: WorkspaceRules, profiles: readonly RepositoryProfile[], language: AgentsLanguage = "en"): Promise<readonly string[]> {
+export interface AtlasAgentsFile { readonly path: string; readonly content: string }
+
+/** Single source for the internal Atlas AGENTS.md projections (workspace + one per profiled repository). */
+export function renderAtlasAgentsFiles(profile: WorkspaceProfile, merged: WorkspaceRules, profiles: readonly RepositoryProfile[], language: AgentsLanguage = "en"): readonly AtlasAgentsFile[] {
   const root = rulesRoot(profile);
-  await mkdir(join(root, "repos"), { recursive: true });
-  const files: string[] = [];
-  const write = async (path: string, content: string): Promise<void> => {
-    await atomicWrite(path, content);
-    files.push(path);
-  };
-  files.push(await saveRepositoryProfiles(profile, profiles));
-  await write(join(root, "rules.json"), canonicalJson(rules));
-  const merged = mergeLocalRules(rules, await loadLocalRules(profile)) ?? rules;
-  await write(join(root, "AGENTS.md"), renderWorkspaceAgentsMarkdown(merged, profiles, language));
+  const files: AtlasAgentsFile[] = [{ path: join(root, "AGENTS.md"), content: renderWorkspaceAgentsMarkdown(merged, profiles, language) }];
   for (const repository of merged.repositories) {
     const repositoryProfile = profiles.find((candidate) => candidate.repo === repository.repo);
     if (repositoryProfile === undefined) continue;
-    const dir = join(root, "repos", repository.repo);
-    await mkdir(dir, { recursive: true });
-    await write(join(dir, "AGENTS.md"), renderRepositoryAgentsMarkdown(repository, repositoryProfile, rules.preferences, language));
+    files.push({ path: join(root, "repos", repository.repo, "AGENTS.md"), content: renderRepositoryAgentsMarkdown(repository, repositoryProfile, merged.preferences, language) });
   }
   return files;
+}
+
+async function writeAtlasAgentsFiles(files: readonly AtlasAgentsFile[]): Promise<readonly string[]> {
+  for (const file of files) {
+    await mkdir(dirname(file.path), { recursive: true });
+    await atomicWrite(file.path, file.content);
+  }
+  return files.map((file) => file.path);
+}
+
+export async function saveWorkspaceRules(profile: WorkspaceProfile, rules: WorkspaceRules, profiles: readonly RepositoryProfile[], language: AgentsLanguage = "en"): Promise<readonly string[]> {
+  const root = rulesRoot(profile);
+  await mkdir(root, { recursive: true });
+  const profilesPath = await saveRepositoryProfiles(profile, profiles);
+  const rulesPath = join(root, "rules.json");
+  await atomicWrite(rulesPath, canonicalJson(rules));
+  const merged = mergeLocalRules(rules, await loadLocalRules(profile)) ?? rules;
+  return [profilesPath, rulesPath, ...await writeAtlasAgentsFiles(renderAtlasAgentsFiles(profile, merged, profiles, language))];
+}
+
+/** Rewrites only the internal AGENTS.md projections from the files on disk; never touches rules.json, profile.json or rules.local.json. */
+export async function renderWorkspaceRules(profile: WorkspaceProfile, language: AgentsLanguage = "en"): Promise<readonly string[]> {
+  const inspections = await inspectAtlasRuleFiles(profile);
+  for (const inspection of inspections) {
+    if (inspection.status === "invalid") throw new Error(`Invalid Atlas rule file ${inspection.path}: ${inspection.issue}`);
+  }
+  const profiles = inspections.find((inspection) => inspection.file === "profile.json");
+  if (profiles?.status !== "valid") throw new Error(`Missing ${join(rulesRoot(profile), "profile.json")}; run \`mr atlas init\` first.`);
+  const merged = await loadWorkspaceRules(profile);
+  if (merged === undefined) throw new Error(`No Atlas rules in ${rulesRoot(profile)}; run \`mr atlas rules\` or add ${LOCAL_RULES_FILE}.`);
+  return writeAtlasAgentsFiles(renderAtlasAgentsFiles(profile, merged, RepositoryProfilesFileSchema.parse(profiles.value).profiles, language));
 }
 
 /** Generator-owned rules.json only. */
