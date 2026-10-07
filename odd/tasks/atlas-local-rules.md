@@ -49,7 +49,7 @@ Strategy: `ask-on-risk`. Forecast is about 250 authored changed lines, under the
 - [x] T1 — Local rules schema and merge in `loadWorkspaceRules` (+ tests). Route: delegated writer (T1–T3 touch 4+ non-trivial files).
 - [x] T2 — Render merged rules into generated `AGENTS.md` on save (+ tests). Route: delegated writer.
 - [x] T3 — `mr doctor` validation of Atlas rule files with explicit errors (+ tests), plus docs in `docs/USAGE.md`. Route: delegated writer.
-- [ ] T4 — Migrate `core-dev` hand-added rules into `rules.local.json`, reinstall, regenerate, verify. Route: inline (operational).
+- [x] T4 — Migrate `core-dev` hand-added rules into `rules.local.json`, reinstall, regenerate, verify. Route: inline (operational).
 
 ## Progress
 
@@ -57,6 +57,14 @@ Strategy: `ask-on-risk`. Forecast is about 250 authored changed lines, under the
 
 - 2026-10-07: T1–T3 done by delegated writer (uncommitted). RED: tests/rules-store.test.ts (4 failing with stub exports: override/append/local-only, missing/invalid rules.json, merged AGENTS.md save, file inspection) and tests/doctor.test.ts (missing `checkAtlasRuleFiles` export). GREEN: focused 11/11 pass; `bun run typecheck` clean; `bun run lint` clean; `bun run test` 359/359 pass. Design: `LocalRulesSchema` defaults `kind: "user"`, `confidence: 1`, `evidence: []`; local-only repos get a synthesized baseline entry with `generatedFromIndex` of 64 zeros; missing rules.json synthesizes a workspace with no preferences and `generatedAt` epoch; doctor reports only invalid files via `checkAtlasRuleFiles`.
 
+- 2026-10-07: T1–T3 committed as 307a858. RDD: clone-local off; assess = medium, under_budget, no review due.
+- 2026-10-07: T4. `mr atlas rules --diff` turned out to SAVE: it regenerated rules.json (hand rules dropped) and added Atlas pointer blocks to tracked AGENTS.md/CLAUDE.md/copilot-instructions.md in 42ds, pasatiempos-api and pasatiempos-ui. The pointer edits were reverted with `git checkout -- <file>` after confirming the diffs held only Atlas lines; unrelated staged work in pasatiempos-api was left untouched. All hand rules (4 for 42ds, 4 for api, 12 for ui) were rebuilt into rules.local.json from /tmp/rules.json.bak-1791384434 plus the 10 user rules. Verified with the new code that the merged digest for pasatiempos-ui serves every local rule. The new doctor check flagged invalid profile.json files in the openreferences workspaces. The running MCP server keeps the old code until the harness restarts.
+
+## Follow-ups
+
+- `mr atlas rules --diff` should be a dry run (or say clearly that it saves), and it should not rewrite pointer blocks in tracked files without consent.
+- openreferences: `profile.json` has an unknown `commands.pullDependencies` key.
+
 ## Next Step
 
-Parent: work-unit commit for T1–T3, then T4 (migrate core-dev rules).
+Done. Push and PR are the user's decision.
