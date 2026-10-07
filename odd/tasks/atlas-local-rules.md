@@ -51,6 +51,10 @@ Strategy: `ask-on-risk`. Forecast is about 250 authored changed lines, under the
 - [x] T3 — `mr doctor` validation of Atlas rule files with explicit errors (+ tests), plus docs in `docs/USAGE.md`. Route: delegated writer.
 - [x] T4 — Migrate `core-dev` hand-added rules into `rules.local.json`, reinstall, regenerate, verify. Route: inline (operational).
 
+- [ ] T5 — `mr atlas rules show [--repo R] [--file F ...] [--json]`: read-only CLI that prints the merged rules (generated + local) without MCP or a flow. Route: delegated writer.
+- [ ] T6 — `mr atlas rules render`: rewrite only `.aicontext/atlas/AGENTS.md` and `.aicontext/atlas/repos/<repo>/AGENTS.md` from the current rules.json + rules.local.json + profile.json. No reindex, no rules.json/profile.json write, no pointer edits in repos. Route: delegated writer.
+- [ ] T7 — `mr atlas rules --diff` becomes a true dry run: print the diff, write nothing, and touch no pointers. Route: delegated writer.
+
 ## Progress
 
 - 2026-10-07: Branch created; exploration done. All consumers read rules through `src/core/rules/store.ts` `loadWorkspaceRules`.
@@ -67,4 +71,4 @@ Strategy: `ask-on-risk`. Forecast is about 250 authored changed lines, under the
 
 ## Next Step
 
-Done. Push and PR are the user's decision.
+T5–T7 via one bounded writer (user request 2026-10-07: rules must be consultable and usable without the mr-orchestrator flow).
