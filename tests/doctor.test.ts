@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkHarnessModelRosters } from "../src/core/doctor.js";
+import { checkAtlasRuleFiles, checkHarnessModelRosters } from "../src/core/doctor.js";
 import type { MrPaths } from "../src/core/paths.js";
+import type { WorkspaceProfile } from "../src/core/schema.js";
 
 function makePaths(root: string): MrPaths {
   return {
@@ -44,6 +45,27 @@ test("model doctor reports valid OpenCode and invalid configured harnesses indep
     const cursor = checks.find((check) => check.name === "cursor model roster");
     assert.equal(cursor?.ok, false);
     assert.match(cursor?.detail ?? "", /applicationMode 'unsupported'/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Atlas rule file doctor names the invalid file with the first zod issue and skips missing files", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mr-doctor-rules-"));
+  const workspace: WorkspaceProfile = { schemaVersion: 1, id: "ws", name: "ws", root, contextRoot: join(root, ".aicontext") };
+  const atlas = join(workspace.contextRoot, "atlas");
+  try {
+    assert.deepEqual(await checkAtlasRuleFiles(workspace), []);
+    await mkdir(atlas, { recursive: true });
+    await writeFile(join(atlas, "rules.json"), JSON.stringify({ schemaVersion: 1, generatedAt: new Date().toISOString(), preferences: [], repositories: [] }));
+    await writeFile(join(atlas, "rules.local.json"), JSON.stringify({ schemaVersion: 1, repositories: [{ repo: "web", rules: [{ id: "a", value: "a", statement: "A.", severity: "error" }] }] }));
+    await writeFile(join(atlas, "profile.json"), "{ broken");
+
+    const checks = await checkAtlasRuleFiles(workspace);
+
+    assert.deepEqual(checks.map((check) => [check.name, check.ok]), [["ws Atlas profile.json", false], ["ws Atlas rules.local.json", false]]);
+    assert.match(checks[0]?.detail ?? "", /invalid JSON/u);
+    assert.match(checks[1]?.detail ?? "", /rules\.local\.json: repositories\.0\.rules\.0\.severity: /u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

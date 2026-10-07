@@ -109,6 +109,34 @@ mr atlas rules --write-repo-agents --lang es --yes
 
 `atlas init` perfila todos los repositorios del workspace registrado y persiste `profile.json`, `rules.json` y una proyección interna `AGENTS.md` en el almacenamiento aislado de `mr-orchestrator`. El profiler es *best effort*: un fallo se avisa, pero no inutiliza el índice. Las reglas conservan evidencia, confianza y ámbito `appliesTo`; describen convenciones observadas y no inventan preferencias.
 
+#### Reglas propias: `rules.local.json`
+
+`rules.json` pertenece al generador: `mr atlas init` y `mr atlas rules` lo reescriben. Las reglas escritas a mano van en `<contextRoot>/atlas/rules.local.json` (junto a `rules.json`), que la generación nunca escribe ni modifica.
+
+```json
+{
+  "schemaVersion": 1,
+  "repositories": [
+    {
+      "repo": "pasatiempos-ui",
+      "rules": [
+        { "id": "styles.no-css-edits", "value": "forbid", "statement": "Do not edit CSS files.", "severity": "block", "appliesTo": ["**/*.css"] },
+        { "id": "naming.files", "value": "PascalCase", "statement": "Name component files using PascalCase.", "severity": "warn" }
+      ]
+    }
+  ]
+}
+```
+
+Cada regla usa el esquema de `rules.json` (`statement` ≤ 200 caracteres, `value` ≤ 100, `severity` `info|warn|block`, `appliesTo` con globs). `kind` vale `"user"` por defecto, `confidence` 1 y `evidence` `[]`.
+
+- **Fusión**: al cargar, cada repo recibe sus reglas generadas más las locales. Una regla local con el mismo `id` sustituye a la generada en ese repo; si no, se añade.
+- **Repos solo locales**: un repo sin entrada generada también recibe sus reglas locales.
+- **Alcance**: `mr_atlas_profile`, `/task` y la hidratación de flow ven las reglas fusionadas, y la proyección `AGENTS.md` también se genera con ellas. `rules.json` sigue conteniendo solo las reglas generadas.
+- **Errores**: si `rules.local.json` es inválido se ignora y las reglas generadas siguen activas; si falta o falla `rules.json`, las reglas locales válidas se sirven igualmente.
+
+`mr doctor` valida `profile.json`, `rules.json` y `rules.local.json` de cada workspace cuando existen, y marca como fallido el fichero inválido con la ruta y el primer error de zod, por ejemplo `rules.local.json: repositories.0.rules.0.severity: Invalid option ...`. Un fichero ausente no es un error.
+
 ---
 
 ## 3. Lanzamiento del Entorno (`mrcode`)

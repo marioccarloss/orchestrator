@@ -10,9 +10,9 @@ import { AtlasIndexer, computeWorkspaceFileHashes, isGraphFresh, loadAtlasGraph 
 import { assessFigmaSetup } from "./figma-setup.js";
 import { discoverRepositories } from "./rules/discover.js";
 import { profileRepository } from "./rules/profiler.js";
-import { loadWorkspaceRules, staleRuleRepositories } from "./rules/store.js";
+import { inspectAtlasRuleFiles, loadWorkspaceRules, staleRuleRepositories } from "./rules/store.js";
 import { configuredHarnesses, resolveStoredHarnessModels } from "./harness-models.js";
-import type { HarnessId } from "./schema.js";
+import type { HarnessId, WorkspaceProfile } from "./schema.js";
 import { hasGatewayCredentials, loadDecisionPlaneConfig } from "./decision.js";
 
 export interface CheckResult {
@@ -28,6 +28,13 @@ function commandVersion(command: string, arguments_: readonly string[]): CheckRe
     ok: result.ok,
     detail: result.ok ? `${result.stdout}${result.stderr}`.trim() : "not available",
   };
+}
+
+/** Reports each present-but-invalid Atlas file (profile.json, rules.json, rules.local.json); missing files are optional. */
+export async function checkAtlasRuleFiles(workspace: WorkspaceProfile): Promise<readonly CheckResult[]> {
+  return (await inspectAtlasRuleFiles(workspace)).flatMap((file) => file.status === "invalid"
+    ? [{ name: `${workspace.name} Atlas ${file.file}`, ok: false, detail: `${file.path}: ${file.issue}` }]
+    : []);
 }
 
 export async function checkHarnessModelRosters(paths: MrPaths): Promise<readonly CheckResult[]> {
@@ -157,6 +164,7 @@ export async function runDoctor(paths: MrPaths, env: NodeJS.ProcessEnv = process
     } catch (error: unknown) {
       checks.push({ name: workspace.name, ok: false, detail: (error as Error).message });
     }
+    checks.push(...await checkAtlasRuleFiles(workspace));
     const rules = await loadWorkspaceRules(workspace);
     if (rules === undefined) continue;
     const graph = await loadAtlasGraph(paths, workspace.id);
