@@ -36,7 +36,7 @@ test("mr atlas init supports profile-only mode and persists rules outside genera
     const registry = await loadRegistry(paths);
     const generated = await readFile(join(paths.generatedRoot, registry.workspaces[0]?.id ?? "missing", "opencode.mr.json"), "utf8");
     assert.match(generated, /\.aicontext\/atlas\/AGENTS\.md/u);
-    const refreshed = run(["atlas", "rules", "--diff"]);
+    const refreshed = run(["atlas", "rules"]);
     assert.equal(refreshed.status, 0, refreshed.stderr);
     assert.match(refreshed.stdout, /Atlas rules saved/u);
     await writeFile(join(workspace, "AGENTS.md"), "preserve me\n");

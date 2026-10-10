@@ -16,7 +16,7 @@ export const DeveloperPreferenceSchema = z.enum([
 
 export const RepositoryRuleSchema = z.strictObject({
   id: z.string().min(1), value: z.string().min(1).max(100), statement: z.string().min(1).max(200),
-  kind: z.enum(["fact", "inferred", "confirmed"]), confidence: z.number().min(0).max(1),
+  kind: z.enum(["fact", "inferred", "confirmed", "user"]), confidence: z.number().min(0).max(1),
   evidence: z.array(z.string().max(200)).max(5), appliesTo: z.array(z.string()).default([]),
   severity: z.enum(["info", "warn", "block"]).default("warn"),
 });
@@ -31,6 +31,14 @@ export const WorkspaceRulesSchema = z.strictObject({
   repositories: z.array(RepositoryRulesSchema),
 });
 
+/** User-owned `rules.local.json`: never written by generation; merged over generated rules on load. */
+export const LocalRepositoryRulesSchema = z.strictObject({
+  repo: z.string().min(1),
+  rules: z.array(RepositoryRuleSchema.extend({ kind: RepositoryRuleSchema.shape.kind.default("user"), confidence: z.number().min(0).max(1).default(1), evidence: z.array(z.string().max(200)).max(5).default([]) })),
+});
+
+export const LocalRulesSchema = z.strictObject({ schemaVersion: z.literal(1), repositories: z.array(LocalRepositoryRulesSchema) });
+
 export const RuleDecisionSchema = z.strictObject({
   id: z.string().regex(/^D\d+$/u), ruleId: z.string().min(1), repos: z.array(z.string()).min(1),
   question: z.string().min(1).max(200),
@@ -42,6 +50,7 @@ export type RepositoryRule = z.infer<typeof RepositoryRuleSchema>;
 export type RepositoryRules = z.infer<typeof RepositoryRulesSchema>;
 export type WorkspaceRules = z.infer<typeof WorkspaceRulesSchema>;
 export type RuleDecision = z.infer<typeof RuleDecisionSchema>;
+export type LocalRules = z.infer<typeof LocalRulesSchema>;
 
 export interface RulesProposal {
   readonly rules: WorkspaceRules;
@@ -137,6 +146,25 @@ export function applyRuleDecisions(proposal: RulesProposal, answers: ReadonlyMap
       }),
     })),
   });
+}
+
+/** Merges local rules over generated ones: same repo + id replaces, new ids append, local-only repos get a synthesized baseline entry. */
+export function mergeLocalRules(generated: WorkspaceRules | undefined, local: LocalRules | undefined): WorkspaceRules | undefined {
+  if (local === undefined) return generated;
+  const base: WorkspaceRules = generated ?? { schemaVersion: 1, generatedAt: new Date(0).toISOString(), preferences: [], repositories: [] };
+  const repositories: RepositoryRules[] = base.repositories.map((repository) => ({ ...repository, rules: [...repository.rules] }));
+  for (const entry of local.repositories) {
+    let repository = repositories.find((candidate) => candidate.repo === entry.repo);
+    if (repository === undefined) {
+      repository = { schemaVersion: 1, repo: entry.repo, mode: "baseline", generatedFromIndex: "0".repeat(64), rules: [] };
+      repositories.push(repository);
+    }
+    for (const rule of entry.rules) {
+      const index = repository.rules.findIndex((candidate) => candidate.id === rule.id);
+      if (index === -1) repository.rules.push(rule); else repository.rules[index] = rule;
+    }
+  }
+  return { ...base, repositories };
 }
 
 export function rulesDigest(rules: WorkspaceRules, repo: string | undefined, files: readonly string[] = []): readonly RuleDigest[] {

@@ -20,10 +20,10 @@ import { approve, failure, heading, info, success, warning } from "./tui/index.j
 import { formatCapabilityGuide, interactiveCapabilitySelector } from "./tui/capabilities.js";
 import { formatEffectiveModelMatrix, formatModelMatrix, interactiveModelSelector } from "./tui/models.js";
 import { buildAtlasBaseline, indexAtlasWorkspace } from "./core/atlas-init.js";
-import type { WorkspaceRules } from "./core/rules/generator.js";
-import { loadRepositoryProfiles, saveRepositoryProfiles, saveWorkspaceRules } from "./core/rules/store.js";
+import { mergeLocalRules, rulesDigest, type WorkspaceRules } from "./core/rules/generator.js";
+import { inspectAtlasRuleFiles, loadLocalRules, loadRepositoryProfiles, loadWorkspaceRules, renderAtlasAgentsFiles, renderWorkspaceRules, saveRepositoryProfiles, saveWorkspaceRules } from "./core/rules/store.js";
 import { ATLAS_QUERY_ACTIONS, runAtlasQuery, unlinkAtlasPointers, writeAtlasPack } from "./core/atlas-pack.js";
-import { extractNodeSlice, findTestsFor, getImpactAnalysis, getNodeDependencies, getNodeDependents, loadAtlasGraph } from "./core/atlas.js";
+import { AtlasIndexer, extractNodeSlice, findTestsFor, getImpactAnalysis, getNodeDependencies, getNodeDependents, loadAtlasGraph } from "./core/atlas.js";
 import { isEngramEnabled, resolveEngramBinary, searchEngramMemories } from "./core/engram-bridge.js";
 import { renderRepositoryAgentsMarkdown, renderRulesDiff, type AgentsLanguage } from "./core/rules/render.js";
 import { runAtlasOnboarding } from "./tui/atlas.js";
@@ -62,7 +62,10 @@ Usage:
   mr atlas query <Symbol> [info|deps|dependents|impact|slice|tests|find] [--depth N]
   mr atlas unlink
   mr atlas init [--guided] [--no-rules] [--lang en|es] [--write-repo-agents] [--yes]
-  mr atlas rules [--diff] [--guided] [--lang en|es] [--write-repo-agents] [--yes]
+  mr atlas rules [--guided] [--lang en|es] [--write-repo-agents] [--yes]
+  mr atlas rules --diff [--lang en|es]   # dry run: prints the AGENTS.md projection diff, writes nothing
+  mr atlas rules show [--repo R] [--file F]... [--json]
+  mr atlas rules render [--lang en|es]   # rewrites only .aicontext/atlas/**/AGENTS.md
   mr sync [ID]
   mr doctor
   mr launch [opencode arguments...]`);
@@ -497,15 +500,66 @@ async function commandAtlasQuery(arguments_: readonly string[]): Promise<void> {
   }, Number.isFinite(depth) ? depth : 2));
 }
 
+function options(arguments_: readonly string[], name: string): readonly string[] {
+  return arguments_.flatMap((value, index) => {
+    const next = arguments_[index + 1];
+    return value === name && next !== undefined ? [next] : [];
+  });
+}
+
+interface AtlasRuleListing { readonly repo: string; readonly id: string; readonly severity: string; readonly statement: string; readonly kind: string }
+
+/** Read-only `mr atlas rules show`: merged generated + local rules, filtered through rulesDigest. */
+async function commandAtlasRulesShow(arguments_: readonly string[]): Promise<void> {
+  const workspace = await activeWorkspace();
+  const problems = (await inspectAtlasRuleFiles(workspace)).filter((inspection) => inspection.file !== "profile.json" && inspection.status === "invalid");
+  if (problems.length > 0) throw new Error(problems.map((problem) => `Invalid Atlas rule file ${problem.path}: ${problem.status === "invalid" ? problem.issue : ""}`).join("\n"));
+  const rules = await loadWorkspaceRules(workspace);
+  const repo = option(arguments_, "--repo");
+  const files = options(arguments_, "--file");
+  const listing: readonly AtlasRuleListing[] = rules === undefined ? [] : rules.repositories.filter((repository) => repo === undefined || repository.repo === repo).flatMap((repository) =>
+    rulesDigest({ ...rules, repositories: [repository] }, repository.repo, files).map((rule) => ({
+      repo: repository.repo, id: rule.id, severity: rule.severity, statement: rule.statement,
+      kind: repository.rules.find((candidate) => candidate.id === rule.id)?.kind ?? "fact",
+    })));
+  if (arguments_.includes("--json")) {
+    console.log(JSON.stringify(listing, null, 2));
+    return;
+  }
+  if (listing.length === 0) {
+    console.log(rules === undefined ? "No Atlas rules for this workspace. Run `mr atlas rules` or add .aicontext/atlas/rules.local.json." : "No Atlas rules match the given filters.");
+    return;
+  }
+  for (const repository of [...new Set(listing.map((rule) => rule.repo))]) {
+    console.log(`${repository}:`);
+    for (const rule of listing.filter((candidate) => candidate.repo === repository)) console.log(`  [${rule.severity}] ${rule.id} — ${rule.statement}${rule.kind === "user" ? " (user)" : ""}`);
+  }
+}
+
 async function commandAtlas(arguments_: readonly string[]): Promise<void> {
   const action = arguments_[0] ?? "init";
-  const usageText = "Usage: mr atlas index [--no-link] | query <Symbol> [action] | unlink | init [--guided] [--no-rules] [--lang en|es] | rules [--diff] [--guided] [--lang en|es]";
+  const usageText = "Usage: mr atlas index [--no-link] | query <Symbol> [action] | unlink | init [--guided] [--no-rules] [--lang en|es] | rules [--diff] [--guided] [--lang en|es] | rules show [--repo R] [--file F]... [--json] | rules render [--lang en|es]";
   if (!["index", "init", "rules", "query", "unlink"].includes(action)) throw new Error(usageText);
   if (action === "query") {
     await commandAtlasQuery(arguments_.slice(1));
     return;
   }
+  const language: AgentsLanguage = option(arguments_, "--lang") === "es" ? "es" : "en";
+  if (action === "rules" && arguments_[1] === "show") {
+    await commandAtlasRulesShow(arguments_.slice(2));
+    return;
+  }
   const workspace = await activeWorkspace();
+  if (action === "rules" && arguments_[1] === "render") {
+    for (const path of await renderWorkspaceRules(workspace, language)) info(`Rendered ${path}`);
+    success("Atlas AGENTS.md projections rendered; rules, profiles and repository files were not touched.");
+    return;
+  }
+  if (action === "rules" && arguments_[1] !== undefined && !arguments_[1].startsWith("--")) throw new Error(usageText);
+  if (action === "rules" && arguments_.includes("--diff")) {
+    await previewAtlasRules(workspace, language);
+    return;
+  }
   if (action === "unlink") {
     const profiles = await loadRepositoryProfiles(workspace) ?? [];
     const roots = profiles.length === 0 ? [workspace.root] : profiles.map((profile) => join(workspace.root, profile.root));
@@ -533,7 +587,6 @@ async function commandAtlas(arguments_: readonly string[]): Promise<void> {
     warning("Atlas index is usable, but no rules proposal could be generated.");
     return;
   }
-  const language: AgentsLanguage = option(arguments_, "--lang") === "es" ? "es" : "en";
   const interactive = process.stdin.isTTY && process.stdout.isTTY;
   let rules = baseline.proposal.rules;
   if (interactive) {
@@ -546,13 +599,7 @@ async function commandAtlas(arguments_: readonly string[]): Promise<void> {
   } else if (arguments_.includes("--guided")) {
     warning("Guided onboarding requires a TTY; inferred rules remain unconfirmed.");
   }
-  const internalAgents = join(workspace.contextRoot, "atlas", "AGENTS.md");
-  const previous = await readFile(internalAgents, "utf8").catch(() => undefined);
   const written = await saveWorkspaceRules(workspace, rules, baseline.profiles, language);
-  if (arguments_.includes("--diff")) {
-    const next = await readFile(internalAgents, "utf8");
-    info(`Rules projection diff:\n${renderRulesDiff(previous, next)}`);
-  }
   if (arguments_.includes("--write-repo-agents")) {
     await writeRepositoryAgents(workspace, baseline.profiles, rules, language, arguments_.includes("--yes"));
   }
@@ -560,6 +607,25 @@ async function commandAtlas(arguments_: readonly string[]): Promise<void> {
   await syncWorkspace(paths, workspace);
   await refreshAtlasPack(workspace, graph, arguments_, baseline.profiles);
   success(`Atlas rules saved (${String(written.length)} artifacts, ${String(baseline.profiles.length)} repositories).`);
+}
+
+/** `mr atlas rules --diff`: index in memory, propose rules, print the AGENTS.md projection diff, and write nothing. */
+async function previewAtlasRules(workspace: Awaited<ReturnType<typeof activeWorkspace>>, language: AgentsLanguage): Promise<void> {
+  heading("mr atlas rules --diff (dry run)");
+  const previousGraph = await loadAtlasGraph(paths, workspace.id);
+  const graph = await new AtlasIndexer().indexWorkspace(workspace.root, previousGraph === undefined ? undefined : { previous: previousGraph });
+  const baseline = await buildAtlasBaseline(workspace, graph);
+  for (const error of baseline.errors) warning(`Best-effort profiler: ${error}`);
+  if (baseline.proposal === undefined) {
+    warning("No rules proposal could be generated.");
+    return;
+  }
+  const merged = mergeLocalRules(baseline.proposal.rules, await loadLocalRules(workspace)) ?? baseline.proposal.rules;
+  for (const file of renderAtlasAgentsFiles(workspace, merged, baseline.profiles, language)) {
+    const diff = renderRulesDiff(await readFile(file.path, "utf8").catch(() => undefined), file.content);
+    info(`Rules projection diff for ${file.path}:\n${diff}`);
+  }
+  success("Dry run: nothing was written. Run `mr atlas rules` without --diff to save.");
 }
 
 async function main(): Promise<void> {
