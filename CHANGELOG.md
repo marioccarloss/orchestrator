@@ -6,6 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-10
+
+### Added
+
+- Added user-owned `.aicontext/atlas/rules.local.json`, merged over the generated rules per repository; `mr doctor` reports invalid rule files.
+- Added `mr atlas rules show` (read-only), `mr atlas rules render` (rewrites only `.aicontext/atlas/**/AGENTS.md`) and `mr atlas rules --diff` (dry run).
+
+### Changed
+
+- Atlas no longer creates `CLAUDE.md`. Claude Code reads `AGENTS.md` natively, and a `CLAUDE.md` in a directory makes Claude skip that directory's `AGENTS.md`. An existing `CLAUDE.md` still receives the Atlas pointer, so its instructions keep loading; a `CLAUDE.md` that already imports `@AGENTS.md` is left untouched.
+
 ## [0.16.0] - 2026-10-03
 
 ### Added
