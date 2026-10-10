@@ -24,13 +24,13 @@ export const ATLAS_BLOCK_END = "<!-- mr-atlas:end -->";
 export const MAP_CHAR_BUDGET = 16_000;
 
 /**
- * Instruction files that other agents read. AGENTS.md and CLAUDE.md are created when missing
- * (Claude Code reads CLAUDE.md, not AGENTS.md, so a created CLAUDE.md just imports @AGENTS.md);
- * the rest are only updated when present.
+ * Instruction files that other agents read. Only AGENTS.md is created when missing: Claude Code reads
+ * AGENTS.md natively, but a CLAUDE.md in a directory hides that directory's AGENTS.md. An existing
+ * CLAUDE.md is still updated so Claude does not skip the pointer; the rest are only updated when present.
  */
 export const POINTER_TARGETS = [
   { file: "AGENTS.md", create: true },
-  { file: "CLAUDE.md", create: true },
+  { file: "CLAUDE.md", create: false },
   { file: "GEMINI.md", create: false },
   { file: ".github/copilot-instructions.md", create: false },
 ] as const;

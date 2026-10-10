@@ -63,19 +63,17 @@ void test("MAP.md ranks the most connected symbols first and stays within budget
   assert.match(map, /never commit/u);
 });
 
-void test("pointers: CLAUDE.md is created as an @AGENTS.md import when missing, ignored locally, and removed on unlink", async () => {
+void test("pointers: only AGENTS.md is created when missing; CLAUDE.md is never created and is removed on unlink", async () => {
   const root = await mkdtemp(join(tmpdir(), "mr-atlas-claude-"));
   try {
     runCommand("git", ["-C", root, "init", "-q"]);
     const workspace = { root, contextRoot: join(root, ".aicontext") };
     const changes = await linkAtlasPointers(workspace, [root]);
-    assert.deepEqual(changes.map((change) => [change.path.slice(root.length + 1), change.action]), [["AGENTS.md", "created"], ["CLAUDE.md", "created"]]);
-    const claude = await readFile(join(root, "CLAUDE.md"), "utf8");
-    assert.match(claude, /^@AGENTS\.md$/mu);
-    assert.doesNotMatch(claude, /MAP\.md/u, "the pointer text lives only in AGENTS.md");
-    assert.match(await readFile(join(root, ".git", "info", "exclude"), "utf8"), /^\/CLAUDE\.md$/mu);
-    await unlinkAtlasPointers([root]);
+    assert.deepEqual(changes.map((change) => [change.path.slice(root.length + 1), change.action]), [["AGENTS.md", "created"]]);
     await assert.rejects(readFile(join(root, "CLAUDE.md"), "utf8"));
+    assert.match(await readFile(join(root, "AGENTS.md"), "utf8"), /mr-atlas:start/u);
+    assert.match(await readFile(join(root, ".git", "info", "exclude"), "utf8"), /^\/AGENTS\.md$/mu);
+    await unlinkAtlasPointers([root]);
     await assert.rejects(readFile(join(root, "AGENTS.md"), "utf8"));
   } finally {
     await rm(root, { recursive: true, force: true });
